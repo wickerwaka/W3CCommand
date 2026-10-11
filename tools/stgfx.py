@@ -60,6 +60,23 @@ def masked_sprite(p: Payload, addr: int, rows: int, width: int = 32) -> list:
     return out
 
 
+def picture3(p: Payload, addr: int, width: int, rows: int) -> list:
+    """Opaque 3-plane picture drawn by $B832: per row, width/16 columns of (p0, p2, p3)
+    words; plane 1 is not stored but computed as p0 AND p2."""
+    out = []
+    a = addr
+    for _ in range(rows):
+        row = []
+        for _col in range(width // 16):
+            p0, p2, p3 = struct.unpack(">3H", p.bytes(a, 6))
+            a += 6
+            p1 = p0 & p2
+            for bit in range(15, -1, -1):
+                row.append(sum(((pl >> bit) & 1) << i for i, pl in enumerate((p0, p1, p2, p3))))
+        out.append(row)
+    return out
+
+
 def to_image(pixels: list, palette: list) -> Image.Image:
     """Colour-index rows (None = transparent) -> RGBA image."""
     img = Image.new("RGBA", (len(pixels[0]), len(pixels)), (0, 0, 0, 0))

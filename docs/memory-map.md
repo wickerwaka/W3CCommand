@@ -14,9 +14,13 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$00405A` | `game_main`: init, then the main loop |
 | `$000400–~$001300` | Game globals, accessed as abs.w (flags at `$461–$466`, timers etc.). Interleaved with code from `$405A` |
 | `$00405A–$022E61` | **Code**, with embedded strings and tables (see below) |
-| `$022E62–$040E25` | **Static data**, ~120 KB, low entropy (40–75% zero bytes). Includes the UI sprite bitmaps (for example `$2BBA2–$2F18x`); the rest is unidentified |
-| `$040E26–$0412xx` | Mouse pointer sprites (16×16, mask + image words) and small UI tables |
-| `$041278–$043800` | UI layout / menu data ("CANCEL", "Start Action Game", …) |
+| `$022E62–$037AA5` | UI bitmaps: 32/16/48-px masked sprites used by sprite tables, UI descriptors and runtime code (see "UI panels") |
+| `$037FA6–$03A025` | 15 store-item icons (32×32 masked, `$280` each) |
+| `$03A026–$03B1B9` | UI sprite-table bitmaps |
+| `$03B426–$040E25` | 15 equipment pictures (64×64, 3 stored planes, `$600` each) |
+| `$040E26–$040EB1` | Mouse pointer sprites (16×16, mask + image words) |
+| `$040EB2–$040F85` | UI element type flag table |
+| `$040F86–$0437FF` | UI descriptors (from `$40F86`) and panels (element lists) |
 | `$0438E6–$04A069` | **3D models** (99 records, see "3D renderer") |
 | `$04A06A–$04A1F5` | `model_table`: 99 model pointers |
 | `$04A1F6–$04B000` | High-entropy data (7.3 bits/byte); purpose unknown |
@@ -54,6 +58,16 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 - **Masked UI sprite**: drawn by `$B316` (32 px wide) or `$B292` (16 px wide). Each row is width/16 columns of `mask, p0, p1, p2, p3` words, so 20 or 10 bytes per row. A mask bit of 1 keeps the background. Decoded by `stgfx.masked_sprite`.
 - **Sprite placement table**: walked by `$F0BE` (32-px sprites) or `$F0D2` (16-px sprites). 10-byte records `x.w, y.w, rows-1.w, ptr.l`, terminated by a negative x. Callers load the table with `lea table(pc),A1`. `tools/extract_ui_sprites.py` finds all 22 tables this way (77 unique sprites), and a structural scan confirms none are missed. `$C512` is the Walrus/AAV bay icon set (launch, repair, refuel, fuel supply) with bitmaps at `$2BBA2–$2F18x`. `$BFAA` patches two of its pointers (`$C52C`, `$C536`) to swap icon variants (`$2E32A`/`$2E4F6` ↔ `$3562A`/`$357F6`).
 - An 8-byte record list walked by `$54A4` → `$54B6` follows each sprite table (text or box drawing *(guess)*).
+
+## UI panels
+
+The panel system (`$B400`/`$B418`/`$B014`) draws most screens. The format is in the `tools/stui.py` docstring.
+- A **panel** has a state variable/value (it's shown only while they match), a draw callback, an optional bevelled frame, and 22-byte elements.
+- Each **element** references a **descriptor** at `$40F86+n`. Descriptor kinds: 16/32/48-px bitmaps, a filled polygon, 8×8 or 5×5 text, and boxed/bevelled text (dispatch table `$B06A`).
+
+Extraction:
+- `tools/extract_ui_panels.py` renders the 48 panels found from code (two candidates don't parse; they're probably built at run time). It dumps every descriptor bitmap, including the 91 found by a structural scan of the descriptor area, plus the runtime-addressed sprite strips. Frames, boxes and polygons are approximated.
+- `tools/extract_items.py` exports the 15 store items. Their records are at `$B76` (26 bytes): position, icon, name and picture index. The 64×64 equipment pictures (`$3B426`, drawn by `$B832`) store planes 0, 2 and 3, with plane 1 = p0 AND p2.
 
 ## Fonts
 
@@ -118,4 +132,4 @@ Polygon colour → `$13CA` table of palette-index pairs (equal = solid, differen
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4`'s Ghidra function body is wrong. It includes the vertex-op handler slots at `$5A1C–$5AA6` and their zero padding, and it has bogus `CAS2` decodes. Use `tools/dis68k.py` for this area.
-- Most of `$22E62–$40E25` beyond the UI sprites is still unidentified. Candidates: island terrain/heightmaps, full-screen backgrounds, sound.
+- `$22E62–$40E25` is fully accounted for as graphics: UI bitmaps, item icons and pictures. The only remainder is 620 zero bytes at `$3B1BA–$3B425`. The 16-px strips have no recorded per-sprite heights. Sound, island terrain and title/background screens are not in this block. They're still to be found, possibly in `$41000–$4CBD3` or generated procedurally.
