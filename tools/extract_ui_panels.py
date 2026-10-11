@@ -48,6 +48,16 @@ def find_panels(p: Payload) -> set:
     for lst in lists:
         for i in range(p.u16(lst)):
             panels.add(p.u32(lst + 2 + 4 * i))
+    # Static panel lists at $43800..$438E5 (count.w + panel.l entries, used via $B400/$B46E
+    # with A6 loaded indirectly): take every pointer there that parses as a panel.
+    for a in range(0x43800, 0x438E6, 2):
+        v = p.u32(a)
+        if 0x41000 <= v < 0x43800 and v not in panels:
+            try:
+                parse_panel(p, v)
+                panels.add(v)
+            except (ValueError, IndexError):
+                pass
     return panels
 
 
@@ -138,10 +148,51 @@ def descriptor_bitmaps(p: Payload) -> list:
 
 
 # Sprites whose addresses are computed at runtime (not found through tables or descriptors).
-# Strips of stacked 16-px masked sprites (individual heights not determined): payload
-# loadout icons, numbered drone markers, hangar icons.
+# Strips of stacked 16-px masked sprites: payload loadout icons, numbered drone markers,
+# hangar icons. Split into individual icons by strip_icons().
 LOOSE_STRIPS_16 = [(0x36192, 0x36426), (0x366F6, 0x36C46), (0x36F2A, 0x37146),
                    (0x371B4, 0x37326), (0x374D4, 0x37826), (0x37934, 0x37AA6)]
+# Structured sources of pointers into those strips, used to split them into icons:
+#   $161A2: (rows.w, ptr.l) entries (drone markers), 4 entries
+#   $CAC4:  12 x 26-byte loadout payload records (Manta/Walrus), icon pointer at +10
+MARKER_TABLE, MARKER_COUNT = 0x161A2, 4
+PAYLOAD_RECORDS, PAYLOAD_SIZE, PAYLOAD_COUNT = 0xCAC4, 0x1A, 12
+
+
+def strip_icons(p: Payload, known: dict) -> list:
+    """Split the 16-px strips at known icon starts. `known` maps ptr -> rows (from
+    descriptors); returns (ptr, rows) for every icon found."""
+    starts = dict(known)
+    for i in range(MARKER_COUNT):
+        starts[p.u32(MARKER_TABLE + 6 * i + 2)] = p.u16(MARKER_TABLE + 6 * i)
+    for i in range(PAYLOAD_COUNT):
+        starts.setdefault(p.u32(PAYLOAD_RECORDS + PAYLOAD_SIZE * i + 10), None)
+    icons = []
+    for a0, a1 in LOOSE_STRIPS_16:
+        points = sorted(a for a in starts if a0 <= a < a1 and (a - a0) % 10 == 0)
+        if not points or points[0] != a0:
+            points = [a0] + points
+        for k, a in enumerate(points):
+            end = points[k + 1] if k + 1 < len(points) else a1
+            rows = min(starts.get(a) or (end - a) // 10, (end - a) // 10)
+            icons += split_on_blank_rows(p, a, rows)
+    return icons
+
+
+def split_on_blank_rows(p: Payload, addr: int, rows: int) -> list:
+    """Split a stack of 16-px icons at fully transparent rows; drop empty pieces."""
+    pix = masked_sprite(p, addr, rows, 16)
+    pieces, start = [], None
+    for r, row in enumerate(pix + [[None] * 16]):
+        blank = all(c is None for c in row)
+        if not blank and start is None:
+            start = r
+        elif blank and start is not None:
+            pieces.append((addr + start * 10, r - start))
+            start = None
+    return pieces
+
+
 # 32-px, 23-row icon variants patched into sprite table $C512 by $BFAA.
 LOOSE_32 = [0x3562A, 0x357F6, 0x359C2, 0x35B8E]
 
@@ -168,8 +219,10 @@ def main() -> None:
     for desc, width, rows, ptr in descriptor_bitmaps(p):
         if (ptr, width) not in bitmaps:
             bitmaps[(ptr, width)] = bitmap(p, desc + 10, width)[0]
-    for start, end in LOOSE_STRIPS_16:
-        bitmaps[(start, 16)] = masked_sprite(p, start, (end - start) // 10, 16)
+    known16 = {d_ptr: rows for _, w, rows, d_ptr in descriptor_bitmaps(p) if w == 16}
+    for ptr, rows in strip_icons(p, known16):
+        if rows > 0:
+            bitmaps[(ptr, 16)] = masked_sprite(p, ptr, rows, 16)
     for ptr in LOOSE_32:
         bitmaps[(ptr, 32)] = masked_sprite(p, ptr, 23, 32)
     for (ptr, width), pix in sorted(bitmaps.items()):

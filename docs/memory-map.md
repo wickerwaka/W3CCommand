@@ -21,16 +21,19 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$040E26–$040EB1` | Mouse pointer sprites (16×16, mask + image words) |
 | `$040EB2–$040F85` | UI element type flag table |
 | `$040F86–$0437FF` | UI descriptors (from `$40F86`) and panels (element lists) |
+| `$043800–$0438E5` | Static panel lists (count + panel pointers) and a pointer table |
 | `$0438E6–$04A069` | **3D models** (99 records, see "3D renderer") |
 | `$04A06A–$04A1F5` | `model_table`: 99 model pointers |
-| `$04A1F6–$04B000` | High-entropy data (7.3 bits/byte); purpose unknown |
+| `$04A1F6–$04A8B5` | Copy-protection questions: 3 languages × 64 × 9 bytes (page/paragraph/word), XOR-encrypted |
+| `$04A8B6–$04AD1F` | Copy-protection answers: length-prefixed, XOR-encrypted (`tools/extract_protection.py`) |
 | `$04AD20–$04AD9F` | Island name offsets (64 words) |
 | `$04ADA0–$04AFB5` | Island names (VULCAN … NEMESIS) |
 | `$04AFB6–$04B535` | Island records (64 × 22 bytes) |
 | `$04B5B6–$04B8A7` | Sound effect records (18): a 6-byte header + channel script |
-| `$04BCCA` | Snapshot buffer for globals `$400–$1235` plus the UI flag table (`$1A4C6`/`$1A518`) |
-| `$04B000–$04BFFF` | Mixed tables |
-| `$04C000–$04CBD3` | Zero fill (end of payload) |
+| `$04BCCA–$04CBD3` | Snapshot buffer (zero in the file) for globals `$400–$1235` plus the UI flag table (`$1A4C6`/`$1A518`) |
+| `$04B536–$04B5B5` | Word offset table (`$80`, `$96`, …) followed by `$80` fill; consumer not found |
+| `$04B8A8–$04B9C9` | 5×5 font |
+| `$04B9CA–$04BCC9` | 8×8 font |
 | `$04CBD4–$06FFFF` | Runtime RAM (BSS-like, not in file) |
 | `$0586AA` | Initial stack top (SP set in `game_main`) |
 | `$058E2A` | Depth-sorted draw tree for the current frame (18-byte nodes, max 128) |
@@ -72,7 +75,7 @@ The panel system (`$B400`/`$B418`/`$B014`) draws most screens. The format is in 
 - Each **element** references a **descriptor** at `$40F86+n`. Descriptor kinds: 16/32/48-px bitmaps, a filled polygon, 8×8 or 5×5 text, and boxed/bevelled text (dispatch table `$B06A`).
 
 Extraction:
-- `tools/extract_ui_panels.py` renders the 48 panels found from code (two candidates don't parse; they're probably built at run time). It dumps every descriptor bitmap, including the 91 found by a structural scan of the descriptor area, plus the runtime-addressed sprite strips. Frames, boxes and polygons are approximated.
+- `tools/extract_ui_panels.py` renders the panels found from code and from the static panel lists at `$43800` (two candidates don't parse; they're probably built at run time). It dumps every descriptor bitmap, including the 91 found by a structural scan of the descriptor area, plus the runtime-addressed 16-px strips. Those are split into individual icons at pointers from the drone-marker table (`$161A2`) and the Manta/Walrus payload records (`$CAC4`, 12 × 26 bytes, icon at `+10`), then at fully transparent rows. Frames, boxes and polygons are approximated.
 - `tools/extract_items.py` exports the 15 store items. Their records are at `$B76` (26 bytes): position, icon, name and picture index. The 64×64 equipment pictures (`$3B426`, drawn by `$B832`) store planes 0, 2 and 3, with plane 1 = p0 AND p2.
 
 ## Island world
@@ -111,6 +114,18 @@ The sound effects are channel scripts run by a small bytecode engine. There's no
   | `$3C` | end |
 
 - **Extraction:** `tools/extract_sounds.py` runs this engine under Unicorn (`tools/stsound.py`), logs the PSG writes with timestamps (including Timer A interrupts at their programmed rate), and synthesises WAVs with a simplified YM2149 model (`tools/ym2149.py`). `sounds.txt` lists each effect's call sites with the nearest game message: effect 10 = flare/drone launch, 12 = "Missile heading for Carrier!" alarm, 11 = "Friendly control centre bombed!", 4 = laser, 5/6 = missile launch, and 0/1 = message pings (via `$A128`).
+
+## Palettes
+
+`tools/extract_palettes.py` extracts four 16-colour palettes stored back to back at `$132A`, `$134A`, `$136A` and `$138A`, plus the colour-15 cycle at `$13AA`. The VBL copies the palette that `$1326` points to.
+- **`$132A`:** the default, used by most screens and the 3D views.
+- **`$136A`:** the damage screen (`$1404E`), with colour 7 patched to `$445`. The model export uses it for models 74–82.
+- **`$134A`:** the damage screen when `[$B62]` is set; also `$FBD6` and `$13AF0`.
+- **`$138A`:** `$142E6` when `[$D14] == 1`; also `$10996`.
+
+## Copy protection
+
+`$A2C0` picks a question by language (`$127E`) × 64 + random. Questions and answers are XOR-encrypted with key `(i + 1) ^ $61`, and answers also with the byte position. `tools/extract_protection.py` decodes all 192.
 
 ## Fonts
 
@@ -175,4 +190,4 @@ Polygon colour → `$13CA` table of palette-index pairs (equal = solid, differen
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4`'s Ghidra function body is wrong. It includes the vertex-op handler slots at `$5A1C–$5AA6` and their zero padding, and it has bogus `CAS2` decodes. Use `tools/dis68k.py` for this area.
-- `$22E62–$40E25` is fully accounted for as graphics: UI bitmaps, item icons and pictures. The only remainder is 620 zero bytes at `$3B1BA–$3B425`. The 16-px strips have no recorded per-sprite heights. Sound and title/background screens are not in this block. Island terrain doesn't exist as data: islands are procedural plateaus (see "Island world").
+- `$22E62–$40E25` is fully accounted for as graphics: UI bitmaps, item icons and pictures. The only remainder is 620 zero bytes at `$3B1BA–$3B425`. Sound and title/background screens are not in this block. Island terrain doesn't exist as data: islands are procedural plateaus (see "Island world").
