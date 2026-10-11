@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# Generated from the game binary by tools/export_web.py (npm run data)
+public/data/
