@@ -697,6 +697,7 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 
 - **Airborne fighter count:** `$11CE` is never incremented, so the 4-fighter limit doesn't work.
 - **Debris recipe bound:** `$1CAB4` compares with memory `$2E` instead of `#$2E`.
+- **Collision distance:** `collide_objects` (`$1BB40`) negates the x and z offsets based on the sign of their *low word* (the flags come from the `move.w` to `$AB0`/`$AB2`). An offset like −40000 (`$FFFF63C0`) is left negative and counts as near, so far-apart pairs are re-tested every pass. The model reproduces it.
 - **Command-centre health after a cold-boot load:** probably 0, since `difficulty_apply` isn't re-run *(to test)*.
 - **Frame-rate-dependent game speed:** see §1.
 - **Defences need the viewer:** most island defences only act while the viewed unit is at the island (§8.1).
@@ -714,22 +715,37 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 
 ## 14. Status of the model
 
-`tools/stunits.py` (`UnitState`, extending the strategic `WorldState`) has these, verified by `tools/check_units.py`:
-- `carrier_step` with the speed governor, autopilot, grounding and recoil;
-- `walrus_dock_door_step`;
-- the idle Manta lift;
-- the shared maths: yaw/pitch rotation, atan2, `turn_towards`, `self_centre`.
+`tools/stunits.py` (`UnitState`, extending the strategic `WorldState`) models a **whole simulation pass**: `UnitState.sim_pass()` corresponds to game_main `$40B0–$413E`. It leaves out the screen-input, sound and message-line routines, which write only UI memory (checked by recording their writes). Ported:
 
-**Test data** is an **action game**, which needs no input. The carrier sails a few thousand units on autopilot to a waypoint off enemy island THERMOPYLAE (27) and stops: `capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action`.
-- It captures RAM around 120 whole simulation passes (`$40B0–$413E`).
-- Under Unicorn, a whole pass reproduces the Hatari capture exactly, except for interrupt-driven counters and the stack. So the oracle is valid for the unit layer too.
+| Area | Routines |
+|---|---|
+| Vehicles | `vehicles_step`; `carrier_step` (speed governor, autopilot, grounding, recoil); the Manta/Walrus loops for bays in the hangar; the laser turret off its screen; crane and observation-turret angles `$1F070`; flares and object 15 `$1F214`; idle supply transfer; idle lift; dock door |
+| Debris and drones | `debris_step`, `free_burst`; `defence_drones_step`: stations, routing round the carrier's box, positions |
+| Island AI | `island_behaviours_step` with the AA turret (tracking and SAM creation), command centre, drone pad (drone creation), anti-ship site (missile creation), and the hostile search |
+| Objects | `init_world_object`/`init_island_object`, schedule resets, `find_free_object`/`find_free_island_object`; `object_passes`: island attach/load/release, both collision passes with time-to-contact scheduling and the contact tests |
+| Per second / 10 s | `island_range_check`; the hangar repair and preparation timers |
+| Other | `carrier_systems_status`; the island step's 3D buffer mirroring and entry creation |
+| Maths | yaw/pitch rotation, rotation matrix, atan2, `aim_angles`, `turn_towards`, `self_centre` |
 
-**Island 27 never engages** in this game. The carrier stops about 35,300 units from the island's centre, outside the 16-bit island-local range. Its "in range" flag (bit 9) is never set, so the drone pad and AA turrets see no hostile, and the carrier is beyond the anti-ship range `[$454]`.
+**Not yet ported** (the model raises `NotImplementedError` instead of guessing):
+- the AI objects' behaviours (missiles, bombs, fighters, blasts);
+- island drones `$19C46`, SAMs `$19BC6`, the SAM launcher `$19AC4` and the volcano `$1989C`;
+- collision responses (hits and damage);
+- debris spawning;
+- vehicles out of the hangar (flight, driving, lift and dock sequences);
+- the turret screen;
+- supply transfers.
 
-**Checks:**
+**Test data** is an **action game**, which needs no input. The carrier sails a few thousand units on autopilot to a waypoint off enemy island THERMOPYLAE (27) and stops: `capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action` captures RAM around 120 whole passes. Under Unicorn, a whole pass reproduces the Hatari capture exactly, apart from interrupt-driven counters and the stack.
+
+**Island 27 never engages** in that game. The carrier stops about 35,300 units from the island's centre, outside the 16-bit island-local range, so its "in range" flag (bit 9) is never set. The engagement scenario below moves it closer.
+
+**Checks** (`tools/check_units.py`, about 25 s):
 - the maths against the original on 3000 random inputs each;
-- the routines on all 120 captured states plus 2000 fuzzed ones (steering, grounding, recoil, manual keys and mouse, no fuel, damaged engines, open sea);
-- 3000 consecutive `carrier_step` calls match the original through arrival and stop.
+- each routine on the 120 captured states, with 2000 fuzzed states for `carrier_step`;
+- whole passes against the original and against the **Hatari** `pass_*_out` captures: all 120 match;
+- 4000 consecutive passes from the start of the voyage against the original (screen input stubbed, the one-second flag every 8 passes): identical, including an enemy capture along the way;
+- 90 perturbed multi-pass scenarios: engagement, drones, flares, turret, voyage, debris, collisions, hangars, construction. All match. Runs that reach unported code stop there: island drones launched by an engaged drone pad, the volcano, the SAM launcher, and the enemy entering close-range combat.
 
 ## 15. Plan: modelling and verifying the unit layer
 

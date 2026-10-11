@@ -404,12 +404,14 @@ class WorldState:
         """$18874: once the island has 6 active buildings, idle trees get cleared."""
         if self.active_buildings >= 6 and not s.active and self.rand() & 3 == 0:
             s.type = 0
+            self.slot_mirror(s)
 
     def building_step(self, s: Slot, max_health: int, target: int) -> None:
         """$1876E: over quota -> back to construction at full progress; else repair."""
         if not s.active:
             s.type = s.type + UNDER_CONSTRUCTION
             s.value = target
+            self.slot_mirror(s)
         else:
             self.repair(s, max_health)
 
@@ -418,6 +420,7 @@ class WorldState:
         if s.value >= s16(max_health):
             return
         s.value = min(s16(s.value + 100), s16(max_health))
+        self.slot_mirror(s)
 
     def construction(self, s: Slot, max_health: int, target: int) -> None:
         """$186F6: active -> +1 progress per 30 goods; idle -> decays, refunding 20 goods."""
@@ -427,18 +430,19 @@ class WorldState:
             if v == 0:
                 if s.type != T_RUNWAY_CONSTRUCTION:
                     s.type = 0
-                return
+                return self.slot_mirror(s)
             if self.island_class == 0 and self.rand() & 3:
                 return
             s.value = v - 1
             eco.goods = min(s16(eco.goods + 20), s16(eco.goods_cap))
-            return
+            return self.slot_mirror(s)
         if self.warmup or s.value == s16(target):
             s.type = s.type - UNDER_CONSTRUCTION
             s.value = max_health
-            return
+            return self.slot_mirror(s)
         if self.pay(eco.a + 8, 30):
             s.value = min(s16(s.value + 1), s16(target))
+            self.slot_mirror(s)
 
     def command_centre_construction(self, s: Slot, max_health: int, target: int) -> None:
         """$187A0: neutral island -> +4 per 100 raw, completing flips ownership; owned -> -8."""
@@ -449,12 +453,13 @@ class WorldState:
                 s.value = v
             else:
                 s.type = 0
-            return
+            return self.slot_mirror(s)
         i = self.island_index
         eco = self.economy(i)
         if v != s16(target):
             if self.pay(eco.a + 2, 100):
                 s.value = min(s16(v + 4), s16(target))
+                self.slot_mirror(s)
             return
         s.type = T_COMMAND_CENTRE
         s.value = max_health
@@ -463,6 +468,7 @@ class WorldState:
         eco.goods = 5000
         owner = (code >> 4) + 1
         self.mem.set8(OWNERS + i, owner)
+        self.slot_mirror(s)
         if not self.warmup:
             self.events.append(("captured", i, owner & 0xFF))
         self.compute_class()
@@ -490,6 +496,7 @@ class WorldState:
         s.type = best_type + UNDER_CONSTRUCTION
         s.x, s.z = x, z
         s.value = 0
+        self.slot_create(j)
 
     def find_free_spot(self, new_type: int, island: int = None):
         """find_free_island_spot ($18A48): up to 16 random positions; a spot is rejected if it
@@ -526,6 +533,7 @@ class WorldState:
                 for n, k in enumerate(cut):
                     m.set16(SPOT_CUT_LIST + 2 * n, k)
                     isl.slots[k].type = 0
+                    self.tree_cut(isl, k)
                 return j, x, z
         return None
 
@@ -552,12 +560,14 @@ class WorldState:
         m.set8(0x8FD, 0)
         m.set32(TICK_COUNT, m.u32(TICK_COUNT) + 1)
         m.set8(0xD3F, 0xFF)
-        # $1B8AE (objects) is not modelled.
+        self.island_range_check()             # $1B8AE: unit layer (stunits)
         self.count_islands()
         if self.countdown(TIMER_REPAIR, 10):
             self.carrier_repair()
-        self.countdown(TIMER_MANTA, 10)       # $1761C, hangar repairs: not modelled
-        self.countdown(TIMER_WALRUS, 10)      # $176AC
+        if self.countdown(TIMER_MANTA, 10):
+            self.manta_hangar_step()          # $1761C: unit layer
+        if self.countdown(TIMER_WALRUS, 10):
+            self.walrus_hangar_step()         # $176AC: unit layer
         if self.countdown(TIMER_984, 1):
             m.set16(0x962, 2)
         m.set16(0x966, 2)
@@ -570,6 +580,25 @@ class WorldState:
             d0 = self.plan_production(d0)
             d0 = self.run_production(d0)
             self.distribute_raw(d0)
+
+    # Unit-layer hooks: no-ops here, implemented by stunits.UnitState.
+    def slot_mirror(self, s: Slot) -> None:
+        """$1891A: mirror a changed slot into the 3D buffer of a loaded island."""
+
+    def slot_create(self, j: int) -> None:
+        """$182A4: create the 3D entry for a new construction on a loaded island."""
+
+    def tree_cut(self, isl: Island, k: int) -> None:
+        """$1C6D6 path of find_free_island_spot: debris for a cut tree on a loaded island."""
+
+    def island_range_check(self) -> None:
+        """$1B8AE (in the tick)."""
+
+    def manta_hangar_step(self) -> None:
+        """$1761C (every 10 s)."""
+
+    def walrus_hangar_step(self) -> None:
+        """$176AC (every 10 s)."""
 
     def countdown(self, a: int, reload: int) -> bool:
         v = w16(self.mem.u16(a) - 1)
