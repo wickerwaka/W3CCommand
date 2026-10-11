@@ -24,15 +24,21 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$0438E6–$04A069` | **3D models** (99 records, see "3D renderer") |
 | `$04A06A–$04A1F5` | `model_table`: 99 model pointers |
 | `$04A1F6–$04B000` | High-entropy data (7.3 bits/byte); purpose unknown |
-| `$04ADA0–$04AFB5` | Island name table (VULCAN … NEMESIS) |
+| `$04AD20–$04AD9F` | Island name offsets (64 words) |
+| `$04ADA0–$04AFB5` | Island names (VULCAN … NEMESIS) |
+| `$04AFB6–$04B535` | Island records (64 × 22 bytes) |
+| `$04B72E` | Sound/tune data passed to `$2019A` *(guess)* |
+| `$04BCCA` | Snapshot buffer for globals `$400–$1235` plus the UI flag table (`$1A4C6`/`$1A518`) |
 | `$04B000–$04BFFF` | Mixed tables |
 | `$04C000–$04CBD3` | Zero fill (end of payload) |
 | `$04CBD4–$06FFFF` | Runtime RAM (BSS-like, not in file) |
 | `$0586AA` | Initial stack top (SP set in `game_main`) |
 | `$058E2A` | Depth-sorted draw tree for the current frame (18-byte nodes, max 128) |
 | `$05DCDA` | World object list walked by the renderer: `$140` bytes each, count in `$A48`; type word at +2 |
-| `$069B80–$06FFFF` | Object table: 64 entries × `$192` bytes (positions as 32-bit X at +2, Y at +6). Relation to `$5DCDA` unknown |
-| `$069B40` | Per-object type/state byte array (64 bytes) |
+| `$066690` | 32-entry table built by `$18924` |
+| `$066EC0` | Per-island state, 64 × 50 bytes (initialised from the island area) |
+| `$069B40` | Island owner bytes (64); the map colours islands by these |
+| `$069B80–$06FFFF` | Island table: 64 × `$192` bytes. `+2/+6` x/z (32-bit), `+10/+12` half-extents, `+$E` area, `+$12` 32 structure slots of 12 bytes (`type.w … x.w z.w`; slot types are object types) |
 | `$070000`, `$078000` | Screen buffers (double-buffered, 32000 bytes each) |
 | `$07FF9C` | Loader copy stub (only during boot) |
 
@@ -50,7 +56,7 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$7526`, `$C312`–`$CD49` | Carrier/AAV/Manta UI screens |
 | `$F0EC`–`$F44A` | Language select (EN/DE/FR) and manual-word copy protection prompts |
 | `$E53E`–`$E809` | Save/load game to floppy (formats its own disk) |
-| `$2239E`, `$22B9E` | Tables inside the code area used by the `$22C20` proximity/threat routine |
+| `$2239E–$22B9D` | Island supply network: 64 × 32 bytes, `count.w` then (weight, island) pairs. Also used by `$22C20` |
 
 ## Graphics formats (confirmed)
 
@@ -68,6 +74,22 @@ The panel system (`$B400`/`$B418`/`$B014`) draws most screens. The format is in 
 Extraction:
 - `tools/extract_ui_panels.py` renders the 48 panels found from code (two candidates don't parse; they're probably built at run time). It dumps every descriptor bitmap, including the 91 found by a structural scan of the descriptor area, plus the runtime-addressed sprite strips. Frames, boxes and polygons are approximated.
 - `tools/extract_items.py` exports the 15 store items. Their records are at `$B76` (26 bytes): position, icon, name and picture index. The 64×64 equipment pictures (`$3B426`, drawn by `$B832`) store planes 0, 2 and 3, with plane 1 = p0 AND p2.
+
+## Island world
+
+`tools/extract_islands.py` writes `islands.json` and an archipelago map. The format is in its docstring.
+- **Static data:** 64 island records at `$4AFB6` (position, rectangular half-extents, an optional runway under construction, up to two volcanoes), names, the supply network at `$2239E`, and two start lists of (island, code) pairs:
+  - `$18FE2` (9 entries) is used when `$124A` is set;
+  - `$1901C` (52 entries) is used otherwise.
+  - In both, island 0 VULCAN gets code 0 (player base) and island 63 NEMESIS gets code 16 (enemy base). Codes 1–3 and 17–19 are probably the player and enemy island types (resource, factory, defence) *(guess)*.
+- **3D shape:** each island is drawn as model 8 (`$A660`), a rectangular plateau with an 80-unit beach slope. There is no stored terrain or coastline.
+- **Per-game generation:** `init_islands` (`$18370`) does the following:
+  - fills the island table from the records;
+  - places 21 trees per island (types 24–27) at random free spots (`$1897E`, `$18A48`);
+  - places the start-list structures (`$189CA`), clearing any overlapping trees;
+  - runs the world-simulation step `$1848E` 601 times (`$18474`).
+- **RNG:** `$195FE` is a 64-bit add-with-carry generator with its state at `$1236` (initial `31415926 53589793`). The sound interrupt (Timer A, `$20668`) also advances it, so tree and structure layouts vary from game to game. The same interrupt drives YM2149 volume registers from the RNG output, which is the noise/sample sound path.
+- **Map screen:** `$6658` draws the islands as owner-coloured rectangles and labels them with the vector font. `$68D0` draws the network links.
 
 ## Fonts
 
@@ -132,4 +154,4 @@ Polygon colour → `$13CA` table of palette-index pairs (equal = solid, differen
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4`'s Ghidra function body is wrong. It includes the vertex-op handler slots at `$5A1C–$5AA6` and their zero padding, and it has bogus `CAS2` decodes. Use `tools/dis68k.py` for this area.
-- `$22E62–$40E25` is fully accounted for as graphics: UI bitmaps, item icons and pictures. The only remainder is 620 zero bytes at `$3B1BA–$3B425`. The 16-px strips have no recorded per-sprite heights. Sound, island terrain and title/background screens are not in this block. They're still to be found, possibly in `$41000–$4CBD3` or generated procedurally.
+- `$22E62–$40E25` is fully accounted for as graphics: UI bitmaps, item icons and pictures. The only remainder is 620 zero bytes at `$3B1BA–$3B425`. The 16-px strips have no recorded per-sprite heights. Sound and title/background screens are not in this block. Island terrain doesn't exist as data: islands are procedural plateaus (see "Island world").
