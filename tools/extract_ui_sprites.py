@@ -8,6 +8,9 @@ under extracted/ui/:
   tables/<addr>.png       each table composited on a 320x200 screen
   sprites/<addr>_<w>.png  each unique sprite bitmap (RGBA, transparent where masked)
   index.txt               table -> records listing
+  pointers/pointer_N.png  mouse pointers ($40E26, 2 x 70 bytes: ?.w hot_x.w hot_y.w, then 16
+                          rows of mask.w image.w; mask bit 0 = opaque, image bit 1 = fill,
+                          otherwise outline), with hotspots in pointers.txt
 """
 import sys
 from pathlib import Path
@@ -73,9 +76,35 @@ def unclaimed_tables(p: Payload, claimed: dict) -> list:
             if not any(t <= a < t + 10 * table_length(p, t, w) + 2 for t, w in claimed.items())]
 
 
+POINTERS, POINTER_SIZE, POINTER_COUNT = 0x40E26, 70, 2
+
+
+def export_pointers(p: Payload) -> None:
+    from PIL import Image
+    out = OUT / "pointers"
+    out.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for k in range(POINTER_COUNT):
+        a = POINTERS + POINTER_SIZE * k
+        hx, hy = p.u16(a + 2), p.u16(a + 4)
+        img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        for r in range(16):
+            mask, data = p.u16(a + 6 + 4 * r), p.u16(a + 8 + 4 * r)
+            for b in range(16):
+                bit = 15 - b
+                if (data >> bit) & 1:
+                    img.putpixel((b, r), (255, 255, 255, 255))
+                elif not (mask >> bit) & 1:
+                    img.putpixel((b, r), (0, 0, 0, 255))
+        img.save(out / f"pointer_{k}.png")
+        lines.append(f"pointer_{k} ${a:05X} hotspot=({hx},{hy}) header0={p.u16(a)}")
+    (out / "pointers.txt").write_text("\n".join(lines) + "\n")
+
+
 def main() -> None:
     p = Payload()
     palette = st_palette(p, DEFAULT_PALETTE)
+    export_pointers(p)
     tables = tables_from_callers(p)
     (OUT / "tables").mkdir(parents=True, exist_ok=True)
     (OUT / "sprites").mkdir(parents=True, exist_ok=True)

@@ -18,7 +18,7 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$037FA6–$03A025` | 15 store-item icons (32×32 masked, `$280` each) |
 | `$03A026–$03B1B9` | UI sprite-table bitmaps |
 | `$03B426–$040E25` | 15 equipment pictures (64×64, 3 stored planes, `$600` each) |
-| `$040E26–$040EB1` | Mouse pointer sprites (16×16, mask + image words) |
+| `$040E26–$040EB1` | 2 mouse pointers (arrow, crosshair): header + 16 rows of mask/image words (`extract_ui_sprites.py`) |
 | `$040EB2–$040F85` | UI element type flag table |
 | `$040F86–$0437FF` | UI descriptors (from `$40F86`) and panels (element lists) |
 | `$043800–$0438E5` | Static panel lists (count + panel pointers) and a pointer table |
