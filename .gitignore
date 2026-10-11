@@ -1,0 +1,11 @@
+# Original copyrighted game binaries and anything derived directly from them (regenerate with tools/split_tos.py)
+roms/
+extracted/
+
+# Ghidra runtime state
+ghidra/*.lock
+ghidra/*.lock~
+ghidra/*.rep/**/*.ps
+ghidra/*.rep/**/~index.bak
+
+.DS_Store
