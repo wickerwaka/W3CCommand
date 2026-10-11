@@ -8,7 +8,8 @@ Writes, under extracted/models/:
 
 Colours: a polygon colour byte indexes the table at $13CA (two palette indices per
 colour; equal = solid, different = two-colour dither). Materials use the default
-palette at $132A, with dithered colours exported as the average of the pair.
+palette at $132A (models 74..82, drawn on the damage screen, use $136A with colour 7 =
+$445), with dithered colours exported as the average of the pair.
 """
 import math
 import sys
@@ -22,6 +23,9 @@ from stmodel import MODEL_COUNT, decode, model_addresses
 
 COLOUR_TABLE = 0x13CA
 DEFAULT_PALETTE = 0x132A
+DAMAGE_PALETTE = 0x136A        # damage screen ($1404E); colour 7 patched to $445 at runtime
+# Models drawn only on the damage screen (carrier schematic and system overlays).
+MODEL_PALETTE = {i: DAMAGE_PALETTE for i in range(74, 83)}
 OUT = ROOT / "extracted" / "models"
 
 
@@ -105,7 +109,9 @@ def render_preview(p: Payload, palette: list, m, path: Path, size: int = 256) ->
 
 def main() -> None:
     p = Payload()
-    palette = st_palette(p, DEFAULT_PALETTE)
+    default = st_palette(p, DEFAULT_PALETTE)
+    damage = st_palette(p, DAMAGE_PALETTE)
+    damage[7] = tuple(((0x445 >> s) & 7) * 255 // 7 for s in (8, 4, 0))
     OUT.mkdir(parents=True, exist_ok=True)
     summary = []
     exported = 0
@@ -120,6 +126,7 @@ def main() -> None:
         if not m.vertices:
             summary.append(f"{i:2d} ${addr:05X} handler=${m.handler:05X} empty (draws nothing)")
             continue
+        palette = damage if MODEL_PALETTE.get(i) == DAMAGE_PALETTE else default
         write_obj(p, palette, m, OUT / f"model_{i:02d}.obj")
         render_preview(p, palette, m, OUT / f"model_{i:02d}.png")
         exported += 1
