@@ -149,9 +149,66 @@ The economy is built around **raw material** (economy `+$02`, capacity `+$04`) a
 
 The item numbering matches the store-item records at `$B76` (see `extract_items.py`). Target stock levels and priority classes are 0 in the file, so they're set at game start or from the priority screens.
 
+## Enemy strategy (`$1AFAA`, every frame while `[$464]` is set)
+
+The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `$5F4A4`, z at `+$12` = `$5F4AC`, heading `$5F4A0`). Byte `+1` bit 0 makes it a live 3D object. While no player unit is close, the enemy moves abstractly between islands on timers. It only appears in the world when the player is near.
+
+**Enemy globals:**
+
+| Address | Contents |
+|---|---|
+| `$11BE` | target island |
+| `$11C0` | current island |
+| `$11C2` | state |
+| `$11C4` | timer |
+| `$11C6` | strength (12000 at start) |
+| `$11CA` | aircraft / attack waves (8) |
+| `$11D2` | reserve (12) |
+| `$950` | attack pool (5000) |
+
+**Player proximity** (`$1B4FA`): true if any of the first 9 objects (the player's units, active bit `+1.0`) is within 270000 (Chebyshev distance) of the enemy carrier.
+
+**States** (jump table `$1AFC4`, 12 entries; 6–9 are no-ops):
+
+| State | Routine | Behaviour |
+|---|---|---|
+| 0 | `$1AFF4` | Init: hide the carrier, strength = 12000, aircraft = 8, go to 1 |
+| 1 | `$1B01A` | Once the route matrix is settled, choose a target (`$22C20`). Travel timer = distance / 500. Go to 5 |
+| 5 | `$1B152` | Travel: count down, then move the carrier to the target island. If the island isn't loaded (the player isn't there), it's resolved abstractly: **neutral** → drop an enemy command-centre builder (`$34`, random code `$11–$13`), wait 400 (go to 4); **enemy-owned** → 2; **player-owned** → 3 (assault) if the target is NEMESIS or strength ≥ 3000, else 1 |
+| 2 | `$1B06E` | At its own island: player near → 10 (materialise). Otherwise refit (strength 12000, aircraft 8, reserve 12) and go to 1 |
+| 3 | `$1B0A4` | Assault: player near → 10. Otherwise bombard (`$1B558`). When no command centre (`$29`) is left, the island **falls**: owner = 0, network invalidated, the stockpile is reset if it was the stockpile island, an enemy command-centre builder is dropped, then wait 400 (go to 4). If strength < 2401 and the target isn't NEMESIS, retreat to 1 |
+| 4 | `$1B13C` | Wait: player near → 10, else count down to 1 |
+| 10, 11 | `$1B2D2`, `$1B49E` | Tactical mode: the carrier is placed 2000 + island size off a random side of the island and becomes a live object *(not yet decoded)* |
+
+**Target selection** (`$22C20`, result in `$11BE`):
+- If NEMESIS (63) isn't enemy-owned, the target is 63.
+- Otherwise, if strength ≥ 3000 and aircraft > 0, each island gets a score and the highest wins (the current island is excluded). The score is the sum of:
+  - −(distance from the enemy carrier) >> 11, or −15000 beyond 3,000,000;
+  - ±(distance from NEMESIS) >> 14: positive for enemy-owned islands, negative for the others;
+  - ownership: neutral +3000 (large) / +2000 (small), player +1500 / +1000, enemy −4000. On a coin flip, enemy islands are excluded entirely;
+  - +4000 if a neighbour has a threat marker (`$69AC0[n] >= 0`);
+  - +5000 for VULCAN if the enemy carrier is within 3,000,000 of it.
+- Otherwise (low strength), retreat to the nearest enemy island connected to NEMESIS (route matrix row 63).
+
+**Bombardment** (`$1B558`, every 200 frames):
+1. Attack power = strength / 2 + min(aircraft, 4) × `$400`, sometimes boosted from the reserve.
+2. Defence = the sum of per-type weights (`$1B73E`) for defence buildings `$25–$28` on the island.
+3. Random hits on random structures: `$400` damage to buildings, 4 to constructions. A structure is removed at 0.
+4. Return fire costs the enemy strength (in `$400` steps) or attack pool / aircraft.
+5. If strength goes negative, the enemy AI stops (`[$464] = 0`) and the game-end timer starts (`[$732] = 100`).
+
+## Win/lose bookkeeping
+
+`$CDF2` (every second) counts owned islands: player in `[$D54]`, enemy in `[$D56]`, and player islands per type in `$D58`. `game_main` ends the game when either count reaches 64 (`[$466]` = 2 or 3).
+
+## Carrier repair
+
+`$174E4` (every 10 s) spreads the repair rate `[$B3A]` × 150 / 256 evenly over the damaged carrier systems in the most urgent priority class. There are 10 systems at `$AF4`, 8 bytes each: current, max, priority class (0–2). This is the "Set Priorities" repair screen.
+
 ## Still to decode
 
-- How the enemy side gets resources: production and the island census run for both owners, but distribution, planning and production lines are player-only.
+- Enemy tactical states 10/11, and the enemy unit AI (object handlers `$1A5B6` for object types 16–23, 33 and 34: missiles, drones, the enemy aircraft (33), and the homing missile (34, "Missile heading for Carrier!")).
+- How the enemy side's economy feeds its strength: production and the island census run for both owners, but distribution, planning and production lines are player-only.
 - Enemy strategy (carrier AI, island attacks). `[$69AC0]` and the threat routine at `$22C20`.
 - The unit/object list at `$5DCDA` (`$140` bytes per object, count `[$A48]`): the carrier, Mantas, Walruses and enemy units.
 - The per-frame vehicle simulation called from `game_main` (`$17094`, `$1962A`, `$1A56A`, `$1AFAA`, `$1A296`, `$1B746`, `$20730`).
