@@ -712,7 +712,26 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 - `$2092A` (second sound pass); the `$460`/`$468` modal handlers.
 - The viewer rule for defences and the cold-boot command-centre health: both need Hatari tests.
 
-## 14. Plan: modelling and verifying the unit layer
+## 14. Status of the model
+
+`tools/stunits.py` (`UnitState`, extending the strategic `WorldState`) has these, verified by `tools/check_units.py`:
+- `carrier_step` with the speed governor, autopilot, grounding and recoil;
+- `walrus_dock_door_step`;
+- the idle Manta lift;
+- the shared maths: yaw/pitch rotation, atan2, `turn_towards`, `self_centre`.
+
+**Test data** is an **action game**, which needs no input. The carrier sails a few thousand units on autopilot to a waypoint off enemy island THERMOPYLAE (27) and stops: `capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action`.
+- It captures RAM around 120 whole simulation passes (`$40B0–$413E`).
+- Under Unicorn, a whole pass reproduces the Hatari capture exactly, except for interrupt-driven counters and the stack. So the oracle is valid for the unit layer too.
+
+**Island 27 never engages** in this game. The carrier stops about 35,300 units from the island's centre, outside the 16-bit island-local range. Its "in range" flag (bit 9) is never set, so the drone pad and AA turrets see no hostile, and the carrier is beyond the anti-ship range `[$454]`.
+
+**Checks:**
+- the maths against the original on 3000 random inputs each;
+- the routines on all 120 captured states plus 2000 fuzzed ones (steering, grounding, recoil, manual keys and mouse, no fuel, damaged engines, open sea);
+- 3000 consecutive `carrier_step` calls match the original through arrival and stop.
+
+## 15. Plan: modelling and verifying the unit layer
 
 The approach is the same as for the strategic layer (`tools/stsim.py`, `tools/check_sim.py`), with three additions:
 1. **Captures from real play.** Driving Hatari needs control input: `tools/capture_sim.py` pokes the mouse and buttons. The vehicle controls (§10) are plain RAM variables, so a capture script can launch a Manta or Walrus, set throttle and steering, and fire, by writing those variables at chosen passes. Capture RAM around single calls of each per-pass routine, as for the island step.
