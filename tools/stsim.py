@@ -66,6 +66,21 @@ REPAIR_CLASS, REPAIR_STEP, REPAIR_COUNT = 0xB5C, 0xB5E, 0xB60
 TICK_COUNT = 0x97A                          # long, seconds of game time
 TIMER_REPAIR, TIMER_MANTA, TIMER_WALRUS, TIMER_984, TIMER_LOGISTICS = 0x97E, 0x980, 0x982, 0x984, 0x986
 
+# enemy strategy
+ENEMY, ENEMY_END = 0x11A6, 0x11D6
+E_POS_X, E_POS_Z, E_VULCAN_X, E_VULCAN_Z, E_NEMESIS_X, E_NEMESIS_Z = 0x11A6, 0x11AA, 0x11AE, 0x11B2, 0x11B6, 0x11BA
+E_TARGET, E_ISLAND, E_STATE, E_TIMER, E_STRENGTH = 0x11BE, 0x11C0, 0x11C2, 0x11C4, 0x11C6
+E_AIRCRAFT, E_RESERVE = 0x11CA, 0x11D2
+ENEMY_SCORES, ENEMY_COIN = 0x22B9E, 0x22C1E     # scratch in the code area; the coin persists
+AI_ENABLED, GAME_END_TIMER = 0x464, 0x732
+B_DEFENCE, B_ATTACK, B_TARGETS, B_TIMER, B_POOL = 0x948, 0x94A, 0x94C, 0x94E, 0x950
+DEFENCE_WEIGHTS = (0x1000, 0x200, 0x200, 0x300)  # $1B73E, building types $25-$28
+OBJECTS, OBJECT_SIZE = 0x5DCDA, 0x140
+OBJECT_HEADER = 0x40                            # +$40 on: per-object 3D caches (unit layer)
+ENEMY_CARRIER = OBJECTS + OBJECT_SIZE * 19      # object 19
+NEMESIS, VULCAN = 63, 0
+FAR = 3_000_000
+
 # Regions that make up the simulation state: (name, start, length). from_ram/to_ram copy
 # these; check_sim compares them except for the inputs the model never writes.
 STATE_REGIONS = [
@@ -101,10 +116,18 @@ STATE_REGIONS = [
     ("route relax state", 0xDEC, 0xA),
     ("owners", OWNERS, ISLANDS),
     ("islands", ISLAND_TABLE, ISLANDS * ISLAND_SIZE),
+    ("difficulty", 0x444, 0x12),
+    ("ai flags $464", 0x464, 2),
+    ("game end timer", 0x732, 2),
+    ("bombard state", 0x948, 0xA),
+    ("enemy globals", ENEMY, ENEMY_END - ENEMY),
+    ("enemy scores", ENEMY_SCORES, 0x82),
+] + [(f"unit {k}", OBJECTS + OBJECT_SIZE * k, OBJECT_HEADER) for k in range(2, 11)] + [
+    ("enemy carrier", ENEMY_CARRIER, OBJECT_HEADER),
 ]
 # Read but never written by the model (set by the UI, the unit layer or game setup).
 INPUT_REGIONS = {"current screen $718", "store items", "fuel classes", "radius table",
-                 "handler table", "product table"}
+                 "handler table", "product table", "difficulty"} | {f"unit {k}" for k in range(2, 11)}
 
 T_TREE_FIRST, T_TREE_LAST = 0x18, 0x1B
 T_BUILDING_FIRST, T_BUILDING_LAST = 0x24, 0x2E
@@ -468,12 +491,12 @@ class WorldState:
         s.x, s.z = x, z
         s.value = 0
 
-    def find_free_spot(self, new_type: int):
+    def find_free_spot(self, new_type: int, island: int = None):
         """find_free_island_spot ($18A48): up to 16 random positions; a spot is rejected if it
         is within clearance of a non-tree structure. Trees in the way are cut down. Returns
         (slot, x, z): the last empty slot, else the last tree slot clear of the spot."""
         m = self.mem
-        isl = self.island(self.island_index)
+        isl = self.island(self.island_index if island is None else island)
         r_new = m.u16(RADIUS + 2 * new_type)
         for _ in range(16):
             r = self.rand()
@@ -945,6 +968,394 @@ class WorldState:
             left -= 1
             if left == 0:
                 return
+
+    # ---- per frame (game_main) ----------------------------------------------------
+    def frame(self, new_second: bool) -> None:
+        """The strategic part of one game_main pass ($40D8): route relaxation while pending,
+        the logistics tick when a second has passed, an island step, the enemy AI. How many
+        passes make a second depends on the renderer (about 8 in the 3D view)."""
+        if self.mem.u8(ROUTES_PENDING):
+            self.relax_routes()
+        if new_second:
+            self.mem.set8(0x8FD, 0xFF)
+            self.logistics_tick()
+        self.step()
+        self.enemy_ai()
+
+    def relax_routes(self) -> None:
+        """$2173A: one slice (8 rows) of the Bellman-Ford pass over the route matrix. After 8
+        slices, a pass that changed nothing clears the pending flag; otherwise it restarts."""
+        m = self.mem
+        row, net = m.u32(0xDEC), m.u32(0xDF0)
+        for _ in range(8):
+            for k in range(m.u16(net)):
+                w, nb = m.u16(net + 2 + 4 * k), m.u16(net + 4 + 4 * k)
+                if nb & 0x8000:
+                    continue
+                src = ROUTES + s16(w16(nb << 7))
+                for j in range(64):
+                    d1, d2 = m.u16(row + 2 * j), m.u16(src + 2 * j)
+                    if d2 & 0x8000:
+                        continue
+                    d2 = w16(d2 + w)
+                    if d1 > d2:
+                        m.set16(row + 2 * j, d2)
+                        m.set8(0x1234, 0)
+            row += 128
+            net += NETWORK_SIZE
+        n = w16(m.u16(0xDF4) - 1)
+        if n == 0xFFFF:
+            if m.u8(0x1234):
+                m.set8(ROUTES_PENDING, 0)
+                return
+            n, row, net = 7, ROUTES, NETWORK
+            m.set8(0x1234, 0xFF)
+        m.set16(0xDF4, n)
+        m.set32(0xDEC, row)
+        m.set32(0xDF0, net)
+
+    # ---- enemy strategy ($1AFAA) ----------------------------------------------------
+    def enemy_ai(self) -> None:
+        """enemy_ai_step: the enemy carrier's state machine, every frame while [$464] is set.
+        States 10/11 (close-range combat with a live carrier) belong to the unit layer."""
+        m = self.mem
+        if not m.u8(AI_ENABLED):
+            return
+        state = m.u16(E_STATE)
+        if state == 0:
+            m.buf[ENEMY_CARRIER + 1] &= 0xFE
+            m.set16(E_STATE, 1)
+            m.set16(E_STRENGTH, 12000)
+            m.set16(0x11C8, 0x7FFF)
+            m.set16(E_AIRCRAFT, 8)
+            m.set16(0x11CE, 0)
+        elif state == 1:
+            self.enemy_choose_route()
+        elif state == 2:
+            if self.player_near_enemy():
+                return self.enemy_engage()
+            m.set16(E_STATE, 1)
+            m.set16(E_STRENGTH, 12000)
+            if self.route(NEMESIS, m.u16(E_ISLAND)) >= 0:
+                m.set16(E_AIRCRAFT, 8)
+                m.set16(E_RESERVE, 12)
+        elif state == 3:
+            self.enemy_assault()
+        elif state == 4:
+            if self.player_near_enemy():
+                return self.enemy_engage()
+            if self.countdown16(E_TIMER):
+                m.set16(E_STATE, 1)
+        elif state == 5:
+            self.enemy_travel()
+        elif state in (10, 11):
+            raise TacticalMode(state)
+        elif state > 11:
+            raise NotImplementedError(f"enemy state {state}")
+
+    def countdown16(self, a: int) -> bool:
+        v = w16(self.mem.u16(a) - 1)
+        self.mem.set16(a, v)
+        return v == 0
+
+    def enemy_choose_route(self) -> None:
+        """State 1: once routes are settled, pick a target; travel time = distance / 500."""
+        m = self.mem
+        if m.u8(ROUTES_PENDING):
+            return
+        self.enemy_choose_target()
+        isl = ISLAND_TABLE + ISLAND_SIZE * m.u16(E_TARGET)
+        d = approx_distance(m.u32(E_POS_X), m.u32(E_POS_Z), m.u32(isl + 2), m.u32(isl + 6))
+        q = d // 500
+        m.set16(E_TIMER, 0xFFFF if q > 0xFFFF else q)
+        m.set16(E_STATE, 5)
+
+    def enemy_travel(self) -> None:
+        """State 5: on arrival, resolve the island abstractly unless it's loaded (player there)."""
+        m = self.mem
+        if not self.countdown16(E_TIMER):
+            return
+        i = m.u16(E_TARGET)
+        m.set16(E_ISLAND, i)
+        isl = ISLAND_TABLE + ISLAND_SIZE * i
+        m.set32(ENEMY_CARRIER + 0x0A, m.u32(isl + 2))
+        m.set32(ENEMY_CARRIER + 0x12, m.u32(isl + 6))
+        if m.u8(isl):
+            m.set16(E_STATE, 1)
+            return
+        m.buf[ENEMY_CARRIER + 1] &= 0xFE
+        o = self.owner(i)
+        if o == 0:
+            self.enemy_drop_builder(i)
+        elif o == 1:
+            if i != NEMESIS and m.s16(E_STRENGTH) < 3000:
+                m.set16(E_STATE, 1)
+                return
+            m.set16(E_STATE, 3)
+            m.set16(B_POOL, 5000)
+            m.set16(B_TIMER, 400)
+            self.events.append(("attacked", i))
+        else:
+            m.set16(E_STATE, 2)
+
+    def enemy_drop_builder(self, i: int) -> None:
+        """$1B1B6: place an enemy command-centre builder ($34, code $11-$13), then wait 400."""
+        m = self.mem
+        isl, eco = self.island(i), self.economy(i)
+        m.set32(G_ISLAND_PTR, isl.a)
+        m.set32(G_ECONOMY_PTR, eco.a)
+        m.set32(G_BUFFER_PTR, OBJ_BUFFERS[1 if isl.buffer else 0])
+        spot = self.find_free_spot(T_COMMAND_CENTRE_CONSTRUCTION, i)
+        if spot is not None:
+            j, x, z = spot
+            s = isl.slots[j]
+            s.type = T_COMMAND_CENTRE_CONSTRUCTION
+            s.x, s.z = x, z
+            s.value = 0
+            while True:
+                code = self.rand() & 3
+                if code:
+                    break
+            s.word6 = code + 0x10
+        m.set16(E_TIMER, 400)
+        m.set16(E_STATE, 4)
+
+    def enemy_assault(self) -> None:
+        """State 3: bombard the island; when its command centre falls it turns neutral and
+        the enemy drops its own builder. Retreats when weak (except at NEMESIS)."""
+        m = self.mem
+        if self.player_near_enemy():
+            return self.enemy_engage()
+        i = m.u16(E_ISLAND)
+        if self.enemy_bombard():
+            self.events.append(("fallen", i))
+            m.set8(OWNERS + i, 0)
+            self.network_invalidate()
+            if i == m.u16(STOCKPILE):
+                m.set8(STOCKPILE, 0xFF)          # st.b on the word's high byte
+                self.stores_clear()
+            self.enemy_drop_builder(i)
+        elif i != NEMESIS and m.s16(E_STRENGTH) <= 2400:
+            m.set16(E_STATE, 1)
+            self.events.append(("repulsed", i))
+
+    def enemy_bombard(self) -> bool:
+        """$1B558, every 200 calls: attack vs. defence, random hits on structures, return
+        fire on the enemy. True when the island has no command centre ($29) left."""
+        m = self.mem
+        if not self.countdown16(B_TIMER):
+            return False
+        m.set16(B_TIMER, 200)
+        i = m.u16(E_ISLAND)
+        slots = self.island(i).slots[1:]
+        ac = m.s16(E_AIRCRAFT)
+        attack = w16((4 if ac > 4 else ac) * 0x400 + (m.u16(E_STRENGTH) >> 1))
+        m.set16(B_ATTACK, attack)
+        defence, targets = 0, 0
+        for s in slots:
+            t = s.type
+            if t in (0, 7, 0x24):
+                continue
+            targets += 1
+            if 0x25 <= t <= 0x28:
+                defence = w16(defence + DEFENCE_WEIGHTS[t - 0x25])
+        m.set16(B_DEFENCE, defence)
+        m.set16(B_TARGETS, targets)
+        d2, d3 = attack, defence
+        if m.u16(E_RESERVE) > 4:
+            if (self.rand() & 0xFFFF) < 0x4000:
+                m.set16(E_RESERVE, m.u16(E_RESERVE) - 1)
+                m.set16(B_ATTACK, m.u16(B_ATTACK) + 0x400)
+            if d3 > d2:
+                d2 = w16(d2 + 0x800)
+                if d3 > d2:
+                    n = (((self.rand() & 0xFFFF) * 8) >> 16) + 5
+                    if n <= m.u16(E_RESERVE):
+                        m.set16(E_RESERVE, m.u16(E_RESERVE) - 1)
+                        d2 = w16(d2 + 0x400)
+        m.set16(B_ATTACK, d2)
+        hits = scaled_count(self.rand(), d2)
+        returns = scaled_count(self.rand(), d3)
+        if hits:
+            left = targets
+            for _ in range(hits):
+                if left == 0:
+                    raise NotImplementedError("bombard: no targets on the island")
+                n = ((self.rand() & 0xFFFF) * left) >> 16
+                live = [s for s in slots if s.type not in (0, 7, 0x24)]
+                s = live[n]
+                dmg = 4 if s.type >= T_CONSTRUCTION_FIRST else 0x400
+                v = s.value & 0xFFFF
+                s.value = v - dmg
+                if not v > dmg:
+                    s.type = 0
+                    left -= 1
+                    if left == 0:
+                        break
+        for _ in range(returns):
+            weak = i != NEMESIS and m.u16(E_STRENGTH) < 2400
+            if not weak:
+                if (self.rand() & 0xFFFF) < 0x4000:
+                    v = m.s16(E_STRENGTH) - 0x400
+                    m.set16(E_STRENGTH, v)
+                    if s16(v) < 0:
+                        m.set8(AI_ENABLED, 0)
+                        m.set16(GAME_END_TIMER, 100)
+                        raise EnemyDestroyed()
+                    continue
+                if m.u16(E_AIRCRAFT) == 0:
+                    continue
+            pool = m.s16(B_POOL) - 0x400
+            m.set16(B_POOL, pool)
+            if s16(pool) >= 0:
+                continue
+            ac = w16(m.u16(E_AIRCRAFT) - 1)
+            m.set16(E_AIRCRAFT, ac)
+            if ac:
+                m.set16(B_POOL, 5000)
+        return not any(s.type == T_COMMAND_CENTRE for s in slots)
+
+    def player_near_enemy(self) -> bool:
+        """$1B4FA: any active player unit (objects 2-10) within 270000 (Chebyshev)."""
+        m = self.mem
+        ex, ez = m.u32(ENEMY_CARRIER + 0x0A), m.u32(ENEMY_CARRIER + 0x12)
+        for k in range(2, 11):
+            o = OBJECTS + OBJECT_SIZE * k
+            if not m.u8(o + 1) & 1:
+                continue
+            dx, dz = abs(s32(m.u32(o + 0x0A) - ex)), abs(s32(m.u32(o + 0x12) - ez))
+            if s32(max(dx, dz)) < 270000:
+                return True
+        return False
+
+    def enemy_engage(self) -> None:
+        """$1B250: the carrier becomes a live object 2000 + [$454] beyond a random side of
+        its island; state 10. What follows is the unit layer (TacticalMode is raised)."""
+        m = self.mem
+        m.set16(E_STATE, 10)
+        isl = self.island(m.u16(E_ISLAND))
+        d0 = m.u16(0x454) + 2000
+        dx, dz = isl.half_x + d0, isl.half_z + d0
+        r = self.rand() & 0xFFFF
+        o = ENEMY_CARRIER
+        if not r & 0x8000:
+            heading = 0
+            if not r & 0x4000:
+                dz, heading = -dz, 0x8000
+            m.set32(o + 0x12, m.u32(o + 0x12) + dz)
+        else:
+            heading = 0x4000
+            if not r & 0x4000:
+                dx, heading = -dx, 0xC000
+            m.set32(o + 0x0A, m.u32(o + 0x0A) + dx)
+        m.set16(o + 6, heading)
+        m.set16(o + 0x1E, heading)
+        m.buf[o + 1] |= 1
+        m.set16(0x11CE, 0)
+        m.set8(0x11D0, 0)
+        raise TacticalMode(10)
+
+    def enemy_choose_target(self) -> None:
+        """$22C20: NEMESIS first if it isn't enemy-held; when strong, the best-scoring
+        island; when weak, the nearest enemy island still connected to NEMESIS."""
+        m = self.mem
+        ex, ez = m.u32(ENEMY_CARRIER + 0x0A), m.u32(ENEMY_CARRIER + 0x12)
+        m.set32(E_POS_X, ex)
+        m.set32(E_POS_Z, ez)
+        if self.owner(NEMESIS) != 2:
+            m.set16(E_TARGET, NEMESIS)
+            return
+        if m.s16(E_STRENGTH) < 3000 or m.u16(E_AIRCRAFT) == 0:
+            best, best_d = None, 32_000_000
+            for i in range(ISLANDS):
+                isl = ISLAND_TABLE + ISLAND_SIZE * i
+                if self.owner(i) != 2 or self.route(i, NEMESIS) < 0:
+                    continue
+                d = approx_distance(m.u32(isl + 2), m.u32(isl + 6), ex, ez)
+                if d <= best_d:
+                    best, best_d = i, d
+            if best is None:
+                raise NotImplementedError("enemy retreat with no island connected to NEMESIS")
+            m.set16(E_TARGET, best)
+            return
+        m.set8(ENEMY_COIN, 0xFF if self.rand() & 0x8000 else 0)
+        vul, nem = ISLAND_TABLE + 2, ISLAND_TABLE + ISLAND_SIZE * NEMESIS + 2
+        for a, b in ((E_VULCAN_X, vul), (E_VULCAN_Z, vul + 4), (E_NEMESIS_X, nem), (E_NEMESIS_Z, nem + 4)):
+            m.set32(a, m.u32(b))
+        for i in range(ISLANDS):
+            isl = ISLAND_TABLE + ISLAND_SIZE * i
+            x, z = m.u32(isl + 2), m.u32(isl + 6)
+            d = approx_distance(x, z, ex, ez)
+            score = 0xC568 if d > FAR else (-d) >> 11
+            dn = approx_distance(x, z, m.u32(E_NEMESIS_X), m.u32(E_NEMESIS_Z)) >> 14
+            o = self.owner(i)
+            score += dn if o == 2 else -dn
+            large = m.u16(isl + 0x0E) > 2000
+            score += {0: 3000 if large else 2000, 2: 0xF060}.get(o, 1500 if large else 1000)
+            if o != 2:
+                net = NETWORK + NETWORK_SIZE * i
+                n = m.u16(net)
+                if n == 0:
+                    raise NotImplementedError("island without links")
+                if any(self.route(NEMESIS, m.u16(net + 4 + 4 * k) & 0x3FFF) >= 0 for k in range(n)):
+                    score += 4000
+            elif m.u8(ENEMY_COIN):
+                score = 0x8002
+            m.set16(ENEMY_SCORES + 2 * i, score)
+        if self.owner(VULCAN) != 2:
+            if approx_distance(m.u32(E_VULCAN_X), m.u32(E_VULCAN_Z), ex, ez) <= FAR:
+                m.set16(ENEMY_SCORES, m.u16(ENEMY_SCORES) + 5000)
+        m.set16(ENEMY_SCORES + 2 * m.u16(E_ISLAND), 0x8001)
+        best, best_score = 0, -0x7FFF
+        for i in range(ISLANDS):
+            sc = m.s16(ENEMY_SCORES + 2 * i)
+            if sc > best_score:
+                best, best_score = i, sc
+        m.set16(E_TARGET, best)
+
+    def stores_clear(self) -> None:
+        """$21EAC: the stockpile is lost: empty carrier stores and fuel, and the pending
+        stores too unless [$D3E] is set."""
+        m = self.mem
+        m.buf[STORES:STORES + 30] = bytes(30)
+        m.buf[FUEL:FUEL + 12] = bytes(12)
+        if not m.u8(0xD3E):
+            m.buf[STORES_PENDING:STORES_PENDING + 30] = bytes(30)
+            m.buf[FUEL_PENDING:FUEL_PENDING + 12] = bytes(12)
+
+
+class TacticalMode(Exception):
+    """The enemy entered close-range combat (states 10/11), which needs the unit layer."""
+
+
+class EnemyDestroyed(Exception):
+    """Enemy strength went negative: the AI stops and the game-end timer starts."""
+
+
+def s32(v: int) -> int:
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
+def approx_distance(x0: int, z0: int, x1: int, z1: int) -> int:
+    """The game's distance estimate: max(|dx|, |dz|) + min/2 (32-bit, unsigned compare)."""
+    dx, dz = abs(s32(x0 - x1)) & 0xFFFFFFFF, abs(s32(z0 - z1)) & 0xFFFFFFFF
+    hi, lo = (dx, dz) if dz < dx else (dz, dx)
+    return (hi + (s32(lo) >> 1)) & 0xFFFFFFFF
+
+
+def divu(d: int, s: int) -> int:
+    """68000 divu.w: 32/16 -> remainder:quotient; on overflow the destination is unchanged."""
+    d &= 0xFFFFFFFF
+    q, r = divmod(d, s)
+    return d if q > 0xFFFF else (r << 16) | q
+
+
+def scaled_count(r: int, n: int) -> int:
+    """$1B62A: (rand.lo * n) >> 16, sign-extended, divu #$600; the low word of the result."""
+    hi = (((r & 0xFFFF) * n) >> 16) & 0xFFFF
+    return divu(s16(hi) & 0xFFFFFFFF, 0x600) & 0xFFFF
+
 
 
 def network_filter_links(m: Mem, owners: list) -> None:

@@ -30,9 +30,9 @@ The Python tooling is a uv project. The dependencies are in `pyproject.toml` and
 
 ## Simulation model
 
-- `tools/stsim.py` is a Python reference model of the strategy simulation: the island step (`world_sim_step`) and the once-a-second logistics tick (`$F7A0`). Its state is a 512 KB image in the game's own memory layout, with only `STATE_REGIONS` populated. Islands, slots and economy records are views onto that image, and `WorldState.from_ram` / `to_ram` exchange state with emulator RAM. Port new routines the same way: follow the original's signed and unsigned compares, word wrap and leftover-register quirks, then add any new state to `STATE_REGIONS`. `docs/simulation.md` documents the rules.
-- `uv run python tools/capture_sim.py` starts a strategy game in Hatari headless (it pokes the menu mouse variables) and saves RAM before and after the warm-up, single sim steps and logistics ticks to `emu/out/sim/`. It takes about 50 s.
-- `uv run python tools/check_sim.py` compares the model byte for byte against those Hatari captures and against the game's own code under Unicorn, including long and fuzzed runs (a few seconds). Run it after changing `stsim.py`; it must print no MISMATCH.
+- `tools/stsim.py` is a Python reference model of the strategic layer: the island step (`world_sim_step`), the once-a-second logistics tick (`$F7A0`), route relaxation, and the enemy carrier AI outside close-range combat. `WorldState.frame()` runs one `game_main` pass. Its state is a 512 KB image in the game's own memory layout, with only `STATE_REGIONS` populated. Islands, slots and economy records are views onto that image, and `WorldState.from_ram` / `to_ram` exchange state with emulator RAM. Port new routines the same way: follow the original's signed and unsigned compares, word wrap and leftover-register quirks, then add any new state to `STATE_REGIONS`. `docs/simulation.md` documents the rules.
+- `uv run python tools/capture_sim.py` starts a strategy game in Hatari headless (it pokes the menu mouse variables) and saves RAM before and after the warm-up, single sim steps, logistics ticks and enemy-AI calls to `emu/out/sim/`. It takes about 50 s.
+- `uv run python tools/check_sim.py` compares the model byte for byte against those Hatari captures and against the game's own code under Unicorn, including long, fuzzed and enemy-scenario runs (about 40 s). Run it after changing `stsim.py`; it must print no MISMATCH.
 
 ## Hatari (running the original)
 

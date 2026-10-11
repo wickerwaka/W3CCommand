@@ -5,7 +5,12 @@ This is a reverse-engineering reference for the strategy simulation in `CARRIER.
 ## Timing
 
 - `vbl_handler` (50 Hz) runs the game clock at `$8F2–$8FA` (days, hours, minutes, seconds, frames). Every 50 frames (1 s) it sets `[$8FC]` and `[$8FD]`.
-- `game_main` calls `world_sim_step` (`$1848E`) once when `[$8FD]` is set. Each call simulates **one island**, so the world advances one island per second and completes a full pass in 64 s.
+- `game_main`'s strategic block (`$40D8`) runs on **every main-loop pass** while a game is in progress and not paused. It does the following, in order:
+  1. route relaxation `$2173A`, while `[$1235]` is set;
+  2. the logistics tick `$F7A0`, only when `[$8FD]` is set (once per second);
+  3. `world_sim_step` (`$1848E`), one island per call;
+  4. the enemy AI `$1AFAA`.
+- The pass rate depends on rendering. Hatari measured 80 island steps and 10 ticks in 10 s of game time in the 3D view: about 8 passes per second, so a full pass over the islands takes about 8 s. The strategic simulation therefore runs faster when the screen is cheaper to draw (map or menus). The bombardment and wait timers count passes, not seconds.
 - At new game, `world_warmup` (`$18474`) runs `world_sim_step` 601 times with `[$8DC] = $FF` (fast-build mode, see below).
 
 ## Island state
@@ -117,7 +122,7 @@ Islands therefore grow towards a fixed per-class template of buildings. Supply l
 - **Link filtering** (`$2184E`): a link is enabled only if both islands have the same non-zero owner, so each side has its own network.
 - **Route matrix** `[$67B40]` (64 × 64 words): `M[i][j]` is the shortest same-side route length from i to j, −1 if unreachable, 0 on the diagonal.
   - `$216C6` resets it and sets `[$1235]` = recompute pending. This happens whenever ownership changes.
-  - `$2173A`, called from `game_main` while `[$1235]` is set, relaxes 8 rows per frame (`M[i][k] = min(M[i][k], w + M[n][k])` over i's enabled links) and repeats passes until a pass changes nothing.
+  - `$2173A`, called from `game_main` while `[$1235]` is set, relaxes 8 rows per call: `M[i][k] = min(M[i][k], w + M[n][k])` over i's enabled links (unsigned compare, skipping unreachable `M[n][k]`), updating in place. The cursor is `$DEC` (row), `$DF0` (network record) and `$DF4` (8 slices). After the 8th slice, a pass with no change (`[$1234]` still set) clears `[$1235]`; otherwise a new pass starts.
   - Row 0 is VULCAN (the player base), so `M[0][i] >= 0` means island i is connected to the base. The island screen shows this as "DISTANCE TO BASE" / "ISOLATED".
 - **Next hop** (`$21A30`): from island c towards d, the enabled neighbour n with `M[n][d] < M[c][d]` (strictly closer) that minimises `w + M[n][d]`. All compares are unsigned, so unreachable (−1) neighbours never qualify. A shipment moves to n and waits w seconds there.
 
@@ -194,36 +199,48 @@ The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `
 | `$11D2` | reserve (12) |
 | `$950` | attack pool (5000) |
 
-**Player proximity** (`$1B4FA`): true if any of the first 9 objects (the player's units, active bit `+1.0`) is within 270000 (Chebyshev distance) of the enemy carrier.
+**Player proximity** (`$1B4FA`): true if any active player unit (objects 2–10, active bit `+1.0`) is within 270000 (Chebyshev distance) of the enemy carrier's position. The carrier's own `+1.0` bit is set while it's a live 3D object.
 
-**States** (jump table `$1AFC4`, 12 entries; 6–9 are no-ops):
+**States** (jump table `$1AFC4`, 12 entries; 6–9 are no-ops). Timers count main-loop passes:
 
 | State | Routine | Behaviour |
 |---|---|---|
-| 0 | `$1AFF4` | Init: hide the carrier, strength = 12000, aircraft = 8, go to 1 |
-| 1 | `$1B01A` | Once the route matrix is settled, choose a target (`$22C20`). Travel timer = distance / 500. Go to 5 |
-| 5 | `$1B152` | Travel: count down, then move the carrier to the target island. If the island isn't loaded (the player isn't there), it's resolved abstractly: **neutral** → drop an enemy command-centre builder (`$34`, random code `$11–$13`), wait 400 (go to 4); **enemy-owned** → 2; **player-owned** → 3 (assault) if the target is NEMESIS or strength ≥ 3000, else 1 |
-| 2 | `$1B06E` | At its own island: player near → 10 (materialise). Otherwise refit (strength 12000, aircraft 8, reserve 12) and go to 1 |
-| 3 | `$1B0A4` | Assault: player near → 10. Otherwise bombard (`$1B558`). When no command centre (`$29`) is left, the island **falls**: owner = 0, network invalidated, the stockpile is reset if it was the stockpile island, an enemy command-centre builder is dropped, then wait 400 (go to 4). If strength < 2401 and the target isn't NEMESIS, retreat to 1 |
-| 4 | `$1B13C` | Wait: player near → 10, else count down to 1 |
-| 10, 11 | `$1B2D2`, `$1B49E` | Tactical mode: the carrier is placed 2000 + island size off a random side of the island and becomes a live object *(not yet decoded)* |
+| 0 | `$1AFF4` | Init: hide the carrier, strength 12000, `$11C8` = `$7FFF`, aircraft 8, go to 1 |
+| 1 | `$1B01A` | Waits while the route matrix is pending. Then choose a target (`$22C20`); travel timer = (max(\|dx\|,\|dz\|) + min/2) / 500, `$FFFF` on overflow. Go to 5 |
+| 5 | `$1B152` | Travel: count down, then the carrier is at the target (current island, object position = island position). If the island is loaded (the player is there): go to 1. Otherwise hide the carrier, then: **neutral** → drop a builder; **enemy** → 2; **player** → assault (3) if it's NEMESIS or strength ≥ 3000, else 1. An assault resets the attack pool to 5000 and the bombard timer to 400 |
+| 2 | `$1B06E` | At its own island: player near → engage. Otherwise strength = 12000. If the island is connected to NEMESIS, aircraft = 8 and reserve = 12. Go to 1 |
+| 3 | `$1B0A4` | Assault: player near → engage. Otherwise bombard. If the island **falls** (no `$29` in slots 1–31): owner = 0, network invalidated. If it was the stockpile, `st.b` marks `[$D4A]` invalid (high byte `$FF`) and `stores_clear` empties the stores. Then drop a builder. If it doesn't fall and the island isn't NEMESIS and strength ≤ 2400, the attack is repulsed (go to 1) |
+| 4 | `$1B13C` | Wait: player near → engage, else count down to 1 |
+| 10, 11 | `$1B2D2`, `$1B49E` | Close-range combat with the live carrier (unit layer, *not yet decoded*) |
 
-**Target selection** (`$22C20`, result in `$11BE`):
+**Drop a builder** (`$1B1B6`): place an enemy command-centre builder (`$34`, progress 0, code `$10` + a random 1–3) with `find_free_island_spot`, then wait 400 (state 4). It calls `select_island`, which repoints `$8C4–$8CC` at that island. On a neutral island the builder grows with the island's raw material, which a builder makes accumulate at capacity / 16. On completion the island turns enemy.
+
+**Engage** (`$1B250`): state 10. The carrier is moved 2000 + `[$454]` + the island half-extent off one of the four sides of its island, chosen by the RNG's top two bits, facing the island (heading 0/`$4000`/`$8000`/`$C000`). It becomes a live object.
+
+**Target selection** (`$22C20`, result in `$11BE`). It first copies the carrier position to `$11A6`/`$11AA`.
 - If NEMESIS (63) isn't enemy-owned, the target is 63.
-- Otherwise, if strength ≥ 3000 and aircraft > 0, each island gets a score and the highest wins (the current island is excluded). The score is the sum of:
-  - −(distance from the enemy carrier) >> 11, or −15000 beyond 3,000,000;
-  - ±(distance from NEMESIS) >> 14: positive for enemy-owned islands, negative for the others;
-  - ownership: neutral +3000 (large) / +2000 (small), player +1500 / +1000, enemy −4000. On a coin flip, enemy islands are excluded entirely;
-  - +4000 if a neighbour is connected to NEMESIS (`M[63][n] >= 0`, read through `$69AC0`);
-  - +5000 for VULCAN if the enemy carrier is within 3,000,000 of it.
-- Otherwise (low strength), retreat to the nearest enemy island connected to NEMESIS (route matrix row 63).
+- **Strong** (strength ≥ 3000 and aircraft > 0): each island gets a word score in `$22B9E` (inside the code area), and the highest wins, ties going to the lowest island. The score is the sum of:
+  - −(distance from the carrier) >> 11, or −15000 beyond 3,000,000 (distance = max + min/2);
+  - (distance from NEMESIS) >> 14: added for enemy islands, subtracted for others;
+  - neutral +3000 (area > 2000) / +2000; enemy −4000; any other owner +1500 / +1000;
+  - non-enemy islands: +4000 if any neighbour (enabled or not) is connected to NEMESIS (`M[63][n] >= 0`);
+  - enemy islands: excluded (`$8002`) when this call's coin flip is set (`$22C1E`, the RNG's sign bit);
+  - VULCAN: +5000 if it isn't enemy-owned and the carrier is within 3,000,000 of it;
+  - the current island: `$8001` (excluded).
+- **Weak:** the nearest enemy island whose route to NEMESIS exists (`M[i][63] >= 0`). Ties go to the higher island. NEMESIS itself always qualifies.
 
-**Bombardment** (`$1B558`, every 200 frames):
-1. Attack power = strength / 2 + min(aircraft, 4) × `$400`, sometimes boosted from the reserve.
-2. Defence = the sum of per-type weights (`$1B73E`) for defence buildings `$25–$28` on the island.
-3. Random hits on random structures: `$400` damage to buildings, 4 to constructions. A structure is removed at 0.
-4. Return fire costs the enemy strength (in `$400` steps) or attack pool / aircraft.
-5. If strength goes negative, the enemy AI stops (`[$464] = 0`) and the game-end timer starts (`[$732] = 100`).
+**Bombardment** (`$1B558`, every 200 passes of state 3; timer `$94E`):
+1. **Attack** = min(aircraft, 4) × `$400` + strength / 2. **Defence** = the sum of `$1000/$200/$200/$300` for building types `$25–$28` in slots 1–31. **Targets** = slots 1–31 that aren't empty, the island (7) or a runway (`$24`); trees count. These go to `$94A/$948/$94C`.
+2. **Reserve** (only while > 4):
+   - 25%: −1 reserve (its `+$400` to `$94A` is then overwritten).
+   - If defence > attack, attack +`$800`. If it's still lower, −1 reserve and attack +`$400` when 5 + rand(8) ≤ reserve.
+3. **Hits** = ((rand × attack) >> 16) / `$600`, and **return fire** = the same with defence. These use `divu`; on overflow the 68000 leaves the register unchanged, and the model copies that.
+4. Each hit strikes a random target, uniformly among those left. It does `$400` damage to buildings and 4 to constructions; when health falls to 0 or below (unsigned), the structure is removed. Hits stop when no targets are left.
+5. Each return fire, unless the enemy is weak (strength < 2400 and not at NEMESIS):
+   - 25%: −`$400` strength. If that goes negative, the enemy is **destroyed**: the AI stops (`[$464]` = 0), the game-end timer `[$732]` = 100, and a message shows.
+   - otherwise, if the enemy has aircraft: the attack pool takes the hit.
+
+   When weak, the pool always takes it. The pool (`$950`) loses `$400`. When it goes negative, an aircraft is lost and, if any are left, the pool refills to 5000.
 
 ## Win/lose bookkeeping
 
@@ -235,28 +252,35 @@ The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `
 
 ## Reference model and verification
 
-`tools/stsim.py` is a Python port of `world_sim_step` and the logistics tick (`$F7A0`). The state is the game's own memory layout: a 512 KB image in which only `STATE_REGIONS` are populated. Islands, slots and economy records are views onto it, so the state serialises trivially and moves either way between the model and an emulator.
+`tools/stsim.py` is a Python port of the whole strategic layer: `world_sim_step`, the logistics tick, route relaxation, and the enemy carrier AI (states 0–5, targeting, bombardment). `WorldState.frame(new_second)` runs one `game_main` pass. The state is the game's own memory layout: a 512 KB image in which only `STATE_REGIONS` are populated. Islands, slots and economy records are views onto it, so the state serialises trivially and moves either way between the model and an emulator.
 
 Not modelled:
-- the route relaxation `game_main` runs per frame;
-- the unit-layer parts of the tick (`$1B8AE`, `$1761C`, `$176AC`);
+- the unit layer: objects, vehicles, the tactical enemy states 10/11, the tick's `$1B8AE`/`$1761C`/`$176AC`, and the per-object island caches at object `+$40`;
 - the 3D buffers of the island loaded around the camera.
 
+The model raises `TacticalMode` when the enemy engages and `EnemyDestroyed` when it's destroyed. After destruction the original's next step depends on a register value left by the message routine.
+
 Tools:
-- `tools/capture_sim.py` runs the original in Hatari and starts a strategy game by poking the menu mouse (`$474/$476`) and left button (`$880`). It saves RAM around `world_warmup`, around single `world_sim_step` calls, and around 8 consecutive logistics ticks at chosen frames.
+- `tools/capture_sim.py` runs the original in Hatari and starts a strategy game by poking the menu mouse (`$474/$476`) and left button (`$880`). It saves RAM around `world_warmup`, single `world_sim_step` calls, 8 consecutive logistics ticks and 8 enemy-AI calls at chosen frames.
 - `tools/check_sim.py` compares every state region byte for byte against:
   - the Hatari *out* captures;
   - the game's own code under Unicorn from the same *in* captures;
-  - Unicorn, second by second (step plus tick), over long runs from each capture and from randomly perturbed copies (ownership, damage, stocks, builds, production targets and classes, lines and shipments in flight, full pools). For these, the unit routines are stubbed out in the reference.
+  - Unicorn, frame by frame (8 passes per game second), over long runs from each capture and from randomly perturbed copies. The perturbations cover ownership, damage, stocks, builds, production targets, shipments, full pools, and the enemy part way through assaults, trips and refits;
+  - 40 short enemy scenarios: assaults on fortified islands, last stands at NEMESIS, a player unit nearby.
+
+  The unit routines are stubbed out in the reference for these runs.
 
 Status:
-- Hatari: the 601-step warm-up, single steps at 1, 10 and 40 minutes of game time, and 24 logistics ticks match exactly.
-- Unicorn: 1280-second runs, and six 640-second fuzzed runs per capture, match exactly. No interrupt touched the RNG during the captures.
-- Not exercised: `find_free_island_spot` failing (all 32 slots full), and planning with a priority class ≥ 8 (the model raises; the original would shuffle an empty list over memory).
+- Hatari: the 601-step warm-up, three single steps, 24 logistics ticks and 24 enemy-AI calls match exactly.
+- Unicorn: 1280-second runs, six 640-second fuzzed runs per capture, and the enemy scenarios match exactly. These include island captures and falls, repulses, stockpile loss, aircraft losses and the enemy's destruction.
+- Not exercised:
+  - `find_free_island_spot` failing (all 32 slots full);
+  - planning with a priority class ≥ 8;
+  - a single bombardment round that destroys every target.
 
 ## Still to decode
 
-- Enemy tactical states 10/11, and the enemy unit AI (object handlers `$1A5B6` for object types 16–23, 33 and 34: missiles, drones, the enemy aircraft (33), and the homing missile (34, "Missile heading for Carrier!")).
+- Enemy close-range combat (states 10/11), and the enemy unit AI (object handlers `$1A5B6` for object types 16–23, 33 and 34: missiles, drones, the enemy aircraft (33), and the homing missile (34, "Missile heading for Carrier!")).
 - How the enemy side's economy feeds its strength. Production and the island census run for both owners, but distribution, planning and production lines are player-only; enemy islands get goods from the NEMESIS resupply in `world_sim_step`.
 - The unit/object list at `$5DCDA` (`$140` bytes per object, count `[$A48]`): the carrier, Mantas, Walruses and enemy units.
 - The per-frame vehicle simulation called from `game_main` (`$17094`, `$1962A`, `$1A56A`, `$1AFAA`, `$1A296`, `$1B746`, `$20730`).

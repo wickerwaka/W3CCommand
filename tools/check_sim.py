@@ -10,6 +10,8 @@ island steps (world_sim_step) and single logistics ticks ($F7A0). Checks:
   long     from each capture, run model and Unicorn side by side for --steps seconds of
            game time (an island step then a logistics tick each), comparing after every
            second; stops at the first divergence and reports what differs.
+  enemy    --enemy short runs from perturbed copies that start the enemy mid-assault, mid-trip
+           or next to a player unit.
   fuzz     long runs (half length) from --fuzz randomly perturbed copies of each capture:
            ownership flips, damage, random stocks, builds and builders, production targets
            and priorities, shipments and production lines in flight.
@@ -18,6 +20,8 @@ Compared: every region in stsim.STATE_REGIONS, byte for byte.
   uv run python tools/check_sim.py [--dir emu/out/sim] [--steps 1280] [--fuzz 6]
 """
 import argparse
+import contextlib
+import io
 import random
 import sys
 from pathlib import Path
@@ -29,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import stsim
 from stgfx import ROOT
 
-SIM_STEP, WARMUP, TICK = 0x1848E, 0x18474, 0xF7A0
+SIM_STEP, WARMUP, TICK, RELAX, ENEMY_AI = 0x1848E, 0x18474, 0xF7A0, 0x2173A, 0x1AFAA
+FPS = 8                 # game_main passes per second of game time (measured in the 3D view)
 STACK, RETURN = 0x7F000, 0x7FF00
 UNIT_ROUTINES = (0x1B8AE, 0x1761C, 0x176AC)
 RECORD = {"islands": stsim.ISLAND_SIZE, "economy": stsim.ECONOMY_SIZE, "routes": 128,
@@ -107,31 +112,58 @@ def captures(d: Path) -> list:
     if (d / "warmup_in.bin").exists():
         out.append(("warmup", d / "warmup_in.bin", d / "warmup_out.bin", WARMUP, stsim.WorldState.warmup_run))
     for kind, routine, run in (("step", SIM_STEP, stsim.WorldState.step),
-                               ("tick", TICK, stsim.WorldState.logistics_tick)):
+                               ("tick", TICK, stsim.WorldState.logistics_tick),
+                               ("ai", ENEMY_AI, stsim.WorldState.enemy_ai)):
         for p in sorted(d.glob(f"{kind}_*_in.bin"), key=lambda p: [int(x) for x in p.name.split("_")[1:-1]]):
             out.append((p.name[:-7], p, p.with_name(p.name[:-7] + "_out.bin"), routine, run))
     return out
 
 
-def second(state: stsim.WorldState) -> None:
-    state.step()
-    state.logistics_tick()
+def oracle_frame(oracle: Oracle, new_second: bool) -> None:
+    """game_main's strategic calls ($40D8-$4122), in order."""
+    if oracle.uc.mem_read(stsim.ROUTES_PENDING, 1)[0]:
+        oracle.call(RELAX)
+    if new_second:
+        oracle.uc.mem_write(0x8FD, b"\xff")
+        oracle.call(TICK)
+    oracle.call(SIM_STEP)
+    oracle.call(ENEMY_AI)
 
 
-def long_run(name: str, ram: bytes, seconds: int) -> bool:
+def long_run(name: str, ram: bytes, seconds: int, fps: int = FPS) -> bool:
+    """Model and original side by side, frame by frame, compared after every frame. Stops
+    early (not a failure) when the enemy enters close-range combat or is destroyed: what
+    follows belongs to the unit layer."""
     oracle = Oracle(ram, stub_units=True)
     state = stsim.WorldState.from_ram(ram)
-    for n in range(1, seconds + 1):
-        oracle.call(SIM_STEP)
-        oracle.call(TICK)
-        second(state)
+    events = []
+    for n in range(seconds * fps):
+        new_second = n % fps == 0
+        stop = None
+        try:
+            state.frame(new_second)
+        except (stsim.TacticalMode, stsim.EnemyDestroyed) as e:
+            stop = type(e).__name__
+        oracle_frame(oracle, new_second)
         ref = oracle.ram()
         mine = bytearray(ref)
         state.to_ram(mine)
-        lines = diff(mine, ref)
+        lines = diff(mine, ref) if stop != "EnemyDestroyed" else []
         if lines:
-            return report(f"long {name}: second {n} (island {state.island_index})", lines)
-    return report(f"long {name}: {seconds} s", [])
+            return report(f"long {name}: frame {n} ({n // fps} s, island {state.island_index}, "
+                          f"enemy state {state.mem.u16(stsim.E_STATE)})", lines)
+        events += [(n // fps, *e) for e in state.events]
+        state.events.clear()
+        if stop:
+            return report(f"long {name}: {n // fps} s, stopped at {stop}{summary(events)}", [])
+    return report(f"long {name}: {seconds} s{summary(events)}", [])
+
+
+def summary(events: list) -> str:
+    kinds = {}
+    for e in events:
+        kinds[e[1]] = kinds.get(e[1], 0) + 1
+    return f" ({', '.join(f'{v} {k}' for k, v in sorted(kinds.items()))})" if kinds else ""
 
 
 def perturb(ram: bytes, seed: int) -> bytes:
@@ -209,6 +241,45 @@ def perturb(ram: bytes, seed: int) -> bytes:
         m.set16(a, rnd.randrange(m.u16(a + 2) + 1))
         m.set16(a + 4, rnd.randrange(3))
     m.set16(stsim.REPAIR_RATE, rnd.randrange(64, 1024))
+    # The enemy, part way through something: assaulting a player island, travelling,
+    # waiting or refitting, with random strength, aircraft, reserve and bombard timer.
+    player = [i for i in range(64) if m.u8(stsim.OWNERS + i) == 1 and i != stsim.VULCAN] or [1]
+    state = rnd.choice((1, 2, 3, 3, 3, 4, 5))
+    at = rnd.choice(player) if state == 3 else rnd.randrange(1, 64)
+    last_stand = state == 3 and rnd.random() < 0.2                     # weak enemy at NEMESIS
+    if last_stand:
+        at = stsim.NEMESIS
+        m.set8(stsim.OWNERS + at, 1)
+    isl = stsim.ISLAND_TABLE + stsim.ISLAND_SIZE * at
+    m.set16(stsim.E_STATE, state)
+    m.set16(stsim.E_ISLAND, at)
+    m.set16(stsim.E_TARGET, rnd.randrange(1, 64))
+    m.set16(stsim.E_TIMER, rnd.randrange(1, 40))
+    m.set16(stsim.E_STRENGTH, rnd.randrange(100, 1024) if last_stand else
+            rnd.randrange(500, 12001) if rnd.random() < 0.3 else rnd.randrange(3000, 12001))
+    m.set16(stsim.E_AIRCRAFT, rnd.randrange(9))
+    m.set16(stsim.E_RESERVE, rnd.randrange(13))
+    m.set16(stsim.B_POOL, rnd.randrange(0, 1500) if state == 3 else rnd.randrange(0, 5001))
+    m.set16(stsim.B_TIMER, rnd.randrange(1, 30))
+    m.set32(stsim.ENEMY_CARRIER + 0x0A, m.u32(isl + 2))
+    m.set32(stsim.ENEMY_CARRIER + 0x12, m.u32(isl + 6))
+    r = rnd.random()
+    if r < 0.1:
+        m.set16(stsim.E_STATE, 0)
+    elif r < 0.25 and state in (2, 3, 4):                            # a player unit is near
+        unit = stsim.OBJECTS + stsim.OBJECT_SIZE * 2
+        m.buf[unit + 1] |= 1
+        m.set32(stsim.ENEMY_CARRIER + 0x0A, m.u32(unit + 0x0A) + 100000)
+        m.set32(stsim.ENEMY_CARRIER + 0x12, m.u32(unit + 0x12) - 100000)
+    if state == 3:
+        if rnd.random() < 0.3:
+            m.set16(stsim.STOCKPILE, at)
+        extra = rnd.randrange(3, 7)
+        for s in stsim.Island(m, at).slots[1:]:                     # extra defences
+            if s.type == 0 and extra:
+                extra -= 1
+                s.type, s.value = rnd.choice((0x25, 0x25, 0x26, 0x27, 0x28)), 4000
+                s.x, s.z = rnd.randrange(-3000, 3000), rnd.randrange(-3000, 3000)
     return bytes(m.buf)
 
 
@@ -217,6 +288,7 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=ROOT / "emu" / "out" / "sim")
     ap.add_argument("--steps", type=int, default=1280, help="seconds of game time per long run")
     ap.add_argument("--fuzz", type=int, default=6, help="perturbed variants per capture")
+    ap.add_argument("--enemy", type=int, default=40, help="short perturbed runs aimed at the enemy AI")
     args = ap.parse_args()
     caps = captures(args.dir)
     if not caps:
@@ -232,11 +304,23 @@ def main() -> int:
         if state.events:
             print(f"  events: {state.events}")
     for name, fin, fout, _, _ in caps:
-        if name.startswith("tick"):
+        if name.startswith(("tick", "ai")):
             continue                     # long runs from the step captures cover ticks
         ok &= long_run(name, fout.read_bytes(), args.steps)
         for seed in range(args.fuzz):
             ok &= long_run(f"{name} fuzz {seed}", perturb(fout.read_bytes(), seed), args.steps // 2)
+    if caps and args.enemy:
+        base = [fout for name, _, fout, _, _ in caps if name.startswith("step")][-1].read_bytes()
+        stops = 0
+        for seed in range(100, 100 + args.enemy):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                good = long_run(f"enemy {seed}", perturb(base, seed), 240)
+            ok &= good
+            stops += "stopped" in out.getvalue()
+            if not good:
+                print(out.getvalue(), end="")
+        print(f"enemy scenarios: {args.enemy} runs of 240 s, {stops} reached close-range combat or "
+              f"destruction{'' if ok else ' (with mismatches above)'}")
     return 0 if ok else 1
 
 

@@ -6,7 +6,8 @@ state ($880) through the Hatari debugger, then saves full RAM ($0-$7FFFF):
   warmup_in.bin / warmup_out.bin   at world_warmup ($18474) entry and after it returns
   step_<vbl>_in.bin / _out.bin     at entry to and rts of the first world_sim_step ($1848E)
                                    that starts at least <vbl> frames after the warm-up
-  tick_<vbl>_<n>_in.bin / _out.bin the next --ticks logistics ticks ($F7A0 to its rts $F842)
+  tick_<vbl>_<n>_in.bin / _out.bin the next --ticks logistics ticks ($F7A0 to its rts $F842),
+  ai_<vbl>_<n>_in.bin / _out.bin   each followed by one enemy AI call ($1AFAA to $4122)
   final.png                        screenshot after the last capture
 tools/check_sim.py steps the Python model and the game's own code (Unicorn) from each
 *_in state and compares both against *_out.
@@ -27,6 +28,7 @@ STRATEGY_BUTTON = (152, 51)         # "Start Strategy Game", screen coordinates
 WARMUP, WARMUP_RET = 0x18474, 0x18472
 SIM_STEP, SIM_STEP_RTS = 0x1848E, 0x18518
 TICK, TICK_RTS = 0xF7A0, 0xF842
+ENEMY_AI, ENEMY_AI_RET = 0x1AFAA, 0x4122
 
 
 def build_scripts(out: Path, steps: list, ticks: int) -> Path:
@@ -48,6 +50,9 @@ def build_scripts(out: Path, steps: list, ticks: int) -> Path:
     for i in reversed(range(len(steps))):
         vbl, delta = steps[i], steps[i] - prev[i]
         for n in reversed(range(ticks)):
+            a_out = script(f"ai{i}_{n}_out", save(f"ai_{vbl}_{n}_out") + then("VBL>0", nxt))
+            a_in = script(f"ai{i}_{n}_in", save(f"ai_{vbl}_{n}_in") + then(f"pc=${ENEMY_AI_RET:x}", a_out))
+            nxt = script(f"ai{i}_{n}_arm", then(f"pc=${ENEMY_AI:x}", a_in))
             t_out = script(f"tick{i}_{n}_out", save(f"tick_{vbl}_{n}_out") + then("VBL>0", nxt))
             t_in = script(f"tick{i}_{n}_in", save(f"tick_{vbl}_{n}_in") + then(f"pc=${TICK_RTS:x}", t_out))
             nxt = script(f"tick{i}_{n}_arm", then(f"pc=${TICK:x}", t_in))
