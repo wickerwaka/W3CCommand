@@ -4,6 +4,10 @@ network and the two starting-structure lists. Writes, under extracted/islands/:
   islands.json   all static island data (see below)
   map.png        archipelago map (network links, names; islands drawn at a minimum size,
                  since true island extents are ~0.25% of the map span)
+  island_NN_<name>.png  each island top-down, all at one common scale: plateau top, beach
+                 slope (80 units), volcano footprints (model 7) and the runway-construction
+                 footprint (model 47, 1200 x 4000 half-extents, rotated by its heading)
+  islands_sheet.png     all 64 island drawings on one sheet
 
 Island records: 64 x 22 bytes at $4AFB6, expanded into the island table at $69B80
 (64 x $192 bytes) by init_islands ($18370):
@@ -24,6 +28,8 @@ positions by the RNG at $195FE (state $1236, initial 31415926 53589793), which t
 interrupt (Timer A, $20668) also advances, so layouts differ between games.
 """
 import json
+import math
+import re
 import sys
 from pathlib import Path
 
@@ -107,6 +113,52 @@ def render_map(isl: list, path: Path, size: int = 1024) -> None:
     img.save(path)
 
 
+BEACH = 80                     # plateau inset (model 8)
+VOLCANO_RADIUS = 1000          # model 7 half-extent in x
+RUNWAY_HALF = (1200, 4000)     # model 47 half-extents (x, z)
+TILE = 512
+
+
+def render_island(isl: dict, scale: float) -> Image.Image:
+    img = Image.new("RGB", (TILE, TILE), (16, 32, 96))
+    d = ImageDraw.Draw(img)
+    c = TILE / 2
+
+    def pt(x, z):                # local island coordinates, +z drawn upwards (north)
+        return c + x * scale, c - z * scale
+
+    hx, hz = isl["half_x"], isl["half_z"]
+    d.rectangle([pt(-hx, hz), pt(hx, -hz)], fill=(194, 178, 128))                       # beach
+    d.rectangle([pt(-hx + BEACH, hz - BEACH), pt(hx - BEACH, -hz + BEACH)], fill=(60, 150, 60))
+    rw = isl["runway_construction"]
+    if rw:
+        a = rw["heading"] / 65536 * 2 * math.pi
+        ca, sa = math.cos(a), math.sin(a)
+        w, l = RUNWAY_HALF
+        corners = [(sx * w, sz * l) for sx, sz in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        d.polygon([pt(rw["x"] + x * ca + z * sa, rw["z"] - x * sa + z * ca) for x, z in corners],
+                  fill=(110, 110, 110), outline=(230, 230, 230))
+    for v in isl["volcanoes"]:
+        x, z = pt(v["x"], v["z"])
+        r = VOLCANO_RADIUS * scale
+        d.ellipse([x - r, z - r, x + r, z + r], fill=(120, 80, 50), outline=(220, 70, 30), width=2)
+    d.text((8, 6), f"{isl['index']:2d} {isl['name']}", fill=(255, 255, 255))
+    d.text((8, TILE - 18), f"{2 * hx} x {2 * hz}  links: {', '.join(str(l['island']) for l in isl['links'])}",
+           fill=(200, 200, 200))
+    return img
+
+
+def render_islands(isl: list) -> None:
+    scale = (TILE / 2 - 24) / max(max(i["half_x"], i["half_z"]) for i in isl)
+    sheet = Image.new("RGB", (8 * TILE // 2, 8 * TILE // 2))
+    for i in isl:
+        img = render_island(i, scale)
+        slug = re.sub(r"[^a-z0-9]+", "_", i["name"].lower()).strip("_")
+        img.save(OUT / f"island_{i['index']:02d}_{slug}.png")
+        sheet.paste(img.resize((TILE // 2, TILE // 2)), ((i["index"] % 8) * TILE // 2, (i["index"] // 8) * TILE // 2))
+    sheet.save(OUT / "islands_sheet.png")
+
+
 def main() -> None:
     p = Payload()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -117,6 +169,7 @@ def main() -> None:
             "notes": "Static data only; trees and start-structure positions are random per game."}
     (OUT / "islands.json").write_text(json.dumps(data, indent=1) + "\n")
     render_map(isl, OUT / "map.png")
+    render_islands(isl)
     print(f"{len(isl)} islands, {sum(len(i['links']) for i in isl) // 2} links"
           f"{f', {len(asym)} asymmetric links' if asym else ''} -> {OUT.relative_to(ROOT)}")
 
