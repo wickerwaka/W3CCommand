@@ -1,35 +1,113 @@
-"""Reference model of the island simulation: world_sim_step ($1848E) and what it calls.
+"""Reference model of the strategy simulation: the island step (world_sim_step, $1848E)
+and the once-a-second logistics tick ($F7A0).
 
-A Python port of the game's per-island step, written to be checked byte for byte against
-the original (tools/check_sim.py). State is plain data (WorldState) loaded from, and written
-back to, a 512 KB RAM image, so it can be compared with Hatari captures or with the game's
-own code run under Unicorn. docs/simulation.md describes the rules; this file is the
-executable version. Word arithmetic follows the 68000 (16-bit wrap, signed compares).
+A Python port of the game's code, written to be checked byte for byte against the original
+(tools/check_sim.py). docs/simulation.md describes the rules; this file is the executable
+version.
 
-Not modelled (they only matter for the island loaded around the camera, island byte +0
-set): mirroring slot changes into the 3D object buffers ($18276/$182A4/$1C6D6), and the
-"X is now a friendly/an enemy island" message, which is recorded in WorldState.events.
+State is the game's own memory layout: a 512 KB image in which only STATE_REGIONS are
+populated (WorldState.from_ram copies just those, so anything the model reads outside them
+reads as zero and shows up as a mismatch). Islands, slots and economy records are views
+onto that image. The image is trivially serialisable and moves both ways between the model
+and an emulator. Arithmetic follows the 68000: 16-bit wrap, and signed or unsigned
+compares exactly where the original uses them. A few routines depend on a register value
+left over by the previous routine; the model carries it (see `logistics_tick`).
+
+Not modelled: the parts of the tick that act on units (`$1B8AE`, and the hangar repairs
+`$1761C`/`$176AC`), the 3D object buffers of the island loaded around the camera (island
+byte +0), and on-screen messages, which are recorded in WorldState.events instead.
 """
 from dataclasses import dataclass, field
 
+RAM_SIZE = 0x80000
 ISLANDS, SLOTS, TYPES = 64, 32, 0x3C
+
+# island step
 ISLAND_TABLE, ISLAND_SIZE, SLOT_BASE, SLOT_SIZE = 0x69B80, 0x192, 0x12, 12
 ECONOMY, ECONOMY_SIZE = 0x66EC0, 0x32
 OWNERS = 0x69B40
 SLOT_ORDER = 0x66690
-QUOTA_ROM, QUOTA_WORK, QUOTA_ROWS, QUOTA_ROW = 0x18DF8, 0x586AA, 64, 10
+QUOTA_ROM, QUOTA_WORK, QUOTA_ROW = 0x18DF8, 0x586AA, 10
 QUOTA_FALLBACK = 0x18EE8            # the tree row ($18) inside QUOTA_ROM; decremented in place
 HANDLERS = 0x18C28                  # 8 bytes per type: handler.l, max_health.w, build_target.w
 RADIUS = 0x18BB4                    # clearance radius per type, for find_free_island_spot
+SPOT_CUT_LIST = 0x58E2A             # find_free_island_spot: trees in the way (scratch)
 NETWORK, NETWORK_SIZE = 0x2239E, 0x20
-ROUTES = 0x67B40
+ROUTES = 0x67B40                    # route matrix, 64 x 64 words; row 0 VULCAN, row 63 NEMESIS
 RNG = 0x1236
+OBJ_BUFFERS = (0x62CDA, 0x63CEC)    # 3D object buffers, chosen by island byte +1
+G_ISLAND_PTR, G_ECONOMY_PTR, G_BUFFER_PTR = 0x8C4, 0x8C8, 0x8CC
 G_ISLAND, G_CLASS = 0x8D0, 0x8D2
 G_BUILDING, G_STALLED, G_ACTIVE_BUILDINGS, G_EMPTY = 0x8D4, 0x8D6, 0x8D8, 0x8DA
 G_WARMUP = 0x8DC
+ROUTES_PENDING = 0x1235             # set by network_invalidate until game_main has relaxed
+
+# logistics
+RAW_POOL, RAW_POOL_N = 0x66BC0, 128         # at.b timer.b amount.w dest.w
+GOODS_POOL, GOODS_POOL_N = 0x66710, 200     # at.b timer.b kind.b qty.b dest.w; the last 72
+CARRIER_POOL, CARRIER_POOL_N = 0x66A10, 72  # entries are the carrier-delivery pool
+FREE_GOODS_SEARCH = 128                     # production only allocates from the first 128
+POOL_ENTRY = 6
+LINES = 0x0E                                # production lines in the economy record, 12 bytes
+PRODUCTS = 0x21FAE                          # steps.w qty.w cost.w per product
+ITEMS, ITEM_SIZE, N_ITEMS = 0xB76, 0x1A, 15  # store items: +$10 class.w, +$12 target.w
+FUEL_CLASS = 0xD08                          # 3 words
+STOCKPILE = 0xD4A                           # island where goods for the carrier collect
+CARRIER_ISLAND = 0xD4E                      # where carrier-pool shipments start ($21D46)
+IN_TRANSIT = 0xD50                          # "Stocks still in transit" flag
+COUNT_PLAYER, COUNT_ENEMY, COUNT_BY_KIND = 0xD54, 0xD56, 0xD58
+FUEL, FUEL_PENDING, STORES, STORES_PENDING = 0xD60, 0xD6C, 0xD78, 0xD96
+FUEL_MAX, STORE_MAX = 0x1FFFC0, 999
+PLAN_CLASS, PLAN_COUNT, TOTALS, ISLAND_GOODS_TOTAL = 0xDF6, 0xDF8, 0xDFA, 0xE18
+PLAN_LIST, FUEL_TOTALS, RAW_TOTAL, SHIP_LIST = 0xE98, 0xF3C, 0xF48, 0xFC8
+SYSTEMS, N_SYSTEMS = 0xAF4, 10              # carrier systems: cur.w max.w class.w ?.w
+REPAIR_RATE = 0xB3A
+REPAIR_CLASS, REPAIR_STEP, REPAIR_COUNT = 0xB5C, 0xB5E, 0xB60
+TICK_COUNT = 0x97A                          # long, seconds of game time
+TIMER_REPAIR, TIMER_MANTA, TIMER_WALRUS, TIMER_984, TIMER_LOGISTICS = 0x97E, 0x980, 0x982, 0x984, 0x986
+
+# Regions that make up the simulation state: (name, start, length). from_ram/to_ram copy
+# these; check_sim compares them except for the inputs the model never writes.
+STATE_REGIONS = [
+    ("current screen $718", 0x718, 2),
+    ("step globals", G_ISLAND_PTR, 0x8DE - G_ISLAND_PTR),
+    ("second flags $8FC", 0x8FC, 2),
+    ("redraw flags $952", 0x952, 2),
+    ("redraw flag $962", 0x962, 2),
+    ("redraw flag $966", 0x966, 2),
+    ("tick counters", TICK_COUNT, 0x988 - TICK_COUNT),
+    ("carrier systems", SYSTEMS, 0xB62 - SYSTEMS),
+    ("store items", ITEMS, N_ITEMS * ITEM_SIZE),
+    ("fuel classes", FUEL_CLASS, 6),
+    ("logistics flags $D3E", 0xD3E, 2),
+    ("logistics globals", STOCKPILE, 0xD60 - STOCKPILE),
+    ("fuel and stores", FUEL, 0xDB4 - FUEL),
+    ("totals", PLAN_CLASS, FUEL_TOTALS - PLAN_CLASS),
+    ("fuel totals, raw totals", FUEL_TOTALS, SHIP_LIST - FUEL_TOTALS),
+    ("ship list", SHIP_LIST, 0x180),
+    ("route flags, rng", 0x1234, 10),
+    ("radius table", RADIUS, TYPES * 2),
+    ("handler table", HANDLERS, TYPES * 8),
+    ("quota table", QUOTA_ROM, 64 * QUOTA_ROW),
+    ("product table", PRODUCTS, 19 * 6),
+    ("network", NETWORK, ISLANDS * NETWORK_SIZE),
+    ("quota work", QUOTA_WORK, 64 * QUOTA_ROW),
+    ("slot order", SLOT_ORDER, GOODS_POOL - SLOT_ORDER),
+    ("goods pool", GOODS_POOL, CARRIER_POOL - GOODS_POOL),
+    ("carrier pool", CARRIER_POOL, RAW_POOL - CARRIER_POOL),
+    ("raw pool", RAW_POOL, ECONOMY - RAW_POOL),
+    ("economy", ECONOMY, ROUTES - ECONOMY),
+    ("routes", ROUTES, OWNERS - ROUTES),
+    ("route relax state", 0xDEC, 0xA),
+    ("owners", OWNERS, ISLANDS),
+    ("islands", ISLAND_TABLE, ISLANDS * ISLAND_SIZE),
+]
+# Read but never written by the model (set by the UI, the unit layer or game setup).
+INPUT_REGIONS = {"current screen $718", "store items", "fuel classes", "radius table",
+                 "handler table", "product table"}
 
 T_TREE_FIRST, T_TREE_LAST = 0x18, 0x1B
-T_RUNWAY, T_BUILDING_FIRST, T_BUILDING_LAST = 0x24, 0x24, 0x2E
+T_BUILDING_FIRST, T_BUILDING_LAST = 0x24, 0x2E
 T_COMMAND_CENTRE, T_CONSTRUCTION_FIRST, T_RUNWAY_CONSTRUCTION = 0x29, 0x2F, 0x2F
 T_COMMAND_CENTRE_CONSTRUCTION = 0x34
 UNDER_CONSTRUCTION = 0xB            # construction type = finished type + $B
@@ -52,156 +130,136 @@ def s8(v: int) -> int:
     return v - 0x100 if v & 0x80 else v
 
 
-def rd16(m, a): return int.from_bytes(m[a:a + 2], "big")
-def rd32(m, a): return int.from_bytes(m[a:a + 4], "big")
-def wr16(m, a, v): m[a:a + 2] = w16(v).to_bytes(2, "big")
-def wr32(m, a, v): m[a:a + 4] = (v & 0xFFFFFFFF).to_bytes(4, "big")
+class Mem:
+    """Big-endian accessors over a bytearray; addresses are absolute."""
+
+    def __init__(self, buf: bytearray):
+        self.buf = buf
+
+    def u8(self, a): return self.buf[a]
+    def s8(self, a): return s8(self.buf[a])
+    def u16(self, a): return int.from_bytes(self.buf[a:a + 2], "big")
+    def s16(self, a): return s16(self.u16(a))
+    def u32(self, a): return int.from_bytes(self.buf[a:a + 4], "big")
+    def set8(self, a, v): self.buf[a] = v & 0xFF
+    def set16(self, a, v): self.buf[a:a + 2] = (v & 0xFFFF).to_bytes(2, "big")
+    def set32(self, a, v): self.buf[a:a + 4] = (v & 0xFFFFFFFF).to_bytes(4, "big")
 
 
-@dataclass
+def _field(offset: int, kind: str):
+    get, put = {"b": (Mem.u8, Mem.set8), "w": (Mem.s16, Mem.set16), "uw": (Mem.u16, Mem.set16)}[kind]
+    return property(lambda s: get(s.m, s.a + offset), lambda s, v: put(s.m, s.a + offset, v))
+
+
 class Slot:
-    type: int = 0
-    heading: int = 0
-    value: int = 0          # build progress, or health once finished
-    word6: int = 0          # high byte: active flag (census); type $34: start code
-    x: int = 0
-    z: int = 0
+    """Structure slot (12 bytes): type, heading, value (progress or health), word6 (high
+    byte = active flag; type $34: start code), x, z."""
+
+    def __init__(self, m: Mem, a: int):
+        self.m, self.a = m, a
+
+    type = _field(0, "uw")
+    heading = _field(2, "uw")
+    value = _field(4, "w")
+    word6 = _field(6, "uw")
+    x = _field(8, "w")
+    z = _field(10, "w")
 
     @property
     def active(self) -> bool:
-        return bool(self.word6 & 0xFF00)
+        return self.m.u8(self.a + 6) != 0
 
     def set_active(self, on: bool) -> None:
-        self.word6 = (self.word6 & 0xFF) | (0xFF00 if on else 0)
+        self.m.set8(self.a + 6, 0xFF if on else 0)
 
 
-@dataclass
 class Island:
-    raw: bytearray          # the full $192-byte entry; header fields are read from it
-    slots: list
+    def __init__(self, m: Mem, i: int):
+        self.m, self.a = m, ISLAND_TABLE + ISLAND_SIZE * i
+        self.slots = [Slot(m, self.a + SLOT_BASE + SLOT_SIZE * j) for j in range(SLOTS)]
 
-    @property
-    def loaded(self) -> bool:
-        return self.raw[0] != 0
-
-    @property
-    def half_x(self) -> int: return s16(rd16(self.raw, 0x0A))
-    @property
-    def half_z(self) -> int: return s16(rd16(self.raw, 0x0C))
-    @property
-    def area(self) -> int: return s16(rd16(self.raw, 0x0E))
+    loaded = _field(0, "b")
+    buffer = _field(1, "b")
+    half_x = _field(0x0A, "w")
+    half_z = _field(0x0C, "w")
+    area = _field(0x0E, "w")
 
 
-@dataclass
 class Economy:
-    raw: bytearray          # the full $32-byte record
+    """Economy record ($32 bytes). Production lines follow at +$0E, `lines` of them."""
 
-    def _w(o): return property(lambda s: s16(rd16(s.raw, o)), lambda s, v: wr16(s.raw, o, v))
-    def _b(o): return property(lambda s: s.raw[o], lambda s, v: s.raw.__setitem__(o, v & 0xFF))
-    kind = _b(0x00)          # 1 resource, 2 factory, 3 defence, 0 base
-    raw_stock = _w(0x02)
-    raw_cap = _w(0x04)
-    mines = _b(0x06)
-    has_command_centre = _b(0x07)
-    goods = _w(0x08)
-    goods_cap = _w(0x0A)
-    factories = _w(0x0C)
-    del _w, _b
+    def __init__(self, m: Mem, i: int):
+        self.m, self.a = m, ECONOMY + ECONOMY_SIZE * i
+
+    kind = _field(0x00, "b")             # 0 base, 1 resource, 2 factory, 3 defence
+    raw_stock = _field(0x02, "uw")
+    raw_cap = _field(0x04, "uw")
+    mines = _field(0x06, "b")
+    has_command_centre = _field(0x07, "b")
+    goods = _field(0x08, "uw")
+    goods_cap = _field(0x0A, "uw")
+    lines = _field(0x0C, "uw")           # = factories counted by the census
+
+    def line(self, k: int) -> int:
+        return self.a + LINES + 12 * k
 
 
 @dataclass
 class WorldState:
-    islands: list
-    economy: list
-    owners: list                    # 0 neutral, 1 player, 2 enemy
-    routes: list                    # $67B40 route matrix, 64 rows of 64 signed words;
-                                    # row 0 = distance from VULCAN, row 63 = from NEMESIS
-    slot_order: list                # (slot index, slot offset) pairs
-    quota_rom: bytearray            # $18DF8 table, persistently modified via the fallback row
-    quota_work: bytearray           # $586AA per-step working copy
-    network: bytearray              # $2239E, 64 x 32 bytes
-    rng: list                       # two longs at $1236
-    handlers: list                  # $18C28 per type: (handler, max_health, build_target);
-                                    # patched at game start (command centre health)
-    radius: list                    # $18BB4 clearance radius per type
-    island_index: int = 0
-    island_class: int = 0
-    building: int = 0               # active constructions
-    stalled: int = 0                # inactive constructions
-    active_buildings: int = 0
-    empty: int = 0
-    warmup: bool = False
-    network_invalidated: bool = False
+    mem: Mem
     events: list = field(default_factory=list)
 
-    # ---- RAM image <-> state -------------------------------------------------------
     @classmethod
-    def from_ram(cls, m: bytes) -> "WorldState":
-        islands = []
-        for i in range(ISLANDS):
-            raw = bytearray(m[ISLAND_TABLE + ISLAND_SIZE * i:ISLAND_TABLE + ISLAND_SIZE * (i + 1)])
-            slots = [Slot(*(rd16(raw, SLOT_BASE + SLOT_SIZE * j + 2 * k) for k in range(6)))
-                     for j in range(SLOTS)]
-            islands.append(Island(raw, slots))
-        return cls(
-            islands=islands,
-            economy=[Economy(bytearray(m[ECONOMY + ECONOMY_SIZE * i:ECONOMY + ECONOMY_SIZE * (i + 1)]))
-                     for i in range(ISLANDS)],
-            owners=list(m[OWNERS:OWNERS + ISLANDS]),
-            routes=[[s16(rd16(m, ROUTES + 128 * i + 2 * j)) for j in range(ISLANDS)] for i in range(ISLANDS)],
-            slot_order=[(rd16(m, SLOT_ORDER + 4 * k), rd16(m, SLOT_ORDER + 4 * k + 2)) for k in range(SLOTS)],
-            quota_rom=bytearray(m[QUOTA_ROM:QUOTA_ROM + QUOTA_ROWS * QUOTA_ROW]),
-            quota_work=bytearray(m[QUOTA_WORK:QUOTA_WORK + QUOTA_ROWS * QUOTA_ROW]),
-            network=bytearray(m[NETWORK:NETWORK + ISLANDS * NETWORK_SIZE]),
-            rng=[rd32(m, RNG), rd32(m, RNG + 4)],
-            handlers=[(rd32(m, HANDLERS + 8 * t), rd16(m, HANDLERS + 8 * t + 4), rd16(m, HANDLERS + 8 * t + 6))
-                      for t in range(TYPES)],
-            radius=[rd16(m, RADIUS + 2 * t) for t in range(TYPES)],
-            island_index=rd16(m, G_ISLAND), island_class=rd16(m, G_CLASS),
-            building=rd16(m, G_BUILDING), stalled=rd16(m, G_STALLED),
-            active_buildings=rd16(m, G_ACTIVE_BUILDINGS), empty=rd16(m, G_EMPTY),
-            warmup=m[G_WARMUP] != 0)
+    def from_ram(cls, ram: bytes) -> "WorldState":
+        buf = bytearray(RAM_SIZE)
+        for _, a, n in STATE_REGIONS:
+            buf[a:a + n] = ram[a:a + n]
+        return cls(Mem(buf))
 
-    def to_ram(self, m: bytearray) -> None:
-        for i, isl in enumerate(self.islands):
-            for j, s in enumerate(isl.slots):
-                for k, v in enumerate((s.type, s.heading, s.value, s.word6, s.x, s.z)):
-                    wr16(isl.raw, SLOT_BASE + SLOT_SIZE * j + 2 * k, v)
-            m[ISLAND_TABLE + ISLAND_SIZE * i:ISLAND_TABLE + ISLAND_SIZE * (i + 1)] = isl.raw
-        for i, e in enumerate(self.economy):
-            m[ECONOMY + ECONOMY_SIZE * i:ECONOMY + ECONOMY_SIZE * (i + 1)] = e.raw
-        m[OWNERS:OWNERS + ISLANDS] = bytes(self.owners)
-        for i, row in enumerate(self.routes):
-            for j, v in enumerate(row):
-                wr16(m, ROUTES + 128 * i + 2 * j, v)
-        for k, (idx, off) in enumerate(self.slot_order):
-            wr16(m, SLOT_ORDER + 4 * k, idx)
-            wr16(m, SLOT_ORDER + 4 * k + 2, off)
-        m[QUOTA_ROM:QUOTA_ROM + len(self.quota_rom)] = self.quota_rom
-        m[QUOTA_WORK:QUOTA_WORK + len(self.quota_work)] = self.quota_work
-        m[NETWORK:NETWORK + len(self.network)] = self.network
-        wr32(m, RNG, self.rng[0])
-        wr32(m, RNG + 4, self.rng[1])
-        for a, v in ((G_ISLAND, self.island_index), (G_CLASS, self.island_class),
-                     (G_BUILDING, self.building), (G_STALLED, self.stalled),
-                     (G_ACTIVE_BUILDINGS, self.active_buildings), (G_EMPTY, self.empty)):
-            wr16(m, a, v)
-        m[G_WARMUP] = 0xFF if self.warmup else 0
-        if self.network_invalidated:
-            set_route_relax_pending(m)
+    def to_ram(self, ram: bytearray) -> None:
+        for _, a, n in STATE_REGIONS:
+            ram[a:a + n] = self.mem.buf[a:a + n]
 
-    # ---- primitives ----------------------------------------------------------------
+    # ---- views and globals ---------------------------------------------------------
+    def island(self, i: int) -> Island: return Island(self.mem, i)
+    def economy(self, i: int) -> Economy: return Economy(self.mem, i)
+    def owner(self, i: int) -> int: return self.mem.u8(OWNERS + i)
+    def route(self, i: int, j: int) -> int: return self.mem.s16(ROUTES + 128 * i + 2 * j)
+
+    island_index = property(lambda s: s.mem.u16(G_ISLAND), lambda s, v: s.mem.set16(G_ISLAND, v))
+    island_class = property(lambda s: s.mem.u16(G_CLASS), lambda s, v: s.mem.set16(G_CLASS, v))
+    building = property(lambda s: s.mem.s16(G_BUILDING), lambda s, v: s.mem.set16(G_BUILDING, v))
+    stalled = property(lambda s: s.mem.s16(G_STALLED), lambda s, v: s.mem.set16(G_STALLED, v))
+    active_buildings = property(lambda s: s.mem.s16(G_ACTIVE_BUILDINGS),
+                                lambda s, v: s.mem.set16(G_ACTIVE_BUILDINGS, v))
+    empty = property(lambda s: s.mem.s16(G_EMPTY), lambda s, v: s.mem.set16(G_EMPTY, v))
+    warmup = property(lambda s: s.mem.u8(G_WARMUP) != 0,
+                      lambda s, v: s.mem.set8(G_WARMUP, 0xFF if v else 0))
+
     def rand(self) -> int:
         """$195FE: two-word additive generator over the longs at $1236/$123A."""
-        a, b = self.rng
+        m = self.mem
+        a, b = m.u32(RNG), m.u32(RNG + 4)
         lo = (a & 0xFFFF) * 2
         x, lo = lo >> 16, lo & 0xFFFF
-        t = lo
         s = lo + (b & 0xFFFF) + x
         x, new_lo = s >> 16, s & 0xFFFF
         new_hi = ((a >> 16) + (b >> 16) + x) & 0xFFFF
-        self.rng = [(new_hi << 16) | new_lo, (a & 0xFFFF0000) | t]
-        return self.rng[0]
+        m.set32(RNG, (new_hi << 16) | new_lo)
+        m.set32(RNG + 4, (a & 0xFFFF0000) | lo)
+        return m.u32(RNG)
+
+    def shuffle_words(self, base: int, n: int) -> int:
+        """Fisher-Yates over n words at base, as $21BA6/$22304. Returns d0 (2 x last index)."""
+        d0 = 0
+        for k in range(n - 1, -1, -1):
+            idx = ((self.rand() >> 16) * n) >> 16
+            d0 = w16(2 * idx)
+            a, b = base + 2 * idx, base + 2 * k
+            va, vb = self.mem.u16(a), self.mem.u16(b)
+            self.mem.set16(a, vb)
+            self.mem.set16(b, va)
+        return d0
 
     # ---- world_sim_step ------------------------------------------------------------
     def warmup_run(self) -> None:
@@ -212,17 +270,24 @@ class WorldState:
         self.warmup = False
 
     def step(self) -> None:
+        m = self.mem
         i = (self.island_index + 1) & 63
         if i == 0:
             for k in range(SLOTS):
                 r = self.rand() & 31
-                self.slot_order[k], self.slot_order[r] = self.slot_order[r], self.slot_order[k]
+                a, b = SLOT_ORDER + 4 * k, SLOT_ORDER + 4 * r
+                va, vb = m.u32(a), m.u32(b)
+                m.set32(a, vb)
+                m.set32(b, va)
         self.island_index = i
-        eco = self.economy[i]
+        isl, eco = self.island(i), self.economy(i)
+        m.set32(G_ISLAND_PTR, isl.a)
+        m.set32(G_ECONOMY_PTR, eco.a)
+        m.set32(G_BUFFER_PTR, OBJ_BUFFERS[1 if isl.buffer else 0])
         if self.warmup:
             eco.raw_stock = 500
-            eco.goods = w16(eco.goods_cap) >> 2
-        if self.owners[i] == 2 and self.routes[63][i] >= 0:     # enemy, connected to NEMESIS
+            eco.goods = eco.goods_cap >> 2
+        if self.owner(i) == 2 and self.route(63, i) >= 0:     # enemy, connected to NEMESIS
             eco.goods = 500
         self.census()
         self.structures_step()
@@ -231,20 +296,21 @@ class WorldState:
     def compute_class(self) -> None:
         """$1851A: quota column. 0 neutral; else type (7 for type 0), +3 if large."""
         i = self.island_index
-        c = self.economy[i].kind
+        c = self.economy(i).kind
         if c == 0:
             c = 7
-        elif self.islands[i].area >= 2000:
+        elif self.island(i).area >= 2000:
             c += 3
-        self.island_class = 0 if self.owners[i] == 0 else c
+        self.island_class = 0 if self.owner(i) == 0 else c
 
     def census(self) -> None:
         """$1854E: mark each slot active while its type still has quota for this class."""
+        m = self.mem
         self.building = self.stalled = self.empty = self.active_buildings = 0
-        self.quota_work[:] = self.quota_rom
+        m.buf[QUOTA_WORK:QUOTA_WORK + 64 * QUOTA_ROW] = m.buf[QUOTA_ROM:QUOTA_ROM + 64 * QUOTA_ROW]
         self.compute_class()
-        isl, eco, c = self.islands[self.island_index], self.economy[self.island_index], self.island_class
-        eco.factories = 0
+        isl, eco, c = self.island(self.island_index), self.economy(self.island_index), self.island_class
+        eco.lines = 0
         eco.mines = 0
         eco.has_command_centre = 0
         for s in isl.slots:
@@ -253,22 +319,22 @@ class WorldState:
                 self.empty += 1
                 continue
             if t in (0x2C, 0x2D):
-                eco.factories += 1
+                eco.lines += 1
             if t in (0x2A, 0x2E, 0x2B):
                 eco.mines += 1
             if t in (0x34, 0x29):
                 eco.has_command_centre = 0xFF
-            table, row = self.quota_work, QUOTA_ROW * t
+            row = QUOTA_WORK + QUOTA_ROW * t
             if t >= T_CONSTRUCTION_FIRST:
                 row -= QUOTA_ROW * UNDER_CONSTRUCTION
-            quota = s8(table[row + 1 + c])
+            quota = m.s8(row + 1 + c)
             if quota < 0:
-                table, row = self.quota_rom, QUOTA_FALLBACK - QUOTA_ROM
-                quota = s8(table[row + 1 + c])
-            if table[row] == 0:
+                row = QUOTA_FALLBACK
+                quota = m.s8(row + 1 + c)
+            if m.u8(row) == 0:
                 continue
             if quota != 0:
-                table[row + 1 + c] = (quota - 1) & 0xFF
+                m.set8(row + 1 + c, quota - 1)
                 s.set_active(True)
                 if t >= T_CONSTRUCTION_FIRST:
                     self.building += 1
@@ -281,9 +347,15 @@ class WorldState:
 
     def structures_step(self) -> None:
         """$18662: run each slot's type handler, in the shuffled slot order."""
-        for _, off in self.slot_order:
-            s = self.islands[self.island_index].slots[off // SLOT_SIZE]
-            handler, max_health, target = self.handlers[s.type] if s.type < TYPES else (0, 0, 0)
+        m = self.mem
+        isl = self.island(self.island_index)
+        for k in range(SLOTS):
+            s = Slot(m, isl.a + SLOT_BASE + m.u16(SLOT_ORDER + 4 * k + 2))
+            t = s.type
+            if t >= TYPES:
+                raise NotImplementedError(f"slot type ${t:02X}")
+            handler = m.u32(HANDLERS + 8 * t)
+            max_health, target = m.u16(HANDLERS + 8 * t + 4), m.u16(HANDLERS + 8 * t + 6)
             if handler == H_TREE:
                 self.tree(s)
             elif handler == H_BUILDING:
@@ -295,101 +367,95 @@ class WorldState:
             elif handler == H_COMMAND_CENTRE_CONSTRUCTION:
                 self.command_centre_construction(s, max_health, target)
             elif handler:
-                raise NotImplementedError(f"handler ${handler:05X} for type ${s.type:02X}")
+                raise NotImplementedError(f"handler ${handler:05X} for type ${t:02X}")
 
-    def pay_goods(self, n: int) -> bool:
-        eco = self.economy[self.island_index]
-        if n > eco.goods:
+    def pay(self, field_addr: int, n: int) -> bool:
+        """$186B2 / $186CA: take n from a stock if there is enough (signed compare)."""
+        v = self.mem.s16(field_addr)
+        if n > v:
             return False
-        eco.goods -= n
-        return True
-
-    def pay_raw(self, n: int) -> bool:
-        eco = self.economy[self.island_index]
-        if n > eco.raw_stock:
-            return False
-        eco.raw_stock -= n
+        self.mem.set16(field_addr, v - n)
         return True
 
     def tree(self, s: Slot) -> None:
         """$18874: once the island has 6 active buildings, idle trees get cleared."""
-        if s16(self.active_buildings) >= 6 and not s.active and self.rand() & 3 == 0:
+        if self.active_buildings >= 6 and not s.active and self.rand() & 3 == 0:
             s.type = 0
 
     def building_step(self, s: Slot, max_health: int, target: int) -> None:
         """$1876E: over quota -> back to construction at full progress; else repair."""
         if not s.active:
-            s.type = w16(s.type + UNDER_CONSTRUCTION)
+            s.type = s.type + UNDER_CONSTRUCTION
             s.value = target
         else:
             self.repair(s, max_health)
 
     def repair(self, s: Slot, max_health: int) -> None:
         """$18784: health +100 per step up to max_health."""
-        v = s16(s.value)
-        if v >= s16(max_health):
+        if s.value >= s16(max_health):
             return
-        s.value = min(s16(v + 100), s16(max_health))
+        s.value = min(s16(s.value + 100), s16(max_health))
 
     def construction(self, s: Slot, max_health: int, target: int) -> None:
         """$186F6: active -> +1 progress per 30 goods; idle -> decays, refunding 20 goods."""
-        eco = self.economy[self.island_index]
+        eco = self.economy(self.island_index)
         if not s.active:
-            v = s16(s.value)
+            v = s.value
             if v == 0:
                 if s.type != T_RUNWAY_CONSTRUCTION:
                     s.type = 0
                 return
             if self.island_class == 0 and self.rand() & 3:
                 return
-            s.value = w16(v - 1)
+            s.value = v - 1
             eco.goods = min(s16(eco.goods + 20), s16(eco.goods_cap))
             return
-        if self.warmup or s16(s.value) == s16(target):
-            s.type = w16(s.type - UNDER_CONSTRUCTION)
+        if self.warmup or s.value == s16(target):
+            s.type = s.type - UNDER_CONSTRUCTION
             s.value = max_health
             return
-        if self.pay_goods(30):
+        if self.pay(eco.a + 8, 30):
             s.value = min(s16(s.value + 1), s16(target))
 
     def command_centre_construction(self, s: Slot, max_health: int, target: int) -> None:
         """$187A0: neutral island -> +4 per 100 raw, completing flips ownership; owned -> -8."""
-        v = s16(s.value)
+        v = s.value
         if self.island_class != 0:
             v = s16(v - 8)
             if v > 0:
-                s.value = w16(v)
+                s.value = v
             else:
                 s.type = 0
             return
+        i = self.island_index
+        eco = self.economy(i)
         if v != s16(target):
-            if self.pay_raw(100):
+            if self.pay(eco.a + 2, 100):
                 s.value = min(s16(v + 4), s16(target))
             return
-        i = self.island_index
         s.type = T_COMMAND_CENTRE
         s.value = max_health
         code = s.word6
-        eco = self.economy[i]
         eco.kind = code & 3
         eco.goods = 5000
-        owner = ((code >> 4) + 1) & 0xFF
-        self.owners[i] = owner
+        owner = (code >> 4) + 1
+        self.mem.set8(OWNERS + i, owner)
         if not self.warmup:
-            self.events.append(("captured", i, owner))
+            self.events.append(("captured", i, owner & 0xFF))
         self.compute_class()
         self.network_invalidate()
 
     def plan_construction(self) -> None:
         """$18898: with fewer than 2 active constructions, start the highest-priority
         building type ($25-$2E) that still has quota, at a free spot."""
-        if s16(self.building) >= 2:
+        if self.building >= 2:
             return
+        m = self.mem
         best, best_type = 0, 0
         for t in range(T_BUILDING_FIRST + 1, T_BUILDING_LAST + 1):
-            row = QUOTA_ROW * t
-            pri = s8(self.quota_work[row])
-            if pri > best and self.quota_work[row + 1 + self.island_class]:
+            row = QUOTA_WORK + QUOTA_ROW * t
+            pri = m.s8(row)
+            if pri > best and m.u8(row + 1 + self.island_class):
                 best, best_type = pri, t
         if not best:
             return
@@ -397,7 +463,7 @@ class WorldState:
         if spot is None:
             return
         j, x, z = spot
-        s = self.islands[self.island_index].slots[j]
+        s = self.island(self.island_index).slots[j]
         s.type = best_type + UNDER_CONSTRUCTION
         s.x, s.z = x, z
         s.value = 0
@@ -406,8 +472,9 @@ class WorldState:
         """find_free_island_spot ($18A48): up to 16 random positions; a spot is rejected if it
         is within clearance of a non-tree structure. Trees in the way are cut down. Returns
         (slot, x, z): the last empty slot, else the last tree slot clear of the spot."""
-        isl = self.islands[self.island_index]
-        r_new = self.radius[new_type]
+        m = self.mem
+        isl = self.island(self.island_index)
+        r_new = m.u16(RADIUS + 2 * new_type)
         for _ in range(16):
             r = self.rand()
             x = w16(((s16(r) * s16(isl.half_x - 1000 - r_new)) >> 16) * 2)
@@ -418,7 +485,7 @@ class WorldState:
                 if s.type == 0:
                     empty = j
                     continue
-                rad = self.radius[s.type] if s.type < TYPES else 0
+                rad = m.u16(RADIUS + 2 * s.type)
                 if rad == 0:
                     continue
                 dist = max(abs(s16(s.x - x)), abs(s16(s.z - z)))
@@ -433,37 +500,461 @@ class WorldState:
                 j = empty if empty is not None else free_tree
                 if j is None:
                     return None
-                for k in cut:
+                for n, k in enumerate(cut):
+                    m.set16(SPOT_CUT_LIST + 2 * n, k)
                     isl.slots[k].type = 0
                 return j, x, z
         return None
 
     def network_invalidate(self) -> None:
         """$216C6: refilter links by ownership, reset the route matrix (all -1, zero
-        diagonal) and flag it for relaxation by game_main ($2173A, not modelled here)."""
-        network_filter_links(self.network, self.owners)
-        self.routes = [[0 if i == j else -1 for j in range(ISLANDS)] for i in range(ISLANDS)]
-        self.network_invalidated = True
+        diagonal) and flag it for relaxation by game_main ($2173A, not modelled)."""
+        m = self.mem
+        network_filter_links(m, [self.owner(i) for i in range(ISLANDS)])
+        m.buf[ROUTES:ROUTES + ISLANDS * 128] = b"\xff" * (ISLANDS * 128)
+        for i in range(ISLANDS):
+            m.set16(ROUTES + 130 * i, 0)
+        m.set8(ROUTES_PENDING, 0xFF)
+        m.set8(0x1234, 0xFF)
+        m.set16(0xDF4, 7)
+        m.set32(0xDEC, ROUTES)
+        m.set32(0xDF0, NETWORK)
+
+    # ---- logistics tick ($F7A0) ----------------------------------------------------
+    def logistics_tick(self) -> None:
+        """$F7A0, once per second from game_main. d0 is threaded through the 4-second
+        chain because distribute_raw starts its stock array from the value
+        run_production leaves in that register."""
+        m = self.mem
+        m.set8(0x8FD, 0)
+        m.set32(TICK_COUNT, m.u32(TICK_COUNT) + 1)
+        m.set8(0xD3F, 0xFF)
+        # $1B8AE (objects) is not modelled.
+        self.count_islands()
+        if self.countdown(TIMER_REPAIR, 10):
+            self.carrier_repair()
+        self.countdown(TIMER_MANTA, 10)       # $1761C, hangar repairs: not modelled
+        self.countdown(TIMER_WALRUS, 10)      # $176AC
+        if self.countdown(TIMER_984, 1):
+            m.set16(0x962, 2)
+        m.set16(0x966, 2)
+        self.move_raw()
+        self.move_goods()
+        self.check_carrier_pool()
+        if self.countdown(TIMER_LOGISTICS, 4):
+            self.produce_raw()
+            d0 = self.totals()
+            d0 = self.plan_production(d0)
+            d0 = self.run_production(d0)
+            self.distribute_raw(d0)
+
+    def countdown(self, a: int, reload: int) -> bool:
+        v = w16(self.mem.u16(a) - 1)
+        self.mem.set16(a, reload if v == 0 else v)
+        return v == 0
+
+    def count_islands(self) -> None:
+        """$CDF2: owned-island counts for the win/lose check; player islands by kind.
+        The kind-0 counter at $D58 is never cleared, so it keeps growing."""
+        m = self.mem
+        for a in (COUNT_PLAYER, COUNT_ENEMY, 0xD5A, 0xD5C, 0xD5E):
+            m.set16(a, 0)
+        for i in range(ISLANDS):
+            o = self.owner(i)
+            if o == 0:
+                continue
+            if o == 1:
+                m.set16(COUNT_PLAYER, m.u16(COUNT_PLAYER) + 1)
+                a = COUNT_BY_KIND + 2 * self.economy(i).kind
+                m.set16(a, m.u16(a) + 1)
+            else:
+                m.set16(COUNT_ENEMY, m.u16(COUNT_ENEMY) + 1)
+
+    def carrier_repair(self) -> None:
+        """$174E4: share the repair rate between damaged systems of the most urgent class."""
+        m = self.mem
+        counts = [0, 0, 0]
+        for k in range(N_SYSTEMS):
+            a = SYSTEMS + 8 * k
+            if m.u16(a) == m.u16(a + 2):
+                continue
+            c = m.u16(a + 4)
+            counts[c if c < 2 else 2] += 1
+        cls = next((c for c in range(2) if counts[c]), 2)
+        n = counts[cls]
+        m.set16(REPAIR_CLASS, cls)
+        if n == 0:
+            if m.u16(REPAIR_COUNT) == 0:
+                return
+            m.set16(REPAIR_COUNT, 0)
+        else:
+            m.set16(REPAIR_COUNT, n)
+            step = w16((150 * m.u16(REPAIR_RATE) >> 8) // n)
+            m.set16(REPAIR_STEP, step)
+            for k in range(N_SYSTEMS):
+                a = SYSTEMS + 8 * k
+                cur, mx = m.u16(a), m.u16(a + 2)
+                if m.u16(a + 4) == cls and mx != cur:
+                    cur = w16(cur + step)
+                    m.set16(a, mx if cur > mx else cur)
+        if m.u16(0x718) == 1:
+            m.set16(0x952, 2)
+
+    def next_hop(self, cur: int, dest: int):
+        """route_next_hop ($21A30): the enabled neighbour of `cur` strictly closer to `dest`
+        that minimises weight + distance (unsigned compares). Returns (neighbour word, weight)
+        or None."""
+        m = self.mem
+        d1 = m.u16(ROUTES + 128 * cur + 2 * dest)
+        if d1 & 0x8000:
+            return None
+        net = NETWORK + NETWORK_SIZE * cur
+        best, best_w, best_cost = None, 0xFFFF, 0xFFFF
+        for k in range(m.u16(net)):
+            weight, nb = m.u16(net + 2 + 4 * k), m.u16(net + 4 + 4 * k)
+            if nb & 0x8000:
+                continue
+            d = m.u16(ROUTES + w16(nb << 7) + 2 * dest)
+            if d >= d1:
+                continue
+            d = w16(d + weight)
+            if d >= best_cost:
+                continue
+            best, best_w, best_cost = nb, weight, d
+        return None if best is None else (best, best_w)
+
+    def move_raw(self) -> None:
+        """$21976: advance raw-material shipments (pool $66BC0) one second."""
+        m = self.mem
+        for k in range(RAW_POOL_N):
+            e = RAW_POOL + POOL_ENTRY * k
+            if m.u8(e) & 0x80:
+                continue
+            m.set8(e + 1, m.u8(e + 1) - 1)
+            if m.u8(e + 1):
+                continue
+            at = m.u8(e)
+            if self.owner(at) == 0:
+                m.set8(e, 0xFF)
+            elif at == m.u16(e + 4):
+                eco = self.economy(at)
+                v = w16(m.u16(e + 2) + eco.raw_stock)
+                if v > eco.raw_cap:
+                    m.set8(e + 1, 1)
+                else:
+                    eco.raw_stock = v
+                    m.set8(e, 0xFF)
+            elif m.u8(ROUTES_PENDING):
+                m.set8(e + 1, 1)
+            else:
+                hop = self.next_hop(at, m.u16(e + 4))
+                if hop is None:
+                    # Delivered where it is. On overflow the original stores the
+                    # shipment's destination index, not the capacity (a bug).
+                    eco = self.economy(at)
+                    v = w16(m.u16(e + 2) + eco.raw_stock)
+                    eco.raw_stock = m.u16(e + 4) if v > eco.raw_cap else v
+                    m.set8(e, 0xFF)
+                else:
+                    m.set8(e, hop[0])
+                    m.set8(e + 1, hop[1])
+
+    def move_goods(self) -> None:
+        """$21C28: advance goods shipments (pool $66710, including the carrier pool)."""
+        m = self.mem
+        for k in range(GOODS_POOL_N):
+            e = GOODS_POOL + POOL_ENTRY * k
+            if m.u8(e) & 0x80:
+                continue
+            m.set8(e + 1, m.u8(e + 1) - 1)
+            if m.u8(e + 1):
+                continue
+            at = m.u8(e)
+            if self.owner(at) == 0:
+                m.set8(e, 0xFF)
+                continue
+            dest = m.u16(e + 4)
+            if dest & 0x8000:
+                dest = m.u16(STOCKPILE)
+            if dest == at:
+                m.set8(e, 0xFF)
+                kind, qty = m.u8(e + 2), m.u8(e + 3)
+                if not m.u16(e + 4) & 0x8000:
+                    eco = self.economy(at)
+                    v = w16(qty + eco.goods)
+                    eco.goods = eco.goods_cap if v > eco.goods_cap else v
+                elif kind < 15:
+                    a = STORES + 2 * kind
+                    v = w16(m.u16(a) + qty)
+                    m.set16(a, STORE_MAX if v > STORE_MAX else v)
+                elif kind != 18:
+                    a = FUEL + 4 * (kind - 15)
+                    v = (m.u32(a) + (qty << 12)) & 0xFFFFFFFF
+                    m.set32(a, FUEL_MAX if v > FUEL_MAX else v)
+            elif m.u8(ROUTES_PENDING):
+                m.set8(e + 1, 1)
+            else:
+                hop = self.next_hop(at, dest)
+                if hop is None:
+                    m.set8(e, 0xFF)               # no route: the shipment is lost
+                else:
+                    m.set8(e, hop[0])
+                    m.set8(e + 1, hop[1])
+
+    def check_carrier_pool(self) -> None:
+        """$21E8C: clear "Stocks still in transit" once the carrier pool is empty."""
+        m = self.mem
+        if m.u8(IN_TRANSIT) and all(m.u8(CARRIER_POOL + POOL_ENTRY * k) & 0x80
+                                    for k in range(CARRIER_POOL_N)):
+            m.set8(IN_TRANSIT, 0)
+
+    def produce_raw(self) -> None:
+        """$21906: owned islands mine raw material; neutral islands with a command-centre
+        builder accumulate capacity/16 (which pays for the builder)."""
+        m = self.mem
+        for i in range(ISLANDS):
+            eco = self.economy(i)
+            if self.owner(i):
+                kind = eco.kind & 3
+                if kind == 3:
+                    continue
+                add = (100, eco.mines * 100, eco.lines * 25)[kind]
+            elif eco.has_command_centre:
+                add = eco.raw_cap >> 4
+            else:
+                continue
+            v = w16(eco.raw_stock + add)
+            eco.raw_stock = eco.raw_cap if v > eco.raw_cap else v
+
+    def player_lines(self):
+        """(island, line address) for production lines on player bases and factories."""
+        m = self.mem
+        for i in range(ISLANDS):
+            if self.owner(i) != 1:
+                continue
+            eco = self.economy(i)
+            if eco.kind & 3 not in (0, 2):
+                continue
+            for k in range(eco.lines):
+                yield i, eco.line(k)
+
+    def totals(self) -> int:
+        """$22020: per-product quantities in stores, pending, in transit and in production;
+        per-island goods including deliveries on the way. Returns d0."""
+        m = self.mem
+        m.buf[TOTALS:TOTALS + 30] = bytes(30)
+        m.buf[ISLAND_GOODS_TOTAL:ISLAND_GOODS_TOTAL + 128] = bytes(128)
+        m.buf[FUEL_TOTALS:FUEL_TOTALS + 12] = bytes(12)
+
+        def add(kind, qty, dest):
+            if kind < 15:
+                a = TOTALS + 2 * kind
+                m.set16(a, m.u16(a) + qty)
+            elif kind == 18:
+                a = ISLAND_GOODS_TOTAL + s16(2 * dest)
+                m.set16(a, m.u16(a) + qty)
+            else:
+                a = FUEL_TOTALS + 4 * (kind - 15)
+                m.set32(a, m.u32(a) + (qty << 12))
+
+        for k in range(GOODS_POOL_N):
+            e = GOODS_POOL + POOL_ENTRY * k
+            if not m.u8(e) & 0x80:
+                add(m.u8(e + 2), m.u8(e + 3), m.u16(e + 4))
+        for _, ln in self.player_lines():
+            if not m.u16(ln) & 0x8000:
+                add(m.u16(ln + 2), m.u16(ln + 8), m.u16(ln + 6))
+        for k in range(N_ITEMS):
+            a = TOTALS + 2 * k
+            m.set16(a, m.u16(a) + m.u16(STORES_PENDING + 2 * k) + m.u16(STORES + 2 * k))
+        for j in range(3):
+            a = FUEL_TOTALS + 4 * j
+            m.set32(a, m.u32(a) + m.u32(FUEL + 4 * j) + m.u32(FUEL_PENDING + 4 * j))
+        for i in range(ISLANDS):
+            a = ISLAND_GOODS_TOTAL + 2 * i
+            m.set16(a, m.u16(a) + self.economy(i).goods)
+        return self.economy(63).goods
+
+    def island_needs(self, i: int) -> int:
+        """Planning class of an island's own supply: 1 if its goods (with deliveries) are
+        below capacity/4, else 0. (The capacity/2 case tests the economy word +0 == 3,
+        which needs kind 0 with byte +1 = 3, so it never applies in practice.)"""
+        eco = self.economy(i)
+        threshold = eco.goods_cap >> 1
+        if self.mem.u16(eco.a) != 3:
+            threshold >>= 1
+        return 1 if threshold > self.mem.u16(ISLAND_GOODS_TOTAL + 2 * i) else 0
+
+    def plan_production(self, d0: int) -> int:
+        """$22180: choose the most urgent class of need and hand its products, shuffled, to
+        idle production lines. Returns d0."""
+        m = self.mem
+        mask = 0
+        for k in range(N_ITEMS):
+            item = ITEMS + ITEM_SIZE * k
+            if m.u16(TOTALS + 2 * k) < m.u16(item + 0x12):
+                mask |= 1 << (m.u16(item + 0x10) & 31)
+        for j in range(3):
+            if m.u32(FUEL_TOTALS + 4 * j) < FUEL_MAX:
+                mask |= 1 << (m.u16(FUEL_CLASS + 2 * j) & 31)
+        for i in range(ISLANDS):
+            if self.owner(i) == 1 and self.route(0, i) >= 0:
+                mask |= 1 << self.island_needs(i)
+        if not mask & 0xFF:
+            return w16(mask)
+        cls = 2 if mask & 4 else 1 if mask & 2 else 0
+        m.set16(PLAN_CLASS, cls)
+        cands = []
+        for k in range(N_ITEMS):
+            item = ITEMS + ITEM_SIZE * k
+            if m.u16(item + 0x10) == cls and m.u16(TOTALS + 2 * k) < m.u16(item + 0x12):
+                cands.append(k)
+        for j in range(3):
+            if m.u16(FUEL_CLASS + 2 * j) == cls and m.u32(FUEL_TOTALS + 4 * j) < FUEL_MAX:
+                cands.append(15 + j)
+        for i in range(ISLANDS):
+            if self.owner(i) == 1 and self.route(0, i) >= 0 and self.island_needs(i) == cls:
+                cands.append(0x40 + i)
+        if not cands:
+            raise NotImplementedError("plan_production with no candidates (needs a class >= 8)")
+        m.set16(PLAN_COUNT, len(cands))
+        for n, c in enumerate(cands):
+            m.set16(PLAN_LIST + 2 * n, c)
+        d0 = self.shuffle_words(PLAN_LIST, len(cands))
+        left = len(cands)
+        for n, (_, ln) in enumerate((x for x in self.player_lines() if m.u16(x[1]) & 0x8000)):
+            m.set16(ln, 0)
+            c = m.u16(PLAN_LIST + 2 * n)
+            if c < 0x40:
+                m.set16(ln + 2, c)
+                m.set16(ln + 6, 0xFFFF)
+                d0 = c
+            else:
+                m.set16(ln + 2, 18)
+                d0 = c - 0x40
+                m.set16(ln + 6, d0)
+            left -= 1
+            if left == 0:
+                break
+        return d0
+
+    def run_production(self, d0: int) -> int:
+        """$21EE8: production lines on player bases and factories. 0 = load the product's
+        steps/qty/cost, 1 = pay cost raw per step, 2 = ship the product, then idle (-1).
+        Returns d0 (see logistics_tick)."""
+        m = self.mem
+        for i in range(ISLANDS):
+            if self.owner(i) != 1:
+                continue
+            eco = self.economy(i)
+            kind = eco.kind & 3
+            d0 = (d0 & 0xFF00) | ((kind - 2) & 0xFF if kind else 0)     # andi.b #3 / subq.b #2
+            if kind not in (0, 2):
+                continue
+            for k in range(eco.lines):
+                ln = eco.line(k)
+                state = m.s16(ln)
+                d0 = w16(state)
+                if state < 0:
+                    continue
+                if state == 0:
+                    p = m.u16(ln + 2)
+                    d0 = w16(6 * p)
+                    t = PRODUCTS + d0
+                    m.set16(ln + 4, m.u16(t))
+                    m.set16(ln + 8, m.u16(t + 2))
+                    m.set16(ln + 10, m.u16(t + 4))
+                    m.set16(ln, 1)
+                elif state == 1:
+                    d0 = w16(eco.raw_stock - m.u16(ln + 10))
+                    if d0 & 0x8000:
+                        continue
+                    eco.raw_stock = d0
+                    m.set16(ln + 4, m.u16(ln + 4) - 1)
+                    if m.u16(ln + 4) == 0:
+                        m.set16(ln, 2)
+                else:
+                    slot = self.free_goods_slot()
+                    if slot is None:
+                        d0 = 0xFFFF
+                        continue
+                    m.set16(slot + 4, m.u16(ln + 6))
+                    m.set8(slot + 2, m.u16(ln + 2))
+                    m.set8(slot + 3, m.u16(ln + 8))
+                    d0 = 0x3F - (63 - i)
+                    m.set8(slot, i)
+                    m.set8(slot + 1, 1)
+                    m.set16(ln, 0xFFFF)
+        return d0
+
+    def free_goods_slot(self):
+        """$21D2C: first free entry among the first 128 of the goods pool."""
+        for k in range(FREE_GOODS_SEARCH):
+            e = GOODS_POOL + POOL_ENTRY * k
+            if self.mem.u8(e) & 0x80:
+                return e
+        return None
+
+    def distribute_raw(self, d0: int) -> None:
+        """$21AA0: resource islands ship 200 raw to bases and factories connected to VULCAN,
+        preferring ones at or below capacity/4, weighted by production lines. The stock
+        array starts from the leftover d0 (an original quirk)."""
+        m = self.mem
+        for i in range(ISLANDS):
+            m.set16(RAW_TOTAL + 2 * i, d0)
+        for k in range(RAW_POOL_N):
+            e = RAW_POOL + POOL_ENTRY * k
+            if not m.u8(e) & 0x80:
+                a = RAW_TOTAL + s16(2 * m.u16(e + 4))
+                m.set16(a, m.u16(a) + m.u16(e + 2))
+        for i in range(ISLANDS):
+            a = RAW_TOTAL + 2 * i
+            m.set16(a, m.u16(a) + self.economy(i).raw_stock)
+
+        def eligible(i):
+            eco = self.economy(i)
+            return self.owner(i) == 1 and self.route(0, i) >= 0 and eco.kind in (0, 2)
+
+        def needy(i):
+            return (self.economy(i).raw_cap >> 2) >= m.u16(RAW_TOTAL + 2 * i)
+
+        any_needy = any(eligible(i) and needy(i) for i in range(ISLANDS))
+        n = 0
+        for i in range(ISLANDS):
+            if eligible(i) and (needy(i) or not any_needy):
+                for _ in range(self.economy(i).lines):
+                    m.set16(SHIP_LIST + 2 * n, i)
+                    n += 1
+        if n == 0:
+            return
+        self.shuffle_words(SHIP_LIST, n)
+        left = n
+        for i in range(ISLANDS):
+            eco = self.economy(i)
+            if self.owner(i) != 1 or eco.kind != 1 or eco.raw_stock < 200:
+                continue
+            eco.raw_stock -= 200
+            slot = next((RAW_POOL + POOL_ENTRY * k for k in range(RAW_POOL_N)
+                         if m.u8(RAW_POOL + POOL_ENTRY * k) & 0x80), None)
+            if slot is None:
+                return                  # the 200 already taken are lost
+            m.set16(slot + 4, m.u16(SHIP_LIST + 2 * (n - left)))
+            m.set16(slot + 2, 200)
+            m.set8(slot, i)
+            m.set8(slot + 1, 1)
+            left -= 1
+            if left == 0:
+                return
 
 
-def network_filter_links(net: bytearray, owners: list) -> None:
+def network_filter_links(m: Mem, owners: list) -> None:
     """$2184E: a link is enabled (bit 15 clear) only when both ends share a non-zero owner."""
     for i in range(ISLANDS):
-        base = NETWORK_SIZE * i
-        for k in range(rd16(net, base)):
+        base = NETWORK + NETWORK_SIZE * i
+        for k in range(m.u16(base)):
             a = base + 4 + 4 * k
-            o = owners[rd16(net, a) & 0x3FFF]
+            o = owners[m.u16(a) & 0x3FFF]
             if owners[i] != 0 and o != 0 and (o == 1) == (owners[i] == 1):
-                net[a] &= 0x7F
+                m.buf[a] &= 0x7F
             else:
-                net[a] |= 0x80
-
-
-def set_route_relax_pending(m: bytearray) -> None:
-    """The relaxer state $216C6 sets up for game_main's incremental route recompute."""
-    m[0x1235] = 0xFF
-    m[0x1234] = 0xFF
-    wr16(m, 0xDF4, 7)
-    wr32(m, 0xDEC, ROUTES)
-    wr32(m, 0xDF0, NETWORK)
-
+                m.buf[a] |= 0x80

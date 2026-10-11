@@ -119,27 +119,46 @@ Islands therefore grow towards a fixed per-class template of buildings. Supply l
   - `$216C6` resets it and sets `[$1235]` = recompute pending. This happens whenever ownership changes.
   - `$2173A`, called from `game_main` while `[$1235]` is set, relaxes 8 rows per frame (`M[i][k] = min(M[i][k], w + M[n][k])` over i's enabled links) and repeats passes until a pass changes nothing.
   - Row 0 is VULCAN (the player base), so `M[0][i] >= 0` means island i is connected to the base. The island screen shows this as "DISTANCE TO BASE" / "ISOLATED".
-- **Next hop** (`$21A30`): the enabled neighbour n that minimises `w + M[dest][n]`, among neighbours closer to the destination. Shipments wait the link weight in seconds at each hop.
+- **Next hop** (`$21A30`): from island c towards d, the enabled neighbour n with `M[n][d] < M[c][d]` (strictly closer) that minimises `w + M[n][d]`. All compares are unsigned, so unreachable (−1) neighbours never qualify. A shipment moves to n and waits w seconds there.
 
 ## Logistics (`$F7A0`, called once per second from `game_main`)
 
-Schedule:
-- **every second:** `$1B8AE`, `$CDF2`, then the shipment movers `$21976`, `$21C28` and `$21E8C`;
-- **every 10 seconds:** `$174E4`, `$1761C` and `$176AC`;
-- **every 4 seconds:** `$21906`, `$22020`, `$22180`, `$21EE8` and `$21AA0`, in that order.
+Schedule. The countdowns are `$97E`/`$980`/`$982` (10), `$984` (1) and `$986` (4), and `[$97A]` counts seconds:
+- **every second:**
+  - objects `$1B8AE`;
+  - island counts `$CDF2`;
+  - the shipment movers `$21976` and `$21C28`;
+  - the carrier-pool check `$21E8C`.
+- **every 10 seconds:** carrier repair `$174E4`, and the Manta and Walrus hangar repairs `$1761C`/`$176AC`.
+- **every 4 seconds:** produce `$21906`, totals `$22020`, plan `$22180`, run production `$21EE8`, then distribute `$21AA0`, in that order.
 
-The economy is built around **raw material** (economy `+$02`, capacity `+$04`) and **goods** (`+$08`, capacity `+$0A`).
+The economy is built around **raw material** (economy `+$02`, capacity `+$04`) and **goods** (`+$08`, capacity `+$0A`). Raw material is mined and spent by production lines; goods are what islands build with (see the census). Stock compares in this layer are unsigned. While the route matrix is being recomputed (`[$1235]` set), shipments that are due wait one more second.
 
 | Routine | Every | What it does |
 |---|---|---|
-| `$21906` produce | 4 s | All owned islands add raw material, capped. Base (type 0): +100. Resource (1): +100 × count of `$2A/$2B/$2E` buildings (mines). Factory (2): +25 × count of `$2C/$2D`. Defence (3): +0. Neutral islands with a command centre under construction: +capacity / 16 |
-| `$21AA0` distribute raw | 4 s | Player side only. Raw stock is counted, including shipments in transit (`$F48`). Needy islands are bases and factories connected to VULCAN with stock ≤ capacity / 4, weighted by their production-line count. Each resource island with stock ≥ 200 ships 200 to a random needy island |
-| `$21976` move raw | 1 s | Advances raw shipments in pool `$66BC0` (128 × 6 bytes: `at.b, timer.b, amount.w, dest.w`). On arrival it adds to the destination's raw stock, capped. A shipment is dropped if the island it's at becomes neutral |
-| `$22180` plan production | 4 s | Player side only. Finds products below target: store items (`$B76` records `+$12` target, `+$10` priority class), the three fuels (`$D60–$D68` vs `$1FFFC0`, classes at `$D08–$D0C`), and owned connected islands whose goods are below capacity / 2 (defence) or capacity / 4. Picks the highest class with a need, shuffles the candidates, and assigns them to idle production lines on bases and factories |
-| `$21EE8` run production | 4 s | Production lines at economy `+$0E`, count in `+$0C`, 12 bytes each: `state.w, product.w, steps.w, dest.w, qty.w, cost.w`. State 0 loads steps, qty and cost from product table `$21FAE`. State 1 pays `cost` raw material per step and counts steps down. State 2 ships the product into the goods pool, then the line goes idle (`state = −1`) |
-| `$21C28` move goods | 1 s | Goods pool `$66710` (200 × 6 bytes: `at.b, timer.b, kind.b, qty.b, dest.w`). With `dest < 0` the shipment goes to the stockpile island `[$D4A]` and then the carrier: kind < 15 adds to carrier stores `$D78[kind]` (capped at 999); kinds 15–17 add qty × `$1000` to fuel `$D60[kind − 15]` (capped at `$1FFFC0`). Otherwise kind 18 adds qty to the destination island's goods, capped |
-| `$22020` totals | 4 s | Per-product totals of stores, in-transit and in-production quantities (`$DFA`, `$F3C–$F44`, per-island `$E18`), used by planning |
-| `$21E8C` | 1 s | Clears `[$D50]` ("Stocks still in transit") once pool `$66A10` (72 × 6) is empty |
+| `$21906` produce | 4 s | Owned islands add raw material, capped at capacity: base (kind 0) +100; resource (1) +100 × mines (`$2A/$2B/$2E`); factory (2) +25 × production lines; defence (3) nothing. A neutral island with a command-centre builder gains capacity / 16, which pays for the builder |
+| `$22020` totals | 4 s | Per product: stores + pending (`$D96`) + in the goods pool + in production lines → `$DFA` (items), `$F3C` (fuels, ×`$1000`). Per island: goods + island-supply deliveries on the way or in production → `$E18` |
+| `$22180` plan production | 4 s | Player side only; see below |
+| `$21EE8` run production | 4 s | Lines on player bases and factories, at economy `+$0E` (count `+$0C` = the factory buildings `$2C/$2D`), 12 bytes each: `state.w, product.w, steps.w, dest.w, qty.w, cost.w`. State 0 loads steps, qty and cost from `$21FAE`. State 1 pays `cost` raw per step (it waits if the stock is short) and counts down. State 2 puts the product into the goods pool at this island, then the line goes idle (−1). If the pool is full, it retries next time |
+| `$21AA0` distribute raw | 4 s | Player side only; see below |
+| `$21976` move raw | 1 s | Raw shipments, pool `$66BC0`: 128 × `at.b, timer.b, amount.w, dest.w`. If the island it's at turns neutral, it's dropped. At the destination it's added to stock, but waits a second if that would overflow. With no route onward it's delivered where it is. If that overflows, the original stores the destination's island number as the stock (a bug) |
+| `$21C28` move goods | 1 s | Goods shipments, pool `$66710`: 200 × `at.b, timer.b, kind.b, qty.b, dest.w`. Dropped if its island turns neutral, or if there's no route. `dest >= 0`: qty is added to that island's goods, capped (kind isn't checked). `dest < 0`: it travels to the stockpile island `[$D4A]`. There, kind < 15 adds to carrier stores `$D78[kind]` (cap 999), kinds 15–17 add qty × `$1000` to fuel `$D60` (cap `$1FFFC0`), and kind 18 is lost |
+| `$21E8C` | 1 s | Clears `[$D50]` ("Stocks still in transit") once the carrier pool is empty |
+
+**Pools.** The last 72 entries of the goods pool are the **carrier pool** `$66A10`. `$21D46` fills it. It adds the pending stores (`$D96`, `$D6C`) to the carrier's stores and fuel, then turns all of them into shipments from island `[$D4E]` to the stockpile (dest −1), in chunks of up to 255. It empties the stores and sets `[$D50]` ("Stocks still in transit"); they're re-added on arrival. Production only allocates from the first 128 entries (`$21D2C`). The movers and the totals cover all 200.
+
+**Planning** (`$22180`). The routine builds a bit mask of the priority classes that have a need:
+- **store items** (`$B76` records): a need when the total is below the target (`+$12`). It sets bit `+$10`, the class from the priority screen;
+- **fuels:** a need when below `$1FFFC0`. It sets bit `[$D08 + 2k]`;
+- **player islands connected to VULCAN:** bit 1 if their goods total is below capacity / 4, bit 0 otherwise. There's a capacity / 2 variant, but it tests the economy *word* `+0` for 3, so it never applies. Idle lines therefore top up islands even when nothing is needed.
+
+The most urgent class wins (2, then 1, then 0) and goes to `[$DF6]`. Its candidates are written to `$E98`, with island supplies as `$40 + island`, and the count to `[$DF8]`. The list is shuffled and handed to idle lines in island order: an item or fuel ships to the carrier (dest −1), an island supply (product 18) to its island.
+
+**Distribution** (`$21AA0`):
+1. Raw stock per island is counted into `$F48`: stock + raw shipments heading there. The array starts from the value the previous routine left in register d0 rather than 0 (an original quirk the model reproduces).
+2. Eligible destinations are player bases and factories connected to VULCAN. If any of them has stock ≤ capacity / 4, only those qualify.
+3. Each destination is listed once per production line (`$FC8`), and the list is shuffled.
+4. Every player resource island with ≥ 200 raw then ships 200 to the next destination on the list; its own connectivity isn't checked. If the raw pool is full, the 200 already deducted is lost.
 
 **Product table** (`$21FAE`, 6 bytes each: `steps, qty, cost per step`):
 
@@ -208,29 +227,36 @@ The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `
 
 ## Win/lose bookkeeping
 
-`$CDF2` (every second) counts owned islands: player in `[$D54]`, enemy in `[$D56]`, and player islands per type in `$D58`. `game_main` ends the game when either count reaches 64 (`[$466]` = 2 or 3).
+`$CDF2` (every second) counts owned islands: player in `[$D54]`, enemy in `[$D56]`, and player islands per kind in `$D58`. The kind-0 counter `$D58` is never cleared, so it grows by the number of player bases every second. `game_main` ends the game when either count reaches 64 (`[$466]` = 2 or 3).
 
 ## Carrier repair
 
-`$174E4` (every 10 s) spreads the repair rate `[$B3A]` × 150 / 256 evenly over the damaged carrier systems in the most urgent priority class. There are 10 systems at `$AF4`, 8 bytes each: current, max, priority class (0–2). This is the "Set Priorities" repair screen.
+`$174E4` (every 10 s) spreads the repair rate `[$B3A]` × 150 / 256 evenly over the damaged carrier systems in the most urgent priority class. There are 10 systems at `$AF4`, 8 bytes each: current, max, priority class (0–2; higher values count as 2). The step goes to `[$B5E]`, the class to `[$B5C]` and the count to `[$B60]`. This is the "Set Priorities" repair screen. If it's open (`[$718]` = 1), it asks for a redraw.
 
 ## Reference model and verification
 
-`tools/stsim.py` is a Python port of `world_sim_step` and everything it calls: census, structure handlers, planner, spot finder, RNG and the network refilter on capture. State is a `WorldState` loaded from and written back to a 512 KB RAM image. The route relaxation that `game_main` does afterwards isn't modelled.
+`tools/stsim.py` is a Python port of `world_sim_step` and the logistics tick (`$F7A0`). The state is the game's own memory layout: a 512 KB image in which only `STATE_REGIONS` are populated. Islands, slots and economy records are views onto it, so the state serialises trivially and moves either way between the model and an emulator.
 
-- `tools/capture_sim.py` runs the original in Hatari and starts a strategy game by poking the menu mouse (`$474/$476`) and left button (`$880`). It saves RAM around `world_warmup` and around single `world_sim_step` calls at chosen frames.
-- `tools/check_sim.py` compares the model with:
+Not modelled:
+- the route relaxation `game_main` runs per frame;
+- the unit-layer parts of the tick (`$1B8AE`, `$1761C`, `$176AC`);
+- the 3D buffers of the island loaded around the camera.
+
+Tools:
+- `tools/capture_sim.py` runs the original in Hatari and starts a strategy game by poking the menu mouse (`$474/$476`) and left button (`$880`). It saves RAM around `world_warmup`, around single `world_sim_step` calls, and around 8 consecutive logistics ticks at chosen frames.
+- `tools/check_sim.py` compares every state region byte for byte against:
   - the Hatari *out* captures;
   - the game's own code under Unicorn from the same *in* captures;
-  - Unicorn, step by step, over long runs from each capture and from randomly perturbed copies (ownership flips, damage, stocks, reverted builds, builders).
+  - Unicorn, second by second (step plus tick), over long runs from each capture and from randomly perturbed copies (ownership, damage, stocks, builds, production targets and classes, lines and shipments in flight, full pools). For these, the unit routines are stubbed out in the reference.
 
-  It compares the island table, economy, owners, slot order, both quota tables, network links, route matrix, RNG and the step globals byte for byte.
-- Status: the 601-step warm-up and single steps at 1, 10 and 40 minutes of game time match Hatari exactly. 1280-step runs, and 640-step fuzzed runs, match Unicorn exactly. No interrupt touched the RNG during the captured steps.
-- One branch isn't exercised: `find_free_island_spot` failing (an island with all slots full).
+Status:
+- Hatari: the 601-step warm-up, single steps at 1, 10 and 40 minutes of game time, and 24 logistics ticks match exactly.
+- Unicorn: 1280-second runs, and six 640-second fuzzed runs per capture, match exactly. No interrupt touched the RNG during the captures.
+- Not exercised: `find_free_island_spot` failing (all 32 slots full), and planning with a priority class ≥ 8 (the model raises; the original would shuffle an empty list over memory).
 
 ## Still to decode
 
 - Enemy tactical states 10/11, and the enemy unit AI (object handlers `$1A5B6` for object types 16–23, 33 and 34: missiles, drones, the enemy aircraft (33), and the homing missile (34, "Missile heading for Carrier!")).
-- How the enemy side's economy feeds its strength: production and the island census run for both owners, but distribution, planning and production lines are player-only.
+- How the enemy side's economy feeds its strength. Production and the island census run for both owners, but distribution, planning and production lines are player-only; enemy islands get goods from the NEMESIS resupply in `world_sim_step`.
 - The unit/object list at `$5DCDA` (`$140` bytes per object, count `[$A48]`): the carrier, Mantas, Walruses and enemy units.
 - The per-frame vehicle simulation called from `game_main` (`$17094`, `$1962A`, `$1A56A`, `$1AFAA`, `$1A296`, `$1B746`, `$20730`).

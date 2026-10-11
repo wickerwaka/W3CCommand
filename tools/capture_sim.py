@@ -6,11 +6,12 @@ state ($880) through the Hatari debugger, then saves full RAM ($0-$7FFFF):
   warmup_in.bin / warmup_out.bin   at world_warmup ($18474) entry and after it returns
   step_<vbl>_in.bin / _out.bin     at entry to and rts of the first world_sim_step ($1848E)
                                    that starts at least <vbl> frames after the warm-up
+  tick_<vbl>_<n>_in.bin / _out.bin the next --ticks logistics ticks ($F7A0 to its rts $F842)
   final.png                        screenshot after the last capture
 tools/check_sim.py steps the Python model and the game's own code (Unicorn) from each
 *_in state and compares both against *_out.
 
-  uv run python tools/capture_sim.py [--steps 3000 30000 120000] [--out emu/out/sim]
+  uv run python tools/capture_sim.py [--steps 3000 30000 120000] [--ticks 8] [--out emu/out/sim]
 """
 import argparse
 import os
@@ -25,9 +26,10 @@ TITLE_VBLS = 1500                   # the title menu is up and accepting clicks
 STRATEGY_BUTTON = (152, 51)         # "Start Strategy Game", screen coordinates
 WARMUP, WARMUP_RET = 0x18474, 0x18472
 SIM_STEP, SIM_STEP_RTS = 0x1848E, 0x18518
+TICK, TICK_RTS = 0xF7A0, 0xF842
 
 
-def build_scripts(out: Path, steps: list) -> Path:
+def build_scripts(out: Path, steps: list, ticks: int) -> Path:
     """Write the chained debugger scripts; returns the first one. Each script saves its
     state and arms the breakpoint of the next stage, so they are built back to front."""
     def script(name: str, body: str) -> Path:
@@ -45,6 +47,10 @@ def build_scripts(out: Path, steps: list) -> Path:
     prev = [0] + steps
     for i in reversed(range(len(steps))):
         vbl, delta = steps[i], steps[i] - prev[i]
+        for n in reversed(range(ticks)):
+            t_out = script(f"tick{i}_{n}_out", save(f"tick_{vbl}_{n}_out") + then("VBL>0", nxt))
+            t_in = script(f"tick{i}_{n}_in", save(f"tick_{vbl}_{n}_in") + then(f"pc=${TICK_RTS:x}", t_out))
+            nxt = script(f"tick{i}_{n}_arm", then(f"pc=${TICK:x}", t_in))
         rts = script(f"step{i}_out", save(f"step_{vbl}_out") + then("VBL>0", nxt))
         entry = script(f"step{i}_in", save(f"step_{vbl}_in") + then(f"pc=${SIM_STEP_RTS:x}", rts))
         arm = script(f"step{i}_arm", then(f"pc=${SIM_STEP:x}", entry))
@@ -63,6 +69,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--steps", type=int, nargs="*", default=[3000, 30000, 120000],
                     help="frames after the warm-up at which to capture one world_sim_step")
+    ap.add_argument("--ticks", type=int, default=8, help="consecutive logistics ticks after each step")
     ap.add_argument("--out", type=Path, default=EMU / "out" / "sim")
     ap.add_argument("--timeout", type=int, default=600)
     args, extra = ap.parse_known_args()
@@ -70,7 +77,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("*.bin"):
         old.unlink()
-    start = build_scripts(out, sorted(set(args.steps)))
+    start = build_scripts(out, sorted(set(args.steps)), args.ticks)
     prepare()
     env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
     with open(out / "hatari.log", "w") as log:
