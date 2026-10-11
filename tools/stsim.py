@@ -267,7 +267,9 @@ class WorldState:
         x, lo = lo >> 16, lo & 0xFFFF
         s = lo + (b & 0xFFFF) + x
         x, new_lo = s >> 16, s & 0xFFFF
-        new_hi = ((a >> 16) + (b >> 16) + x) & 0xFFFF
+        hi = (a >> 16) + (b >> 16) + x
+        self.rand_carry = hi >> 16          # the X flag the 68000 is left with
+        new_hi = hi & 0xFFFF
         m.set32(RNG, (new_hi << 16) | new_lo)
         m.set32(RNG + 4, (a & 0xFFFF0000) | lo)
         return m.u32(RNG)

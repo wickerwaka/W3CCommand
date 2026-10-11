@@ -228,11 +228,17 @@ def scenario_drones(m, rnd):
             x, z = outside()
             m.set16(rec + o, x)
             m.set16(rec + o + 2, z)
-    if rnd.random() < 0.3:
+    if rnd.random() < 0.5:                                    # launch sequence under way
         m.set8(0x122F, 0xFF)
-        m.set16(0x69A, rnd.randrange(4))
-        for k in range(4):
-            m.set16(0x65E + 14 * k, 0)
+        k = rnd.randrange(4)
+        m.set16(0x69A, k)
+        for j in range(4):
+            m.set16(0x65E + 14 * j, 0)
+        rec = 0x65E + 14 * k
+        m.set16(rec, rnd.choice((3, 3 | 8)))
+        m.set16(rec + 2, 0)
+        m.set16(rec + 4, rnd.choice((-600, -630, -700, -500)))
+        m.set16(stunits.DOOR_STATE, rnd.choice((0, 0, 1, 2)))
 
 
 def scenario_flares(m, rnd):
@@ -353,7 +359,126 @@ def scenario_build(m, rnd):
     m.set16(stsim.G_ISLAND, (i - 1) & 63)
 
 
-SCENARIOS = [scenario_engage, scenario_drones, scenario_flares, scenario_turret, scenario_voyage,
+def _near_island(m, rnd, obj, alt):
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    m.set32(obj + 0x0A, m.u32(buf + 2) + rnd.randrange(-6000, 6000))
+    m.set32(obj + 0x12, m.u32(buf + 0x0A) + rnd.randrange(-6000, 6000))
+    m.set32(obj + 0x0E, alt)
+    m.set32(obj + 0x3C, buf)
+    for k in range(64):
+        m.set16(obj + 0x40 + 2 * k, m.u16(stunits.FRAME))
+    return buf
+
+
+def scenario_air_raid(m, rnd):
+    """Mantas hovering over the island (in range, bit 9), so AA, SAM sites and drones
+    engage them; tough enough to survive a few hits."""
+    for k in range(2, 6):
+        o = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+        m.set16(o, 0x8603 | 0x200)
+        m.set16(o + 2, 5)
+        for off, v in zip((0x30, 0x32, 0x34, 0x36), (150, 75, 4, 250)):
+            m.set16(o + off, v)
+        m.set16(o + 0x1A, k - 2)
+        _near_island(m, rnd, o, rnd.randrange(250, 2200))
+        rec = 0x496 + 0x34 * (k - 2)
+        m.set8(rec + 1, 0)
+        m.set16(rec + 0x14, 30000)
+    m.set16(0x444, rnd.choice((0, 0x4000, 0x9000)))
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    for j in range(1, 32):                                   # an AA turret becomes a SAM site
+        e = buf + 0x12 + 0x40 * j
+        if m.u16(e + 2) == 0x26 and rnd.random() < 0.6:
+            m.set16(e + 2, 0x27)
+            m.set8(e + 0x1B, rnd.randrange(0, 3))
+
+
+def scenario_bombard(m, rnd):
+    """A blast volume (type 23) over the island: buildings, command centre, constructions
+    and trees are hit; enemy islands raise the difficulty."""
+    k = 30
+    o = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+    m.set16(o, 0x8F01 | 0x200)
+    m.set16(o + 2, 0x17)
+    for off, v in zip((0x30, 0x32, 0x34, 0x36), (rnd.choice((2000, 6000)), 2000, rnd.choice((3, 8, 11)), 200)):
+        m.set16(o + off, v)
+    m.set8(o + 0x1B, rnd.randrange(2, 8))
+    buf = _near_island(m, rnd, o, rnd.randrange(0, 400))
+    targets = [buf + 0x12 + 0x40 * j for j in range(1, 64) if m.u16(buf + 0x12 + 0x40 * j) & 0x401 == 0x401]
+    if targets:
+        e = rnd.choice(targets)
+        for k, off in enumerate((0x0A, 0x0E, 0x12)):
+            m.set32(o + off, m.u32(buf + 2 + 4 * k) + m.s16(e + 0x0A + 2 * k) + rnd.randrange(-300, 300))
+    if rnd.random() < 0.5:                                           # some damaged already
+        for e in targets:
+            m.set16(e + 0x38, rnd.randrange(1, 1500))
+    if rnd.random() < 0.3:                                           # a construction to hit
+        for e in targets[:2]:
+            m.set16(e + 2, m.u16(e + 2) + 0x0B if 0x25 <= m.u16(e + 2) <= 0x2E else m.u16(e + 2))
+
+
+def scenario_volcano(m, rnd):
+    """A volcano and both dish types on the loaded island, the camera attached."""
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    for j, t, fl in ((40, 7, 0x0F03), (41, 14, 0x1703), (42, 15, 0x1703)):
+        e = buf + 0x12 + 0x40 * j
+        m.buf[e:e + 0x40] = bytes(0x40)
+        m.set16(e, fl)
+        m.set16(e + 2, t)
+        m.set16(e + 0x0A, rnd.randrange(-4000, 4000))
+        m.set16(e + 0x0C, 0x50)
+        m.set16(e + 0x0E, rnd.randrange(-4000, 4000))
+        m.set8(e + 0x1A, rnd.choice((0, 1, 2)))
+        m.set8(e + 0x1B, rnd.randrange(1, 5))
+        m.set16(e + 0x1E, rnd.randrange(1, 40))
+    m.set16(buf + 0x0E, 0x40)
+    m.set32(stunits.OBJECTS + 0x3C, buf)
+
+
+def scenario_drones_home(m, rnd):
+    """Island drones in flight with low fuel/ammo/health, some with their pad destroyed."""
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    pads = [buf + 0x12 + 0x40 * j for j in range(32) if m.u16(buf + 0x12 + 0x40 * j + 2) == 0x25]
+    for j in range(36, 40):
+        e = buf + 0x12 + 0x40 * j
+        m.buf[e:e + 0x40] = bytes(0x40)
+        m.set16(e, 0x5503)
+        m.set16(e + 2, 0x16)
+        for off, v in zip((0x30, 0x32, 0x34, 0x36), (200, 60, 5, 250)):
+            m.set16(e + off, v)
+        for o in (0x0A, 0x0E):
+            m.set16(e + o, rnd.randrange(-6000, 6000))
+        m.set16(e + 0x0C, rnd.randrange(400, 2000))
+        m.set16(e + 6, rnd.randrange(0x10000))
+        m.set8(e + 0x1A, rnd.choice((1, 2, 3, 4)))
+        m.set8(e + 0x1B, rnd.randrange(1, 255))
+        m.set8(e + 0x1D, rnd.choice((2, 4)))
+        m.set16(e + 0x28, rnd.choice((2, 150, 900)))
+        m.set16(e + 0x26, rnd.choice((0, 2)))
+        m.set16(e + 0x38, rnd.choice((300, 2000)))
+        m.set32(e + 0x2A, rnd.choice(pads) if pads and rnd.random() < 0.7 else 0xFFFFFFFF)
+        m.set32(e + 0x1E, stunits.CARRIER)
+    if pads and rnd.random() < 0.3:
+        m.set16(rnd.choice(pads), 0)
+    m.set16(buf + 0x0E, 0x40)
+
+
+def scenario_enemy_carrier(m, rnd):
+    """The loaded island turned player-owned with the enemy carrier alongside: its
+    anti-ship sites fire at the enemy carrier."""
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    m.set8(stsim.OWNERS + m.u8(buf + 1), 1)
+    o = stunits.OBJECTS + stunits.OBJECT_SIZE * 19
+    m.set16(o, 0x9E03 | 0x200)
+    _near_island(m, rnd, o, 160)
+    m.set8(stsim.AI_ENABLED, 0)
+    m.set16(stsim.E_STRENGTH, rnd.choice((1500, 12000)))
+    m.set16(stunits.CARRIER, m.u16(stunits.CARRIER) & ~1)
+    m.set8(stunits.CARRIER + 1, m.u8(stunits.CARRIER + 1) & 0xFE)
+
+
+SCENARIOS = [scenario_air_raid, scenario_bombard, scenario_volcano, scenario_drones_home,
+             scenario_enemy_carrier, scenario_engage, scenario_drones, scenario_flares, scenario_turret, scenario_voyage,
              scenario_debris, scenario_collide, scenario_hangars, scenario_build]
 
 
@@ -428,7 +553,7 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=ROOT / "emu" / "out" / "action")
     ap.add_argument("--routine", action="append")
     ap.add_argument("--fuzz", type=int, default=2000, help="perturbed states per routine (where defined)")
-    ap.add_argument("--scenarios", type=int, default=90, help="perturbed multi-pass runs")
+    ap.add_argument("--scenarios", type=int, default=140, help="perturbed multi-pass runs")
     args = ap.parse_args()
     files = sorted(args.dir.glob("pass_*_in.bin"))
     if not files:

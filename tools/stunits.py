@@ -31,7 +31,7 @@ ISLAND_BUFFERS, ISLAND_BUFFER_SIZE = (0x62CDA, 0x63CEC), 0x12 + 64 * 0x40
 DEBRIS, SHARDS = 0x11D8, 0x66010
 OBJ_FLAGS, OBJ_PARAMS = 0x19362, 0x193D6
 SLOT_ENTRY = 0x18066
-ISLAND_HANDLERS, AI_HANDLERS = 0x19778, 0x1A5B6
+ISLAND_HANDLERS, AI_HANDLERS, HIT_HANDLERS = 0x19778, 0x1A5B6, 0x1BD70
 FRAME = 0x944
 NEW_INDEX = 0x6EE
 SINE = 0x1F5A                       # 4096 words, amplitude 16384
@@ -73,12 +73,19 @@ UNIT_REGIONS = [
     ("turret $6C8", 0x6C8, 0x10),
     ("vehicle bays", 0x496, 0x640 - 0x496),
     ("drone stations", 0x65C, 0x69C - 0x65C),
-    ("lift object $6D6", 0x6D6, 8),
+    ("lift object $6D6", 0x6D6, 0x6E2 - 0x6D6),
+    ("score", 0x918, 12),
+    ("debug flags $1188", 0x1188, 4),
+    ("debris patch $1CBF4", 0x1CBF4, 2),
+    ("debris recipes", 0x1C726, 58 * 18),
+    ("vector $2C", 0x2C, 4),
+    ("hit handler table", HIT_HANDLERS, 58 * 4),
+    ("damage table", 0x1BD58, 24),
     ("island count $74E", 0x74E, 2),
     ("cooldowns $93E", 0x93E, 6),
     ("frame counter $944", 0x944, 2),
     ("island context", 0xA28, 0xA58 - 0xA28),
-    ("matrix $A6C", 0xA6C, 4),
+    ("matrices $A68", 0xA68, 12),
     ("collision scratch", 0xA9C, 0xAB6 - 0xA9C),
     ("deck drones $C1A", 0xC1A, 2),
     ("supply transfer", 0xD3C, 0xD4A - 0xD3C),
@@ -95,6 +102,7 @@ UNIT_REGIONS = [
     ("drone tables", 0x1A4AA, 0x1C),
 ]
 UNIT_INPUT_REGIONS = {"sine table", "atan table", "key table", "view pointers", "object tables",
+                      "debris recipes", "vector $2C", "hit handler table", "damage table", "debug flags $1188",
                       "slot entry table", "island handler table", "ai handler table", "drone tables"}
 
 
@@ -369,7 +377,9 @@ class UnitState(WorldState):
             m.set16(DOOR_STATE, 3)
         pos = s16(m.u16(DOOR_POS) - 0x5DC)
         if pos < -0x3000:
-            raise NotImplementedError("dock door closed: $1DC6C")
+            self.dock_attach()
+            pos = -0x3000
+            m.set16(DOOR_STATE, 0)
         m.set16(DOOR_POS, pos)
 
 
@@ -752,7 +762,24 @@ class UnitState(WorldState):
                     m.set8(0x122F, 0)
                     return
             elif flags & 2:
-                raise NotImplementedError("defence drone launch sequence")
+                if not flags & 8:
+                    m.set16(DOCKED_WALRUS, k)
+                    m.set16(DOOR_STATE, 1)
+                    self.dock_attach()
+                    m.set8(rec + 1, m.u8(rec + 1) | 8)
+                z = m.s16(rec + 4)
+                if z >= -600:
+                    if m.u16(DOOR_STATE) == 0:
+                        m.set8(rec + 1, m.u8(rec + 1) & 0xFE)
+                        m.set16(DOCKED_WALRUS, 0xFFFF)
+                        m.set16(0xC1A, m.u16(0xC1A) + 1)
+                        self.dock_attach()
+                else:
+                    z = s16(z + 30)
+                    m.set16(rec + 4, z)
+                    if z >= -600:
+                        m.set16(DOOR_STATE, 3)
+                        self.dock_attach()
         m.set16(0x65C, 0)
         for k in range(4):
             a, rec = self.obj(11 + k), 0x65E + 14 * k
@@ -959,14 +986,7 @@ class UnitState(WorldState):
         a = self.find_free_island_object()
         if a is None:
             return
-        self.init_island_object(a, 0x1C)
-        self.reset_island_schedule()
-        m.set16(a + 0x0C, m.u16(e + 0x0C))
-        vx, vz = self.yaw_vector(e, 0x64)
-        m.set16(a + 0x0A, m.u16(e + 0x0A) + vx)
-        m.set16(a + 0x0E, m.u16(e + 0x0E) + vz)
-        for o in (4, 6, 8):
-            m.set16(a + o, m.u16(e + o))
+        self.create_sam_ahead(e, a)
         m.set8(a + 0x1B, 0x64)
         m.set32(a + 0x1E, t)
         m.set16(a + 0x22, 0x3C)
@@ -1052,8 +1072,7 @@ class UnitState(WorldState):
         m.set8(a + 0x1A, 0)
         m.set8(a + 0x1C, m.u8(0xA44))
 
-    ISLAND_BEHAVIOURS = {0x199B4: aa_turret, 0x19B44: command_centre_defence,
-                         0x19F00: drone_pad, 0x19F8A: antiship_site}
+    ISLAND_BEHAVIOURS = {}       # filled in after the class (some handlers are defined below)
 
     # ---- AI objects -------------------------------------------------------------------
     def ai_objects_step(self) -> None:
@@ -1068,7 +1087,10 @@ class UnitState(WorldState):
             if m.u16(a) & 0x101 == 0x101:
                 h = m.u32(AI_HANDLERS + 4 * m.u16(a + 2))
                 if h not in (0x1A69E, 0x19860):
-                    raise NotImplementedError(f"AI object handler ${h:05X} (type {m.u16(a + 2)})")
+                    fn = self.AI_BEHAVIOURS.get(h)
+                    if fn is None:
+                        raise NotImplementedError(f"AI object handler ${h:05X} (type {m.u16(a + 2)})")
+                    fn(self, a)
             m.set16(0x6F0, 21 + k)
 
     # ---- object passes ----------------------------------------------------------------
@@ -1276,15 +1298,19 @@ class UnitState(WorldState):
                     else:
                         continue
                 if m.s16(o + 0x30) < 0:
-                    hx, hz = self.rotate_yaw(w16(-ex), w16(-ez), w16(-m.u16(o + 6)))
+                    angle = w16(-m.u16(o + 6))
+                    hx, hz = self.rotate_yaw(w16(-ex), w16(-ez), angle)
                     m.set16(0xAB2, hz)
-                    if self.absw(hx) > s16(re + 400) or self.absw(hz) > s16(re + 1000):
+                    # Quirk: the rotation leaves cos(angle) in d3, so the along-hull limit is
+                    # cos + 1000 instead of radius + 1000 (up to 17384 for a carrier).
+                    if self.absw(hx) > s16(re + 400) or self.absw(hz) > s16(self.sin_cos(angle)[1] + 1000):
                         continue
                 else:
                     mx = ax if ax >= az else az
                     if mx > s16(m.u16(o + 0x30) + re):
                         continue
-                raise NotImplementedError(f"contact: object {k} with island entry {j}")
+                self.collision_response(o, e)
+                self.collision_response(e, o)
 
     def collide_objects(self) -> None:
         """$1BB40: world-object pairs (j < i), each tested on its scheduled pass."""
@@ -1355,10 +1381,11 @@ class UnitState(WorldState):
                     mx = s16(ax) if s16(ax) >= s16(az) else s16(az)
                     if mx > s16(ro + rp):
                         continue
-                    raise NotImplementedError(f"contact: objects {i} and {j}")
-                if self.absw(hx) > s16(r + 400) or self.absw(hz) > s16(r + 1000):
+                    r = None
+                if r is not None and (self.absw(hx) > s16(r + 400) or self.absw(hz) > s16(r + 1000)):
                     continue
-                raise NotImplementedError(f"contact: objects {i} and {j}")
+                self.collision_response(o, p)
+                self.collision_response(p, o)
 
     # ---- per second, per 10 seconds -----------------------------------------------------
     def island_range_check(self) -> None:
@@ -1488,3 +1515,946 @@ class UnitState(WorldState):
     def tree_cut(self, isl, k: int) -> None:
         if self.mem.u8(isl.a):
             raise NotImplementedError("tree cut on a loaded island (debris)")
+
+
+    # ---- shared helpers for island AI ---------------------------------------------------
+    def velocity_from_angles(self, a: int, speed: int):
+        """$1A164: (dx, dy, dz) for a speed along the object's pitch and heading."""
+        m = self.mem
+        y, h = self.rotate_pitch(0, speed, m.u16(a + 4))
+        x, z = self.rotate_yaw(0, h, m.u16(a + 6))
+        return x, y, z
+
+    def offset_aim(self, e: int, dx: int, dy: int, dz: int):
+        """$1A062: aim from island entry e at a local point (longs); pitch/heading to
+        +$3A/+$3C. Returns (Chebyshev distance as a word, heading)."""
+        m = self.mem
+        d = [s32(v - m.s16(e + 0x0A + 2 * k)) for k, v in enumerate((dx, dy, dz))]
+        pitch, heading = self.aim_angles(*d)
+        m.set16(e + 0x3A, pitch)
+        m.set16(e + 0x3C, heading)
+        a = [self.absw(v) for v in d]
+        dist = a[0]
+        if a[1] >= dist:
+            dist = a[1]
+        if a[2] >= dist:
+            dist = a[2]
+        return dist, heading
+
+    def create_sam_ahead(self, e: int, a: int) -> None:
+        """$19A96: a SAM (type 28) 100 ahead of the launcher, same angles."""
+        m = self.mem
+        self.init_island_object(a, 0x1C)
+        self.reset_island_schedule()
+        m.set16(a + 0x0C, m.u16(e + 0x0C))
+        vx, vz = self.yaw_vector(e, 0x64)
+        m.set16(a + 0x0A, m.u16(e + 0x0A) + vx)
+        m.set16(a + 0x0E, m.u16(e + 0x0E) + vz)
+        for o in (4, 6, 8):
+            m.set16(a + o, m.u16(e + o))
+
+    def _move_local(self, e: int, speed: int) -> None:
+        dx, dy, dz = self.velocity_from_angles(e, speed)
+        m = self.mem
+        m.set16(e + 0x0A, m.u16(e + 0x0A) + dx)
+        m.set16(e + 0x0C, m.u16(e + 0x0C) + dy)
+        m.set16(e + 0x0E, m.u16(e + 0x0E) + dz)
+
+    # ---- island behaviours (continued) ----------------------------------------------------
+    def dish_spin(self, e: int) -> None:
+        """$19862: type 14 spins."""
+        if not self.mem.u8(0xA45):
+            self.mem.set16(e + 6, self.mem.u16(e + 6) + 1000)
+
+    def dish_track(self, e: int) -> None:
+        """$19872: type 15 faces Manta 0 (object 2)."""
+        m = self.mem
+        if m.u8(0xA45):
+            return
+        o = self.obj(2)
+        m.set16(e + 6, self.atan2(s32(m.u32(o + 0x0A) - m.u32(0xA36)), s32(m.u32(o + 0x12) - m.u32(0xA3E))))
+
+    def volcano(self, e: int) -> None:
+        """$1989C: dormant (2) / erupting (1) cycles; erupting throws rocks (type 9)."""
+        m = self.mem
+        state = m.u8(e + 0x1A)
+        if state == 1:
+            if self._word_timer(e + 0x1E):
+                return self._volcano_dormant(e)
+            if not self._byte_timer(e + 0x1B):
+                return
+            a = self.find_free_island_object()
+            if a is not None:
+                self.init_island_object(a, 9)
+                self.reset_island_schedule()
+                for o in (0x0A, 0x0C, 0x0E):
+                    m.set16(a + o, m.u16(e + o))
+                m.set16(a + 0x0C, m.u16(a + 0x0C) + 600)
+                for o in (4, 6, 8):
+                    m.set16(a + o, self.rand())
+                angle = self.rand()
+                vx, vz = self.rotate_yaw((self.rand() & 0xF) + 0x1E, 0, angle)
+                m.set16(a + 0x20, vx)
+                m.set16(a + 0x22, vz)
+                m.set16(a + 0x1E, (self.rand() & 0x7FF) + 6000)
+            m.set8(e + 0x1B, (self.rand() & 0xF) + 0x10)
+        elif state == 0:
+            self._volcano_dormant(e)
+        else:
+            if self._word_timer(e + 0x1E):
+                m.set8(e + 0x1A, 1)
+                m.set16(e + 0x1E, (self.rand() & 0x7FF) + 0x800)
+
+    def _volcano_dormant(self, e: int) -> None:
+        m = self.mem
+        m.set8(e + 0x1A, 2)
+        m.set16(e + 0x1E, (self.rand() & 0x7FF) + 0x800)
+        m.set8(e + 0x1B, (self.rand() & 0xF) + 0x10)
+
+    def volcano_rock(self, e: int) -> None:
+        """$1996C: tumbling ballistic rock; gone below local height 100."""
+        m = self.mem
+        for o, d in ((4, 0x78A), (6, 0x3B1), (8, 0xFDEF)):
+            m.set16(e + o, m.u16(e + o) + d)
+        vy = s16(m.u16(e + 0x1E) - 0x10A)
+        m.set16(e + 0x1E, vy)
+        m.set16(e + 0x0C, m.u16(e + 0x0C) + (vy >> 6))
+        if m.s16(e + 0x0C) < 100:
+            m.set8(e + 1, m.u8(e + 1) & 0xFE)
+            return
+        m.set16(e + 0x0A, m.u16(e + 0x0A) + m.u16(e + 0x20))
+        m.set16(e + 0x0E, m.u16(e + 0x0E) + m.u16(e + 0x22))
+
+    def sam_launcher(self, e: int) -> None:
+        """$19AC4: vertical SAM launch at Mantas (or enemy fighters) within 7000."""
+        m = self.mem
+        if m.u8(0xA45):
+            return
+        if m.u8(e + 0x1B) == 0:
+            m.set8(e + 0x1B, ((self.rand() & 0x1F) + 0x40) & 0xFF)
+            t, d = self.nearest_hostile(mantas_only=True)
+            if d >= 0 and d <= 7000 and 250 <= s32(m.u32(t + 0x0E)) <= 2300:
+                a = self.find_free_island_object()
+                if a is not None:
+                    self.init_island_object(a, 0x1C)
+                    self.reset_island_schedule()
+                    m.set32(a + 0x1E, t)
+                    m.set16(a + 0x0A, m.u16(e + 0x0A))
+                    m.set16(a + 0x0C, 0xB4)
+                    m.set16(a + 0x0E, m.u16(e + 0x0E))
+                    m.set16(a + 4, 0xC000)
+                    m.set8(a + 0x1B, 0x3C)
+                    m.set16(a + 0x22, 0x1E)
+        m.set8(e + 0x1B, m.u8(e + 0x1B) - 1)
+
+    def sam(self, e: int) -> None:
+        """$19BC6: SAM: life +$1B; re-aims every 4 passes; turns at [$452], accelerates by 5
+        up to [$450]."""
+        m = self.mem
+        life = (m.u8(e + 0x1B) - 1) & 0xFF
+        m.set8(e + 0x1B, life)
+        if life == 0:
+            m.set16(e, 0)
+        if m.u8(e + 0x1C) == 0:
+            m.set8(e + 0x1C, 4)
+            loc = self.target_local(m.u32(e + 0x1E))
+            if loc is not None:
+                pitch, heading = self.aim_angles(*(loc[k] - m.s16(e + 0x0A + 2 * k) for k in range(3)))
+                m.set16(e + 0x3A, pitch)
+                m.set16(e + 0x3C, heading)
+        m.set16(e + 4, self.turn_towards(m.u16(e + 0x3A), m.u16(e + 4), m.u16(0x452)))
+        m.set16(e + 6, self.turn_towards(m.u16(e + 0x3C), m.u16(e + 6), m.u16(0x452)))
+        v = s16(m.u16(e + 0x22) + 5)
+        if v > m.s16(0x450):
+            v = m.s16(0x450)
+        m.set16(e + 0x22, v)
+        self._move_local(e, v)
+        m.set8(e + 0x1C, m.u8(e + 0x1C) - 1)
+
+    def island_drone(self, e: int) -> None:
+        """$19C46: island defence drone. +$1A state (0 init, 1 fly to waypoint, 2 search,
+        3 attack, 4+ land), +$1D state after the waypoint, +$28 fuel, +$26 missiles,
+        +$38 health, +$2A launch pad."""
+        m = self.mem
+        st = m.u8(e + 0x1A)
+        if st == 0:
+            m.set8(e + 0x1A, 1)
+            m.set8(e + 0x1B, 0xFF)
+            m.set8(e + 0x1D, 2)
+            return
+        if st == 1:
+            return self._drone_fly(e)
+        if st == 2:
+            if not m.u8(0xA45):
+                t, d = self.nearest_hostile()
+                if d >= 0 and d <= 25000:
+                    m.set32(e + 0x1E, t)
+                    m.set8(e + 0x1A, 3)
+                    return self._drone_steer(e, False)
+            m.set8(e + 0x1B, 0x14)
+            return self._drone_wander(e)
+        if st == 3:
+            t = m.u32(e + 0x1E)
+            if not m.u16(t) & 1:
+                m.set8(e + 0x1A, 2)
+                return self._drone_steer(e, False)
+            loc = self.target_local(t)
+            if loc is not None:
+                dist, heading = self.offset_aim(e, *loc)
+                if m.u16(e + 0x26):
+                    if s16(dist) > 5000:
+                        return self._drone_steer(e, False)
+                    if self.absw(heading - m.u16(e + 6)) <= 0x100:
+                        a = self.find_free_island_object()
+                        if a is not None:
+                            self.create_sam_ahead(e, a)
+                            m.set8(a + 0x1B, 0x64)
+                            m.set32(a + 0x1E, m.u32(e + 0x1E))
+                            m.set16(a + 0x22, 0xC8)
+                            m.set16(e + 0x26, m.u16(e + 0x26) - 1)
+            m.set8(e + 0x1B, 0x64)
+            return self._drone_wander(e)
+        pad = m.u32(e + 0x2A)
+        if not self._pad_ok(pad):
+            return self._drone_lost_pad(e)
+        m.set16(e + 4, self.turn_towards(0x4000, m.u16(e + 4), 0x1000))
+        if m.s16(e + 0x0C) > 0x2DA:
+            return self._island_drone_move(e)
+        m.set8(e + 1, m.u8(e + 1) & 0xFE)
+        isl = m.u32(0xA2C)
+        m.set16(isl + 0x10, m.u16(isl + 0x10) - 1)
+
+    def _pad_ok(self, pad: int) -> bool:
+        m = self.mem
+        return not pad & 0x80000000 and m.u8(pad + 1) & 1 and m.u16(pad + 2) == 0x25
+
+    def _drone_fly(self, e: int) -> None:
+        m = self.mem
+        fuel = m.u16(e + 0x28)
+        if fuel == 0 or fuel == 1:
+            m.set16(e, 0)
+            isl = m.u32(0xA2C)
+            m.set16(isl + 0x10, m.u16(isl + 0x10) - 1)
+            return
+        fuel -= 1
+        m.set16(e + 0x28, fuel)
+        if m.u8(e + 0x1D) != 4 and not m.u8(e + 0x2A) & 0x80:
+            if (m.u8(0xA45) or s16(fuel) <= 0xC8 or m.s16(e + 0x38) <= 0x1F4
+                    or m.u16(e + 0x26) == 0):
+                return self._drone_go_home(e)
+        dist, _ = self.offset_aim(e, *(m.s16(e + 0x1E + 2 * k) for k in range(3)))
+        left = (m.u8(e + 0x1B) - 1) & 0xFF
+        m.set8(e + 0x1B, left)
+        if left == 0 or s16(dist) <= 0xF0:
+            m.set8(e + 0x1A, m.u8(e + 0x1D))
+        m.set8(e + 0x1C, 0xFF if s16(dist) < 0x1F4 else 0)
+        self._drone_steer(e, True)
+
+    def _drone_go_home(self, e: int) -> None:
+        """$19E64: head for the pad (and process the fly state again this pass)."""
+        m = self.mem
+        pad = m.u32(e + 0x2A)
+        if not self._pad_ok(pad):
+            return self._drone_lost_pad(e)
+        x, y, z = m.u16(pad + 0x0A), m.u16(pad + 0x0C) + 0x320, m.u16(pad + 0x0E)
+        m.set16(e + 0x1E, x)
+        m.set16(e + 0x20, y)
+        m.set16(e + 0x22, z)
+        m.set8(e + 0x1A, 1)
+        m.set8(e + 0x1B, 0xFF)
+        m.set8(e + 0x1D, 4)
+        self._drone_fly(e)
+
+    def _drone_lost_pad(self, e: int) -> None:
+        m = self.mem
+        m.set8(e + 0x2A, 0xFF)
+        m.set8(e + 0x1A, 2)
+        self._drone_steer(e, False)
+
+    def _drone_wander(self, e: int) -> None:
+        """$19D10: a random waypoint near the drone, then fly there and search again."""
+        m = self.mem
+        def around(v, rng, sub, lo, hi):
+            v = s16(v + ((self.rand() & rng) - sub))
+            return hi if v > hi else lo if v < lo else v
+        m.set16(e + 0x1E, around(m.u16(e + 0x0A), 0xFFF, 0x800, -24000, 24000))
+        m.set16(e + 0x22, around(m.u16(e + 0x0E), 0xFFF, 0x800, -24000, 24000))
+        m.set16(e + 0x20, around(m.u16(e + 0x0C), 0x7FF, 0x400, 200, 2500))
+        m.set8(e + 0x1A, 1)
+        m.set8(e + 0x1D, 2)
+        self._drone_steer(e, False)
+
+    def _drone_steer(self, e: int, keep_slow: bool) -> None:
+        """$19EB2/$19EB6: turn towards +$3A/+$3C at [$44C], then move."""
+        m = self.mem
+        if not keep_slow:
+            m.set8(e + 0x1C, 0)
+        m.set16(e + 4, self.turn_towards(m.u16(e + 0x3A), m.u16(e + 4), m.u16(0x44C)))
+        m.set16(e + 6, self.turn_towards(m.u16(e + 0x3C), m.u16(e + 6), m.u16(0x44C)))
+        self._island_drone_move(e)
+
+    def _island_drone_move(self, e: int) -> None:
+        """$19EE2: speed [$44A], halved when close (+$1C)."""
+        m = self.mem
+        speed = m.u16(0x44A)
+        if m.u8(e + 0x1C):
+            speed >>= 1
+        self._move_local(e, speed)
+
+    # ---- AI objects -------------------------------------------------------------------
+    def antiship_missile(self, a: int) -> None:
+        """$1AABA: climbs to 800, then skims at 75 once clear of its island, homing on the
+        player carrier or deck drones (or the enemy carrier when +$1C is set)."""
+        m = self.mem
+        if self._word_timer(a + 0x1E):
+            return self.explode_world(a, 1)
+        alt = 0x4B if m.u8(a + 0x1A) else 0x320
+        want = w16((m.u16(a + 0x10) - alt) << 3)
+        m.set16(a + 4, self.turn_towards(want, m.u16(a + 4), 0x400))
+        if not m.u8(a + 0x1A):
+            buf = m.u32(a + 0x3C)
+            if not buf:
+                return self._missile_fly(a)
+            dx, dz = self.island_box_distance(a, buf)
+            if dx < 0 and dz < 0:
+                return self._missile_fly(a)
+            m.set8(a + 0x1A, 1)
+            m.set8(a + 0x1B, 1)
+            if not m.u8(a + 0x1C):
+                self.events.append(("message", "Missile heading for Carrier!"))
+            return self._missile_turn(a)
+        left = (m.u8(a + 0x1B) - 1) & 0xFF
+        m.set8(a + 0x1B, left)
+        if left:
+            return self._missile_turn(a)
+        m.set8(a + 0x1B, 0x14)
+        x0, z0 = m.u32(a + 0x0A), m.u32(a + 0x12)
+        t = self.obj(19)
+        if not m.u8(a + 0x1C):
+            t = best = CARRIER
+            best_d = 0xFFFFFFFF
+            for k in range(10, 15):
+                o = self.obj(k)
+                if not m.u8(o + 1) & 1:
+                    continue
+                dx = self.absl(m.u32(o + 0x0A) - x0) & 0xFFFFFFFF
+                dz = self.absl(m.u32(o + 0x12) - z0) & 0xFFFFFFFF
+                if s16(dz) < s16(dx):
+                    dz = (dz & 0xFFFF0000) | (dx & 0xFFFF)      # cmp.w / move.w quirk
+                if dz <= best_d:
+                    best_d, t = dz, o
+        m.set16(a + 0x20, self.atan2(s32(m.u32(t + 0x0A) - x0), s32(m.u32(t + 0x12) - z0)))
+        self._missile_turn(a)
+
+    def _missile_turn(self, a: int) -> None:
+        m = self.mem
+        m.set16(a + 6, self.turn_towards(m.u16(a + 0x20), m.u16(a + 6), 0x400))
+        self._missile_fly(a)
+
+    def _missile_fly(self, a: int) -> None:
+        m = self.mem
+        dx, dy, dz = self.velocity_from_angles(a, 0xB4)
+        for o, d in ((0x0A, dx), (0x0E, dy), (0x12, dz)):
+            m.set32(a + o, m.u32(a + o) + d)
+
+    def blast(self, a: int) -> None:
+        """$1A9A6: the explosion volume lasts +$1B passes."""
+        m = self.mem
+        v = (m.u8(a + 0x1B) - 1) & 0xFF
+        m.set8(a + 0x1B, v)
+        if v == 0:
+            m.set16(a, 0)
+
+    AI_BEHAVIOURS = {}
+
+    # ---- debris spawning --------------------------------------------------------------------
+    def explode_world(self, a: int, sound: int) -> None:
+        """$1C2BA and friends: remove a world object and throw its debris."""
+        self.mem.set16(a, 0)
+        self.spawn_debris_world(a)
+
+    def spawn_debris_world(self, a: int) -> None:
+        """$1CA8E: debris at a world object's position."""
+        m = self.mem
+        self._spawn_debris(a, m.u32(a + 0x0A), m.u32(a + 0x0E), m.u32(a + 0x12))
+
+    def spawn_debris_entry(self, e: int):
+        """$1C6D6 / $1CA74: debris at an island entry (local position + origin $A4A).
+        Returns the z offset of the last shard (left in d1), or None."""
+        m = self.mem
+        x, y, z = (s32(m.s16(e + 0x0A + 2 * k) + m.u32(0xA4A + 4 * k)) for k in range(3))
+        return self._spawn_debris(e, x, y, z)
+
+    def _oldest_burst(self):
+        """$1CC38: the active burst with the greatest age (later ones win ties)."""
+        m = self.mem
+        best, age = None, 0
+        for b in range(4):
+            a = DEBRIS + 0x12 * b
+            if m.u8(a) & 1 and m.u8(a + 1) >= age:
+                best, age = a, m.u8(a + 1)
+        if best is None:
+            raise NotImplementedError("no debris burst to recycle")
+        return best
+
+    def _set_pair(self, addr: int, angle: int) -> None:
+        s, c = self.sin_cos(angle)
+        self.mem.set16(addr, s)
+        self.mem.set16(addr + 2, c)
+
+    def _rot(self, addr: int, x: int, y: int, yaw: bool):
+        m = self.mem
+        s, c = m.s16(addr), m.s16(addr + 2)
+        x, y = s16(x), s16(y)
+        if yaw:
+            return (s16(((x * c + y * s) * 4 & 0xFFFFFFFF) >> 16), s16(((y * c - x * s) * 4 & 0xFFFFFFFF) >> 16))
+        return (s16(((x * c - y * s) * 4 & 0xFFFFFFFF) >> 16), s16(((y * c + x * s) * 4 & 0xFFFFFFFF) >> 16))
+
+    @staticmethod
+    def _divs_rem(r: int, d: int) -> int:
+        """ext.l of the low word, divs.w, swap: the remainder (or the high word on overflow)."""
+        n, d = s16(r), s16(d)
+        if d == 0:
+            raise NotImplementedError("debris recipe divides by zero")
+        q = int(n / d)
+        if not -0x8000 <= q < 0x8000:
+            return w16(n >> 16)
+        return w16(n - q * d)
+
+    def _spawn_debris(self, a: int, x: int, y: int, z: int) -> None:
+        """$1CA9C: a burst of shards from the object type's recipe ($1C726, 18 bytes)."""
+        m = self.mem
+        self._set_pair(0xA68, m.u16(a + 4))
+        self._set_pair(0xA6C, m.u16(a + 6))
+        self._set_pair(0xA70, m.u16(a + 8))
+        t = m.u16(a + 2)
+        if t > m.u16(0x2E):
+            return None
+        rec = 0x1C726 + 18 * t
+        count = m.u16(rec)
+        if count == 0:
+            return None
+        burst = next((DEBRIS + 0x12 * b for b in range(4) if not m.u8(DEBRIS + 0x12 * b) & 1), None)
+        if burst is None:
+            burst = self._oldest_burst()
+            self.free_burst(burst)
+        m.set8(burst + 1, 0)
+        m.set32(burst + 2, x)
+        m.set32(burst + 6, y)
+        m.set32(burst + 0x0A, z)
+        while count > m.u16(0x1198):
+            self.free_burst(self._oldest_burst())
+        m.set16(0x1198, m.u16(0x1198) - count)
+        if count < 2:
+            raise NotImplementedError("debris count < 2 (the original walks 65536 links)")
+        head = m.u32(0x1194)
+        last = head
+        for _ in range(count - 1):
+            last = m.u32(last + 0x16)
+        m.set32(0x1194, m.u32(last + 0x16))
+        m.set32(last + 0x16, 0)
+        m.set32(burst + 0x0E, head)
+        m.set8(burst, 1)
+        low = s32(m.u32(burst + 6) - m.s16(rec + 6)) <= 0x32
+        m.set16(0x1CBF4, (m.u16(0x1CBF4) & 0xF0FF) | (0 if low else 0xA00))
+        pairs = rec + 0x0A
+        model, left = 0, 0
+        shard = head
+        z3 = None
+        while shard:
+            if left == 0:
+                while True:
+                    model, n = m.u8(pairs), m.u8(pairs + 1)
+                    pairs += 2
+                    if n:
+                        break
+                left = n
+            left -= 1
+            zr = self._divs_rem(self.rand(), m.u16(rec + 8))
+            yr = self._divs_rem(self.rand(), m.u16(rec + 6))
+            xr = self._divs_rem(self.rand(), m.u16(rec + 4))
+            x1, y1 = self._rot(0xA70, xr, yr, False)
+            y2, z2 = self._rot(0xA68, y1, zr, False)
+            x3, z3 = self._rot(0xA6C, x1, z2, True)
+            m.set16(shard + 0x0A, x3)
+            m.set16(shard + 0x0C, y2)
+            m.set16(shard + 0x0E, z3)
+            div = m.u16(rec + 2)
+            if div == 0:
+                raise NotImplementedError("debris recipe divides by zero")
+            vx = (self.rand() >> 16) % div
+            m.set16(shard + 0x10, w16(-vx) if x3 < 0 else vx)
+            vy = (self.rand() >> 16) % div
+            # $1CBF4 is the bpl after tst.w d6: patched to bra near the ground, so low
+            # bursts always throw their shards upwards.
+            neg = y2 < 0 and m.u16(0x1CBF4) & 0x0F00 == 0x0A00
+            m.set16(shard + 0x12, w16(-vy) if neg else vy)
+            vz = (self.rand() >> 16) % div
+            m.set16(shard + 0x14, w16(-vz) if z3 < 0 else vz)
+            r = self.rand()
+            m.set16(shard + 4, r)
+            m.set16(shard + 6, r >> 16)
+            m.set16(shard + 8, self.rand())
+            m.set16(shard + 2, model)
+            shard = m.u32(shard + 0x16)
+        return z3
+
+    # ---- dock -----------------------------------------------------------------------------
+    def dock_attach(self) -> None:
+        """$1DC6C: mark the objects on the lift and in the dock (byte +1 bit 2), and pick
+        the carrier model for the lift/door state (types 1-3)."""
+        m = self.mem
+        d = m.s16(DOCKED_WALRUS)
+        a = 0
+        if d >= 0:
+            if d == 4:
+                a = self.obj(16)
+            else:
+                a = (self.obj(11) if m.u8(0x122F) else self.obj(6)) + OBJECT_SIZE * d
+            m.set8(a + 1, m.u8(a + 1) | 4)
+        m.set32(0x6DA, a)
+        bay = m.s16(0xDD0)
+        a = 0
+        if bay >= 0:
+            a = self.obj(2 + bay)
+            m.set8(a + 1, m.u8(a + 1) | 4)
+        m.set32(0x6D6, a)
+        if m.u16(LIFT_STATE):
+            t = 3
+        elif (d & bay) >= 0 or m.u16(DOOR_STATE):
+            t = 2
+        else:
+            t = 1
+        m.set16(CARRIER + 2, t)
+
+    # ---- collisions: responses ------------------------------------------------------------
+    def collision_response(self, hitter: int, victim: int) -> None:
+        """$1BD30: [$754] = the hitter's damage class, [$756] = its damage; then the victim
+        type's handler ($1BD70)."""
+        m = self.mem
+        cls = m.u16(hitter + 0x34)
+        m.set16(0x754, cls)
+        m.set16(0x756, m.u16(0x1BD58 + 2 * cls))
+        m.set16(0xAA6, 0)
+        m.set16(0xAA8, 0)
+        h = m.u32(HIT_HANDLERS + 4 * m.u16(victim + 2))
+        if h == 0x1BE58:
+            return
+        fn = self.HIT_HANDLERS.get(h)
+        if fn is None:
+            raise NotImplementedError(f"hit handler ${h:05X} (type {m.u16(victim + 2)})")
+        fn(self, hitter, victim, cls)
+
+    def score(self, points: int) -> None:
+        """$A3EE: add to the decimal score digits $918-$923."""
+        m = self.mem
+        a = 0x923
+        carry = points
+        for _ in range(12):
+            carry = (carry + m.u8(a)) & 0xFFFF
+            q, r = divmod(carry, 10)
+            m.set8(a, r)
+            a -= 1
+            carry = q
+            if carry == 0:
+                break
+
+    def buffer_island_owner(self) -> int:
+        """$1C680: owner of the island of buffer [$A9C]."""
+        m = self.mem
+        return self.owner(m.u8(m.u32(0xA9C) + 1))
+
+    def score_if_enemy(self, points: int) -> None:
+        """$1C66A."""
+        if self.buffer_island_owner() == 2:
+            self.score(points)
+
+    def entry_to_slot(self, e: int) -> None:
+        """$1C69C: write an island entry back to its structure slot ([$AA0] island, [$AA4])."""
+        m = self.mem
+        s = m.u32(0xAA0) + 0x12 + 0x0C * m.u16(0xAA4)
+        m.set16(s, m.u16(e + 2))
+        m.set16(s + 2, m.u16(e + 6))
+        m.set16(s + 4, m.u16(e + 0x38))
+        m.set16(s + 8, m.u16(e + 0x0A))
+        m.set16(s + 0x0A, m.u16(e + 0x0E))
+
+    def remove_entry(self, e: int) -> None:
+        """$1C696: clear the entry and its slot."""
+        self.mem.set16(e, 0)
+        self.mem.set16(e + 2, 0)
+        self.entry_to_slot(e)
+
+    def _sub_floor(self, a: int, d: int) -> None:
+        """$1C180: subtract with a floor of 0 (unsigned)."""
+        v = self.mem.u16(a) - d
+        self.mem.set16(a, 0 if v < 0 else v)
+
+    def hit_carrier(self, hitter, v, cls) -> None:
+        """$1C188: damage spread over the carrier systems by where the hull was hit."""
+        m = self.mem
+        if cls == 0:
+            return
+        m.set16(0x952, 2)
+        if m.u16(C_DAMAGE_MSG) == 0:
+            self.events.append(("message", "Carrier has been damaged!"))
+        m.set16(C_DAMAGE_MSG, 0x1F4)
+        dmg = m.u16(0x756)
+        d = dmg >> 4
+        self._sub_floor(0xB34, d)
+        self._sub_floor(0xB3C, w16(3 * d))
+        pos = m.s16(0xAB2)
+        def systems_1_4(x):
+            for a in (0xAFC, 0xB04, 0xB0C, 0xB14):
+                self._sub_floor(a, x)
+        def bow(x):
+            self._sub_floor(0xB1C, x)
+            self._sub_floor(0xB2C, x)
+            bay = m.s16(0xDD0)
+            if bay >= 0:
+                self._sub_floor(0x4AA + 0x34 * bay, x)
+        def stern(x):
+            self._sub_floor(0xAF4, x)
+            self._sub_floor(0xB24, x)
+        if pos > 300:
+            systems_1_4((dmg >> 3) >> 2)
+            bow(dmg >> 1)
+        elif pos < -300:
+            systems_1_4((dmg >> 3) >> 2)
+            stern(dmg >> 1)
+        else:
+            bow((dmg >> 3) >> 1)
+            stern((dmg >> 3) >> 1)
+            systems_1_4(dmg >> 2)
+
+    def hit_enemy_carrier(self, hitter, v, cls) -> None:
+        """$1C0F4: strength -= damage (not from its own fighters); destroyed at <= 0."""
+        m = self.mem
+        if cls == 0 or m.u16(hitter + 2) == 0x21:
+            return
+        st = s16(m.u16(stsim.E_STRENGTH) - m.u16(0x756))
+        if st > 0:
+            m.set16(stsim.E_STRENGTH, st)
+            return
+        m.set8(stsim.AI_ENABLED, 0)
+        m.set16(v, 0)
+        self.spawn_debris_world(v)
+        for _ in range(4):
+            self.score(25000)
+        self.events.append(("message", "Enemy carrier destroyed"))
+        m.set16(stsim.GAME_END_TIMER, 100)
+
+    def _vehicle_damage(self, rec: int, d: int, kind: str, v: int) -> bool:
+        """$1BF42: health -= d; True if it survives."""
+        m = self.mem
+        h = s16(m.u16(rec + 0x14) - d)
+        if h > 0:
+            m.set16(rec + 0x14, h)
+            return True
+        m.set16(rec + 0x14, 0)
+        self.spawn_debris_world(v)
+        raise NotImplementedError(f"{kind} destroyed")
+
+    def hit_walrus(self, hitter, v, cls) -> None:
+        """$1BE5A: rammed (class 11): pushed back and 1000/2000 damage; otherwise damage."""
+        m = self.mem
+        if cls == 0:
+            return
+        bay = m.u16(v + 0x1A)
+        rec = 0x570 + 0x34 * bay
+        if cls == 11:
+            speed = m.u16(rec + 4)
+            m.set16(rec + 4, (s16(-s16(speed)) >> 2) - 0x14)
+            m.set16(rec + 6, 0)
+            m.set16(rec + 2, 0)
+            m.set8(rec, m.u8(rec) & 0xFC)
+            if m.u8(0x1233) and bay == m.u16(0x6E0):
+                m.set8(0x1233, 0)
+            t = m.u16(hitter + 2)
+            vx, vz = self.yaw_vector(v, speed)
+            m.set32(v + 0x0A, m.u32(v + 0x0A) - vx)
+            m.set32(v + 0x12, m.u32(v + 0x12) - vz)
+            self.events.append(("message", f"Walrus {bay + 1} motion blocked by object"))
+            self._vehicle_damage(rec, 2000 if 1 <= t < 4 else 1000, "Walrus", v)
+            return
+        if m.u8(0x118A):
+            return
+        if self._vehicle_damage(rec, m.u16(0x756), "Walrus", v):
+            hold = m.u16(rec + 0x30)
+            m.set16(rec + 0x30, 0x1F4)
+            if hold == 0:
+                self.events.append(("message", f"Walrus {bay + 1} has been damaged!"))
+
+    def hit_manta(self, hitter, v, cls) -> None:
+        """$1BF84."""
+        m = self.mem
+        if cls == 0 or m.u8(0x118A):
+            return
+        bay = m.u16(v + 0x1A)
+        rec = 0x496 + 0x34 * bay
+        if self._vehicle_damage(rec, m.u16(0x756), "Manta", v):
+            hold = m.u16(rec + 0x30)
+            m.set16(rec + 0x30, 0x1F4)
+            if hold == 0:
+                self.events.append(("message", f"Manta {bay + 1} has been damaged!"))
+
+    def hit_laser(self, hitter, v, cls) -> None:
+        """$1BFFA: a laser bolt is removed (unless hit by another bolt)."""
+        if self.mem.u16(hitter + 2) != 0x10:
+            self.mem.set16(v, 0)
+
+    def hit_deck_drone(self, hitter, v, cls) -> None:
+        """$1C010: a carrier defence drone is destroyed by anything but another drone."""
+        m = self.mem
+        if 0x0A <= m.s16(hitter + 2) <= 0x0D:
+            return
+        self.events.append(("message", "Defence drone destroyed"))
+        m.set8(DOCKED_WALRUS, 0xFF if m.u8(v) & 4 else 0)
+        m.set16(DOOR_STATE, 3)
+        self.dock_attach()
+        m.set16(0x65E + 14 * m.u16(v + 0x1A), 0)
+        m.set16(v, 0)
+        self.spawn_debris_world(v)
+
+    def hit_world_simple(self, hitter, v, cls) -> None:
+        """$1C06E/$1C080/$1C312: removed, debris."""
+        self.mem.set16(v, 0)
+        self.spawn_debris_world(v)
+
+    def hit_flare(self, hitter, v, cls) -> None:
+        """$1C2A4."""
+        m = self.mem
+        m.set16(v, 0)
+        m.set16(0x1152, m.u16(0x1152) - 1)
+        self.spawn_debris_world(v)
+
+    def hit_antiship(self, hitter, v, cls) -> None:
+        """$1C2D2: destroyed; 250 points on an enemy island."""
+        self.mem.set16(v, 0)
+        self.spawn_debris_world(v)
+        self.score_if_enemy(250)
+
+    def hit_island_drone(self, hitter, v, cls) -> None:
+        """$1C092."""
+        m = self.mem
+        if cls == 0:
+            return
+        h = s16(m.u16(v + 0x38) - m.u16(0x756))
+        if h > 0:
+            m.set16(v + 0x38, h)
+            return
+        m.set16(v, 0)
+        self.score_if_enemy(750)
+        isl = stsim.ISLAND_TABLE + stsim.ISLAND_SIZE * m.u8(m.u32(0xA9C) + 1)
+        m.set16(isl + 0x10, m.u16(isl + 0x10) - 1)
+        self.spawn_debris_entry(v)
+
+    def hit_sam(self, hitter, v, cls) -> None:
+        """$1C292."""
+        self.mem.set16(v, 0)
+        self.spawn_debris_entry(v)
+
+    def hit_rock(self, hitter, v, cls) -> None:
+        """$1C2EE: rocks pass through the volcano."""
+        if self.mem.u16(hitter + 2) == 7:
+            return
+        self.mem.set16(v, 0)
+        self.spawn_debris_entry(v)
+        self.score(10)
+
+    def hit_tree(self, hitter, v, cls) -> None:
+        """$1C272."""
+        self.mem.set16(v, 0)
+        self.spawn_debris_entry(v)
+        self.remove_entry(v)
+        self.score(1)
+
+    def hit_enemy_fighter(self, hitter, v, cls) -> None:
+        """$1C4E0."""
+        m = self.mem
+        if m.u16(hitter + 2) == 4:
+            return
+        h = s16(m.u16(v + 0x38) - m.u16(0x756))
+        if h > 0:
+            m.set16(v + 0x38, h)
+            return
+        m.set16(v, 0)
+        self.spawn_debris_world(v)
+        m.set16(0x11CE, m.u16(0x11CE) - 1)
+
+    BUILDING_REWARDS = {0x1C3D6: (0x400, 2500), 0x1C3E6: (0, 1000), 0x1C3F4: (0, 1000),
+                        0x1C402: (0x200, 2000), 0x1C412: (0x100, 1000), 0x1C422: (0x100, 1000),
+                        0x1C432: (0x100, 2000), 0x1C442: (0x100, 2000), 0x1C452: (0x100, 1500)}
+
+    def hit_building(self, hitter, v, cls) -> None:
+        """$1C3D6..$1C45E: health written back to the slot; destroyed buildings score and
+        raise the difficulty on enemy islands."""
+        m = self.mem
+        h_addr = m.u32(HIT_HANDLERS + 4 * m.u16(v + 2))
+        diff, points = self.BUILDING_REWARDS[h_addr]
+        m.set16(0xAA8, diff)
+        m.set16(0xAA6, points)
+        h = s16(m.u16(v + 0x38) - m.u16(0x756))
+        if h > 0:
+            m.set16(v + 0x38, h)
+            return self.entry_to_slot(v)
+        left = self.spawn_debris_entry(v)
+        self.remove_entry(v)
+        if self.buffer_island_owner() == 2:
+            self.score(points)
+            if diff:
+                self.difficulty_add(diff)
+        else:
+            # Quirk: this branch lands on the "store health" code, so the destroyed entry
+            # gets d1 as its health and is written back to its slot again. By then d1 is the
+            # last debris shard's z offset (or the negative health if there was no debris).
+            m.set16(v + 0x38, h if left is None else left)
+            self.entry_to_slot(v)
+
+    def hit_command_centre(self, hitter, v, cls) -> None:
+        """$1C324: lasers do 1/8; at 0 the island turns neutral."""
+        m = self.mem
+        t = m.u16(hitter + 2)
+        if t == 0x15:
+            return
+        d = m.u16(0x756)
+        if t == 0x10:
+            d = s16(d) >> 3
+        h = s16(m.u16(v + 0x38) - d)
+        if h > 0:
+            m.set16(v + 0x38, h)
+            return self.entry_to_slot(v)
+        if self.buffer_island_owner() == 2:
+            self.score(5000)
+            self.difficulty_add(0x800)
+            m.set16(0xD52, m.u16(0xD52) + 1)
+        i = m.u8(m.u32(0xA9C) + 1)
+        m.set8(stsim.OWNERS + i, 0)
+        if i == m.u16(stsim.STOCKPILE):
+            m.set8(stsim.STOCKPILE, 0xFF)
+            self.stores_clear()
+        self.events.append(("neutral", i))
+        self.spawn_debris_entry(v)
+        self.remove_entry(v)
+        self.network_invalidate()
+
+    def hit_construction(self, hitter, v, cls) -> None:
+        """$1C4B6: progress -= the damage class; 15 points per hit on enemy islands."""
+        m = self.mem
+        h = s16(m.u16(v + 0x38) - m.u16(0x754))
+        if h <= 0:
+            return self.remove_entry(v)
+        m.set16(v + 0x38, h)
+        self.score_if_enemy(15)
+        self.entry_to_slot(v)
+
+    def hit_virus_bomb(self, hitter, v, cls) -> None:
+        """$1C512: entering a command centre from the front captures the island."""
+        m = self.mem
+        if m.u16(hitter + 2) == 0x29:
+            a = self.atan2(m.s16(0xAB0), m.s16(0xAB2))
+            if self.absw(a - m.u16(hitter + 6)) <= 10000:
+                i = m.u8(m.u32(0xA9C) + 1)
+                if self.owner(i) == 1:
+                    self.events.append(("message", "Friendly control centre bombed!"))
+                else:
+                    m.set8(stsim.OWNERS + i, 1)
+                    m.set16(0xD52, m.u16(0xD52) + 1)
+                    if i == m.u16(stsim.STOCKPILE):
+                        m.set8(stsim.STOCKPILE, 0xFF)
+                        self.stores_clear()
+                    self.events.append(("captured", i, 1))
+                    m.set16(v, 0)
+                    self.spawn_debris_world(v)
+                    self.network_invalidate()
+                    self.score(10000)
+                    return
+                m.set16(v, 0)
+                self.spawn_debris_world(v)
+                return
+        m.set16(v, 0)
+        self.spawn_debris_world(v)
+
+    def hit_blast(self, hitter, v, cls) -> None:
+        """$1C5EE explode_blast: debris, then a type 23 blast volume where it was."""
+        m = self.mem
+        self.spawn_debris_world(v)
+        pos = [m.u32(v + o) for o in (0x0A, 0x0E, 0x12)]
+        m.set16(v, 0)
+        a = self.find_free_object()
+        if a is None:
+            raise NotImplementedError("blast with no free object")
+        f = m.u16(FRAME)
+        m.set16(FRAME, (f + 1) & 0x7FFF)
+        self.init_world_object(a, 0x17)
+        self.reset_pair_schedules()
+        m.set16(FRAME, f)
+        for o, val in zip((0x0A, 0x0E, 0x12), pos):
+            m.set32(a + o, val)
+        m.set16(a + 0x30, 0x7D0)
+        m.set16(a + 0x32, 0x1F4)
+        m.set8(a + 0x1B, 5)
+
+    def hit_supply_drone(self, hitter, v, cls) -> None:
+        """$1C0CA."""
+        m = self.mem
+        if cls == 0:
+            return
+        h = s16(m.u16(v + 0x38) - m.u16(0x756))
+        if h > 0:
+            m.set16(v + 0x38, h)
+            return
+        raise NotImplementedError("supply drone destroyed")
+
+    HIT_HANDLERS = {}
+
+    def difficulty_add(self, d: int) -> None:
+        """difficulty_add $190EE then difficulty_apply $190FE."""
+        m = self.mem
+        v = m.u16(0x444) + d
+        m.set16(0x444, 0xFFFF if v > 0xFFFF else v)
+        self.difficulty_apply()
+
+    def difficulty_apply(self) -> None:
+        """$190FE: the defence parameters $446-$454 and command-centre health from [$444]."""
+        m = self.mem
+        d = m.u16(0x444)
+        m.set16(0x446, 3 if s16(d) >= 0x4000 else 2)
+        n = 3
+        if d & 0x8000:
+            n += w16(d - 0x8000) // 10000
+        m.set16(0x448, n)
+        d6 = d >> 6
+        d10 = d6 >> 4
+        m.set16(0x44A, (d10 >> 1) + d10 + 0x96)
+        m.set16(0x450, d10 + 0xC8)
+        d2 = w16(d6 + 0x400)
+        m.set16(0x452, d2)
+        d2 >>= 1
+        m.set16(0x44C, d2 + (d2 >> 1))
+        m.set16(0x454, d if d >= 0x4000 else 0x4000)
+        cc = (d >> 4) + 0x200
+        m.set16(0x44E, cc)
+        m.set16(0x18D74, cc + 0x800)
+        m.set16(0x18DCC, cc + 0x800)
+
+
+UnitState.ISLAND_BEHAVIOURS = {
+    0x199B4: UnitState.aa_turret, 0x19B44: UnitState.command_centre_defence,
+    0x19F00: UnitState.drone_pad, 0x19F8A: UnitState.antiship_site,
+    0x19862: UnitState.dish_spin, 0x19872: UnitState.dish_track,
+    0x1989C: UnitState.volcano, 0x1996C: UnitState.volcano_rock,
+    0x19AC4: UnitState.sam_launcher, 0x19BC6: UnitState.sam, 0x19C46: UnitState.island_drone,
+}
+UnitState.AI_BEHAVIOURS = {0x1AABA: UnitState.antiship_missile, 0x1A9A6: UnitState.blast}
+UnitState.HIT_HANDLERS = {0x1C188: UnitState.hit_carrier, 0x1C0F4: UnitState.hit_enemy_carrier, 0x1BF84: UnitState.hit_manta,
+                0x1BE5A: UnitState.hit_walrus, 0x1C2EE: UnitState.hit_rock, 0x1C010: UnitState.hit_deck_drone,
+                0x1BFFA: UnitState.hit_laser, 0x1C06E: UnitState.hit_world_simple, 0x1C080: UnitState.hit_world_simple,
+                0x1C5EE: UnitState.hit_blast, 0x1C512: UnitState.hit_virus_bomb, 0x1C092: UnitState.hit_island_drone,
+                0x1C272: UnitState.hit_tree, 0x1C292: UnitState.hit_sam, 0x1C2A4: UnitState.hit_flare,
+                0x1C312: UnitState.hit_world_simple, 0x1C4E0: UnitState.hit_enemy_fighter, 0x1C2D2: UnitState.hit_antiship,
+                0x1C0CA: UnitState.hit_supply_drone, 0x1C324: UnitState.hit_command_centre,
+                0x1C4B6: UnitState.hit_construction,
+                **{a: UnitState.hit_building for a in (0x1C3D6, 0x1C3E6, 0x1C3F4, 0x1C402, 0x1C412,
+                                             0x1C422, 0x1C432, 0x1C442, 0x1C452)}}
+
