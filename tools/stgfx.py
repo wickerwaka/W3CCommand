@@ -40,15 +40,15 @@ def st_palette(p: Payload, addr: int) -> list:
     return out
 
 
-def masked_sprite32(p: Payload, addr: int, rows: int) -> list:
-    """Sprite drawn by $B316: 32 px wide, per row two 16-px columns of
-    (mask, plane0, plane1, plane2, plane3) words. Mask bit 1 keeps the background.
-    Returns rows of colour indices, None for transparent pixels."""
+def masked_sprite(p: Payload, addr: int, rows: int, width: int = 32) -> list:
+    """Masked UI sprite, drawn by $B316 (32 px wide) or $B292 (16 px wide). Each row
+    is width/16 columns of (mask, plane0, plane1, plane2, plane3) words; a mask bit
+    of 1 keeps the background. Returns rows of colour indices, None for transparent."""
     out = []
     a = addr
     for _ in range(rows):
         row = []
-        for _col in range(2):
+        for _col in range(width // 16):
             mask, *planes = struct.unpack(">5H", p.bytes(a, 10))
             a += 10
             for bit in range(15, -1, -1):
@@ -76,7 +76,8 @@ def screen(bg=(40, 0, 40)) -> Image.Image:
 
 
 def sprite_table(p: Payload, addr: int):
-    """10-byte records consumed by $F0BE -> $B316: x.w, y.w, rows-1.w, ptr.l; ends at x < 0."""
+    """10-byte records consumed by $F0BE (32 px) / $F0D2 (16 px): x.w, y.w, rows-1.w,
+    ptr.l; ends at x < 0."""
     while p.s16(addr) >= 0:
         yield p.u16(addr), p.u16(addr + 2), p.u16(addr + 4) + 1, p.u32(addr + 6)
         addr += 10
