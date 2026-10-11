@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the 3D models drawn by model_draw_poly ($935E) to Wavefront OBJ, plus previews.
+"""Export the 3D models that tools/stmodel.py can decode to Wavefront OBJ, plus previews.
 
 Writes, under extracted/models/:
   model_NN.obj / model_NN.mtl   geometry (game frame converted to right-handed: z negated)
@@ -101,14 +101,17 @@ def main() -> None:
     for i, addr in enumerate(model_addresses(p)):
         m = decode(p, i)
         if m is None:
-            summary.append(f"{i:2d} ${addr:05X} skipped: handler ${p.u32(addr):05X}"
-                           + (f" basis ${p.u32(addr + 4):05X}" if p.u32(addr) == 0x935E else ""))
+            handler = p.u32(addr)
+            basis_at = {0x935E: 4, 0x9496: 4, 0x9550: 8}.get(handler)
+            summary.append(f"{i:2d} ${addr:05X} skipped: handler ${handler:05X}"
+                           + (f" basis ${p.u32(addr + basis_at):05X}" if basis_at else ""))
             continue
         write_obj(p, palette, m, OUT / f"model_{i:02d}.obj")
         render_preview(p, palette, m, OUT / f"model_{i:02d}.png")
         exported += 1
-        summary.append(f"{i:2d} ${addr:05X} extents={m.extents} verts={len(m.vertices)} polys={len(m.polys)} "
-                       f"lines={len(m.lines)} discs={len(m.discs)} attachments={m.attachments}")
+        summary.append(f"{i:2d} ${addr:05X} handler=${m.handler:05X} basis=${m.basis:05X} extents={m.extents} "
+                       f"verts={len(m.vertices)} polys={len(m.polys)} lines={len(m.lines)} discs={len(m.discs)} "
+                       f"attachments={m.attachments}" + (f" near_dist={m.near_dist}" if m.near_dist else ""))
     (OUT / "index.txt").write_text("\n".join(summary) + "\n")
     print(f"exported {exported} of {MODEL_COUNT} models -> {OUT.relative_to(ROOT)}")
 
