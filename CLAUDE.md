@@ -17,9 +17,17 @@ These are the original game binaries; treat them as read-only inputs. The disk h
 
 The GEMDOS text segment is only a loader. It enters supervisor mode, masks interrupts, and copies file bytes from offset `$400` onward to absolute address `$400`, then jumps there (`$400: JMP $405A`). From then on the game owns the machine and drives the hardware directly. **Payload file offset == runtime address.** TOS/EmuTOS ROM is not mapped because the game doesn't use it after takeover.
 
+## Python tooling
+
+The Python tooling is a uv project. The dependencies are in `pyproject.toml` and `uv.lock`, and the virtual env is `.venv/` (git-ignored).
+
+- Run tools with uv: `uv sync` once, then `uv run python tools/<script>.py`. Don't use bare `python3`.
+- Add a dependency with `uv add <pkg>`, never with `pip install`.
+- `tools/stgfx.py` is the shared library for decoding ST graphics: it reads the payload, decodes palettes and masked sprites, and outputs images with Pillow. Put new format decoders there, so the extraction scripts stay thin.
+
 ## Ghidra project
 
-- `python3 tools/split_tos.py` writes `extracted/loader.bin` (GEMDOS text before $400) and `extracted/carrier_payload.bin` (loaded at $400).
+- `uv run python tools/split_tos.py` writes `extracted/loader.bin` (GEMDOS text before $400) and `extracted/carrier_payload.bin` (loaded at $400).
 - Project: `ghidra/W3CCommand.gpr`, program `carrier_payload.bin`, language `68000:BE:32:default` (Ghidra's 68k default is a 68040 superset; there is no plain 68000 ID, so beware 020+ opcodes decoded from data).
 - `ghidra/scripts/AtariSTMemoryMap.java` (headless pre-script) builds the memory map:
   - `vectors` $0–$3FF, with exception, autovector, trap and MFP vectors labeled.

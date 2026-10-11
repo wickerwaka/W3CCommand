@@ -9,3 +9,7 @@ ghidra/*.rep/**/*.ps
 ghidra/*.rep/**/~index.bak
 
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
