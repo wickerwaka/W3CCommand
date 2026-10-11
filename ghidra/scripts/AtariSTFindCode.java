@@ -83,6 +83,8 @@ public class AtariSTFindCode extends GhidraScript {
 			analyzeChanges(currentProgram);
 		}
 
+		totalFuncs += adoptOrphans(listing);
+
 		long undefined = 0;
 		for (long a = CODE_START; a < CODE_END; a++) {
 			if (listing.getInstructionContaining(toAddr(a)) == null && listing.getDefinedDataContaining(toAddr(a)) == null) {
@@ -91,6 +93,32 @@ public class AtariSTFindCode extends GhidraScript {
 		}
 		println(String.format("created %d functions; %d of %d code-area bytes still undefined",
 			totalFuncs, undefined, CODE_END - CODE_START));
+	}
+
+	// Disassembled code outside any function (for example handlers reached through jump
+	// tables that analysis decoded but never made functions). A run of such instructions
+	// starts where the previous instruction does not fall through into it.
+	private int adoptOrphans(Listing listing) throws Exception {
+		int created = 0;
+		boolean changed = true;
+		while (changed && !monitor.isCancelled()) {
+			changed = false;
+			Instruction prev = null;
+			for (Instruction insn : listing.getInstructions(toAddr(CODE_START), true)) {
+				Address a = insn.getAddress();
+				if (a.getOffset() >= CODE_END) {
+					break;
+				}
+				boolean runStart = prev == null || prev.getFallThrough() == null || !prev.getFallThrough().equals(a);
+				if (runStart && getFunctionContaining(a) == null && createFunction(a, null) != null) {
+					created++;
+					changed = true;
+				}
+				prev = insn;
+			}
+		}
+		println("adopted " + created + " orphan code runs as functions");
+		return created;
 	}
 
 	private static boolean inCode(long v) {

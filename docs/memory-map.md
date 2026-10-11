@@ -54,7 +54,6 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 
 ## Known gaps
 
-- Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions (about 660 in total). About 41 KB of the code area is still undefined, mostly embedded tables.
-- Some code is disassembled but not inside a function, for example the palette switches at `$13AA8–$142F8` and the screen setup before `$C512`.
+- Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4` contains bytes that decode as 68020-only instructions (`CAS2`), which is probably data inside the function. Needs manual review.
 - The internal formats of the `$22E62–$40E25` block are not yet identified. Next step: follow the `move.l #$2E32A…` / `#$3562A…` pointer pairs from `$BFAE`/`$C4D8` and the renderer's model loads.
