@@ -147,10 +147,10 @@ The economy is built around **raw material** (economy `+$02`, capacity `+$04`) a
 | `$21EE8` run production | 4 s | Lines on player bases and factories, at economy `+$0E` (count `+$0C` = the factory buildings `$2C/$2D`), 12 bytes each: `state.w, product.w, steps.w, dest.w, qty.w, cost.w`. State 0 loads steps, qty and cost from `$21FAE`. State 1 pays `cost` raw per step (it waits if the stock is short) and counts down. State 2 puts the product into the goods pool at this island, then the line goes idle (−1). If the pool is full, it retries next time |
 | `$21AA0` distribute raw | 4 s | Player side only; see below |
 | `$21976` move raw | 1 s | Raw shipments, pool `$66BC0`: 128 × `at.b, timer.b, amount.w, dest.w`. If the island it's at turns neutral, it's dropped. At the destination it's added to stock, but waits a second if that would overflow. With no route onward it's delivered where it is. If that overflows, the original stores the destination's island number as the stock (a bug) |
-| `$21C28` move goods | 1 s | Goods shipments, pool `$66710`: 200 × `at.b, timer.b, kind.b, qty.b, dest.w`. Dropped if its island turns neutral, or if there's no route. `dest >= 0`: qty is added to that island's goods, capped (kind isn't checked). `dest < 0`: it travels to the stockpile island `[$D4A]`. There, kind < 15 adds to carrier stores `$D78[kind]` (cap 999), kinds 15–17 add qty × `$1000` to fuel `$D60` (cap `$1FFFC0`), and kind 18 is lost |
+| `$21C28` move goods | 1 s | Goods shipments, pool `$66710`: 200 × `at.b, timer.b, kind.b, qty.b, dest.w`. Dropped if its island turns neutral, or if there's no route. `dest >= 0`: qty is added to that island's goods, capped (kind isn't checked). `dest < 0`: it travels to the stockpile island `[$D4A]`. There, kind < 15 adds to the **stockpile** stores `$D78[kind]` (cap 999), kinds 15–17 add qty × `$1000` to stockpile fuel `$D60` (cap `$1FFFC0`), and kind 18 is lost. The stockpile isn't on board: the supply drone ferries it to the carrier (`docs/units.md` §6.7) |
 | `$21E8C` | 1 s | Clears `[$D50]` ("Stocks still in transit") once the carrier pool is empty |
 
-**Pools.** The last 72 entries of the goods pool are the **carrier pool** `$66A10`. `$21D46` fills it. It adds the pending stores (`$D96`, `$D6C`) to the carrier's stores and fuel, then turns all of them into shipments from island `[$D4E]` to the stockpile (dest −1), in chunks of up to 255. It empties the stores and sets `[$D50]` ("Stocks still in transit"); they're re-added on arrival. Production only allocates from the first 128 entries (`$21D2C`). The movers and the totals cover all 200.
+**Pools.** The last 72 entries of the goods pool are the **carrier pool** `$66A10`. `$21D46` fills it. It adds the queued transfers (`$D96`, `$D6C`) back to the stockpile stores and fuel, then turns all of them into shipments from island `[$D4E]` to the stockpile (dest −1), in chunks of up to 255. It empties the stores and sets `[$D50]` ("Stocks still in transit"); they're re-added on arrival. Production only allocates from the first 128 entries (`$21D2C`). The movers and the totals cover all 200.
 
 **Planning** (`$22180`). The routine builds a bit mask of the priority classes that have a need:
 - **store items** (`$B76` records): a need when the total is below the target (`+$12`). It sets bit `+$10`, the class from the priority screen;
@@ -280,7 +280,5 @@ Status:
 
 ## Still to decode
 
-- Enemy close-range combat (states 10/11), and the enemy unit AI (object handlers `$1A5B6` for object types 16–23, 33 and 34: missiles, drones, the enemy aircraft (33), and the homing missile (34, "Missile heading for Carrier!")).
 - How the enemy side's economy feeds its strength. Production and the island census run for both owners, but distribution, planning and production lines are player-only; enemy islands get goods from the NEMESIS resupply in `world_sim_step`.
-- The unit/object list at `$5DCDA` (`$140` bytes per object, count `[$A48]`): the carrier, Mantas, Walruses and enemy units.
-- The per-frame vehicle simulation called from `game_main` (`$17094`, `$1962A`, `$1A56A`, `$1AFAA`, `$1A296`, `$1B746`, `$20730`).
+- The unit layer (object list, vehicles, weapons, close-range combat): analysed in `docs/units.md`, not yet modelled.
