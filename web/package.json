@@ -1,0 +1,15 @@
+{
+  "name": "w3ccommand-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "data": "cd .. && uv run python tools/export_web.py",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  }
+}
