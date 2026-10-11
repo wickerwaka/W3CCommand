@@ -197,6 +197,10 @@ A title-screen snapshot (1500 frames after `game_main`) differs from the file in
 - `$B187`;
 - `$20654`.
 
+Once a game starts, two more change, and both are simulation state (see `docs/simulation.md`):
+- `$18D74`/`$18DCC`: command-centre max health, patched by `difficulty_apply`;
+- `$18EE9–$18EF1`: the tree quota row, decremented by the island census.
+
 ## Known gaps
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.

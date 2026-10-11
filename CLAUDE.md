@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-W3CCommand is a planned port of the 1988 Atari ST game Carrier Command to a modern browser app (desktop and mobile). The repository is in the decompilation phase: there is a Ghidra project and its setup tooling (below), but no game code, build system, test suite or git history yet. Update this file when that tooling is added.
+W3CCommand is a planned port of the 1988 Atari ST game Carrier Command to a modern browser app (desktop and mobile). The repository is in the decompilation phase: there is a Ghidra project and its setup tooling (below), but no game code or test suite yet. The island simulation has a Python reference model verified against the original (below). Update this file when more tooling is added.
 
 ## Source material
 
@@ -27,6 +27,12 @@ The Python tooling is a uv project. The dependencies are in `pyproject.toml` and
 - `tools/stmodel.py` decodes 3D models; its docstring is the format spec. `tools/stemu.py` runs payload routines under Unicorn (68000), with the payload loaded at `$400` and identity rotations. Use it to evaluate runtime-dependent code and to validate decoders. `uv run python tools/check_models.py` cross-checks the model decoder against the emulator; run it after changing `stmodel.py`.
 - `uv run python tools/dis68k.py <addr> [len]` disassembles payload bytes with Capstone, independent of Ghidra's function bounds. Use it where Ghidra's analysis is wrong: computed jumps, handler slots padded with zeros, self-modifying code.
 - Extraction scripts write to `extracted/` (git-ignored and regenerable). `uv run python tools/extract_all.py` regenerates everything (palettes, fonts, UI sprites/panels, items, models, islands, sounds, copy protection) and runs the model cross-check. Each `extract_*.py` docstring documents its format. Run `tools/split_tos.py` first, then for example `uv run python tools/extract_ui_sprites.py` → `extracted/ui/`.
+
+## Simulation model
+
+- `tools/stsim.py` is a Python reference model of the island simulation (`world_sim_step` and callees). `WorldState.from_ram` / `to_ram` convert to and from a 512 KB RAM image. `docs/simulation.md` documents the rules.
+- `uv run python tools/capture_sim.py` starts a strategy game in Hatari headless (it pokes the menu mouse variables) and saves RAM before and after the warm-up and single sim steps to `emu/out/sim/`. It takes about 50 s.
+- `uv run python tools/check_sim.py` compares the model byte for byte against those Hatari captures and against the game's own code under Unicorn, including long and fuzzed runs (about 35 s). Run it after changing `stsim.py`; it must print no MISMATCH.
 
 ## Hatari (running the original)
 

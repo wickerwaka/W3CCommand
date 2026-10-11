@@ -14,7 +14,7 @@ This is a reverse-engineering reference for the strategy simulation in `CARRIER.
 |---|---|---|
 | `$069B80` | 64 × `$192` | **Island table** (see below) |
 | `$069B40` | 64 × 1 | **Owner**: 0 neutral, 1 player, 2 enemy |
-| `$069AC0` | 64 × 2 | Per-island word, tested `>= 0` with owner 2 in `world_sim_step` *(enemy target / threat?)* |
+| `$069AC0` | 64 × 2 | Not separate state: row 63 of the route matrix, the route distance from NEMESIS (−1 = not connected) |
 | `$066EC0` | 64 × `$32` | **Island economy state** (see below) |
 | `$066690` | 32 × 4 | Slot visiting order: (slot index, slot offset) pairs; built by `$18924`, shuffled with the RNG every 64 steps |
 | `$062CDA`, `$063CEC` | `$12` + 32 × `$40` each | 3D object buffers for the island loaded near the camera. Island byte `+1` chooses the buffer. Slot changes are mirrored here by `$18276` |
@@ -59,46 +59,55 @@ This is a reverse-engineering reference for the strategy simulation in `CARRIER.
 
 | Types | Meaning | Simulation handler (`$18C28`, 8 bytes per type: handler.l, arg.l) |
 |---|---|---|
-| `$18–$1B` | trees | `$18874`: once there are ≥ 6 active buildings, an inactive tree has a 25% chance per step of being removed |
+| `$18–$1B` | trees | `$18874`: once there are ≥ 6 active buildings, an inactive tree has a 25% chance per step of being removed. Types `$19–$1B` have quota −1 and fall back to the tree row (see census) |
 | `$24–$2E` | finished buildings (models 36–46) | `$1876E`: inactive → reverts to its under-construction type (+`$B`) with progress = arg.lo. Active → health +100 per step up to arg.hi |
-| `$29` | command centre | `$18784`: health +100 per step up to arg.hi |
+| `$29` | command centre | `$18784`: health +100 per step up to arg.hi. Its max health (also used by `$34`) is patched at game start, see below |
 | `$2F–$39` | buildings under construction (type − `$B` = finished type) | `$186F6`, below |
 | `$34` | command centre under construction (the start-list structure) | `$187A0`, below |
 
 handler arg = (max health.w, build target.w); for example `$24`: 4000, 48.
 
+**Difficulty** (`difficulty_apply`, `$190FE`): the new-game setup (`$42A8`) sets `[$444]` = 0 for a strategy game (`[$124A]` set) or `$2000` for an action game. `difficulty_apply` derives `$446–$454` from it, and patches the command-centre max health in the handler table (`$18D74`, `$18DCC`) to `$A00 + [$444] >> 4`: 2560 in a strategy game, where the file has 0. `difficulty_add` (`$190EE`) raises `[$444]` with saturation. It's called from four places that aren't decoded yet.
+
 **Under construction** (`$186F6`):
 - Active: progress +1 per step if 30 units of resource B can be paid. When progress reaches the build target, or immediately in warm-up mode, the slot becomes the finished type at full health.
-- Inactive: progress −1 per step (on neutral islands only with a 1-in-4 chance). At 0 the slot is cleared, except the runway (`$2F`).
+- Inactive: progress −1 per step (on neutral islands only with a 1-in-4 chance), refunding 20 goods (capped). At 0 the slot is cleared, except the runway (`$2F`).
 
-**Command centre construction** (`$187A0`):
-- Owned island: +4 per step if 100 units of resource A can be paid, capped at the target. On completion (`$187D6`):
+**Command centre construction** (`$187A0`). A builder (`$34`) only works on a **neutral** island:
+- Neutral island (class 0): +4 per step if 100 raw material can be paid, capped at the target (61). Once the target is reached, the next step completes it (`$187D6`):
   - the slot becomes `$29` at full health;
   - the island type = code & 3;
-  - resource B = 5000;
+  - goods = 5000, not capped;
   - owner = (code >> 4) + 1;
   - the game prints "X is now a friendly/an enemy island", then recomputes the class (`$1851A`) and the network (`$216C6`).
-- Neutral island: −8 per step, and the slot is cleared at 0.
+- Owned island: −8 per step, and the slot is cleared at 0.
 
 ## One simulation step (`world_sim_step`)
 
 1. Advance `[$8D0]` (island index, 0–63). On wrap, shuffle the slot order table.
 2. `select_island` (`$18940`): `[$8C4]` = island entry, `[$8C8]` = economy record, `[$8CC]` = 3D object buffer.
-3. In warm-up mode: economy `+2` = 500, `+8` = `+$A` / 4. An enemy island with `[$69AC0+2i] >= 0` gets `+8` = 500.
+3. In warm-up mode: economy `+2` = 500, `+8` = `+$A` / 4. Then, on every step, an enemy island that's connected to NEMESIS (route matrix `M[63][i] >= 0`) is reset to 500 goods. Distribution and production are player-only, so this is how enemy islands get goods.
 4. `island_census` (`$1854E`):
-   1. Copy the quota table `$18DF8` → `$586AA`: 47 rows × 10 bytes, one per type `0–$2E`, of `[priority, quota per class × 9]`.
+   1. Copy the quota table `$18DF8` → `$586AA`: 64 rows × 10 bytes, one per type, of `[priority, quota per class × 9]`. Only rows `$18–$2E` are meaningful.
    2. Compute the island class (`$1851A`), which selects the quota column:
       - 0 if the island is neutral;
       - otherwise the economy `+0` type, +3 if the island is large;
       - 7 if the type is 0.
-   3. For every slot, take one unit of its type's quota. Under-construction types use the finished type's row; a negative quota uses the fallback row `$18EE8`. A slot with quota left is active; otherwise it's inactive.
+   3. For every slot, take one unit of its type's quota. Under-construction types use the finished type's row. A slot with quota left is active; otherwise it's inactive. Rows with priority 0 (types below `$18`, the command centre `$29` and its builder `$34`) are skipped, so their `+6` byte is left alone.
+      - A negative quota (trees `$19–$1B`) uses the fallback row `$18EE8`. That is the tree row of the **original** table in the code area, not the copy, so the decrements are permanent. Step 1 copies the same row for type `$18` too, so tree quotas drain to 0 for the rest of the game and trees end up inactive. This is persistent simulation state (a save game must keep it).
    4. Count the following:
       - active constructions (`[$8D4]`);
       - stalled constructions (`[$8D6]`);
       - active buildings of types `$24`+ (`[$8D8]`);
       - empty slots (`[$8DA]`).
 5. `island_structures_step` (`$18662`): run each slot's type handler, in the shuffled slot order.
-6. `island_plan_construction` (`$18898`): if fewer than 2 constructions are active, pick the buildable type (`$24–$2E`, except the runway) with the highest priority and remaining quota. Place it as its under-construction type at `find_free_island_spot`, and create its 3D object if the island is loaded (`$182A4`).
+6. `island_plan_construction` (`$18898`): if fewer than 2 constructions are active, pick the buildable type (`$25–$2E`; the runway is skipped) with the highest priority and remaining quota. Ties go to the lower type. Place it as its under-construction type with progress 0 at `find_free_island_spot`, and create its 3D object if the island is loaded (`$182A4`).
+
+**`find_free_island_spot`** (`$18A48`, type in d0): makes up to 16 tries.
+- Each try takes one RNG value r. x = ((r.lo × (half_x − 1000 − R)) >> 16) × 2, and z is the same with r.hi and half_z, where R is the clearance radius for the type (table `$18BB4`).
+- Each structure with a radius conflicts if the Chebyshev distance < its radius + R. A conflict with a non-tree rejects the try. Conflicting trees are noted.
+- The try succeeds with the last empty slot, or failing that the last non-conflicting tree slot. The noted trees are then cut down (type 0).
+- If no slot is available it returns −2 without retrying; after 16 rejected tries it returns −1.
 
 Islands therefore grow towards a fixed per-class template of buildings. Supply limits construction (resource B) and command-centre capture (resource A).
 
@@ -186,7 +195,7 @@ The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `
   - −(distance from the enemy carrier) >> 11, or −15000 beyond 3,000,000;
   - ±(distance from NEMESIS) >> 14: positive for enemy-owned islands, negative for the others;
   - ownership: neutral +3000 (large) / +2000 (small), player +1500 / +1000, enemy −4000. On a coin flip, enemy islands are excluded entirely;
-  - +4000 if a neighbour has a threat marker (`$69AC0[n] >= 0`);
+  - +4000 if a neighbour is connected to NEMESIS (`M[63][n] >= 0`, read through `$69AC0`);
   - +5000 for VULCAN if the enemy carrier is within 3,000,000 of it.
 - Otherwise (low strength), retreat to the nearest enemy island connected to NEMESIS (route matrix row 63).
 
@@ -205,10 +214,23 @@ The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `
 
 `$174E4` (every 10 s) spreads the repair rate `[$B3A]` × 150 / 256 evenly over the damaged carrier systems in the most urgent priority class. There are 10 systems at `$AF4`, 8 bytes each: current, max, priority class (0–2). This is the "Set Priorities" repair screen.
 
+## Reference model and verification
+
+`tools/stsim.py` is a Python port of `world_sim_step` and everything it calls: census, structure handlers, planner, spot finder, RNG and the network refilter on capture. State is a `WorldState` loaded from and written back to a 512 KB RAM image. The route relaxation that `game_main` does afterwards isn't modelled.
+
+- `tools/capture_sim.py` runs the original in Hatari and starts a strategy game by poking the menu mouse (`$474/$476`) and left button (`$880`). It saves RAM around `world_warmup` and around single `world_sim_step` calls at chosen frames.
+- `tools/check_sim.py` compares the model with:
+  - the Hatari *out* captures;
+  - the game's own code under Unicorn from the same *in* captures;
+  - Unicorn, step by step, over long runs from each capture and from randomly perturbed copies (ownership flips, damage, stocks, reverted builds, builders).
+
+  It compares the island table, economy, owners, slot order, both quota tables, network links, route matrix, RNG and the step globals byte for byte.
+- Status: the 601-step warm-up and single steps at 1, 10 and 40 minutes of game time match Hatari exactly. 1280-step runs, and 640-step fuzzed runs, match Unicorn exactly. No interrupt touched the RNG during the captured steps.
+- One branch isn't exercised: `find_free_island_spot` failing (an island with all slots full).
+
 ## Still to decode
 
 - Enemy tactical states 10/11, and the enemy unit AI (object handlers `$1A5B6` for object types 16–23, 33 and 34: missiles, drones, the enemy aircraft (33), and the homing missile (34, "Missile heading for Carrier!")).
 - How the enemy side's economy feeds its strength: production and the island census run for both owners, but distribution, planning and production lines are player-only.
-- Enemy strategy (carrier AI, island attacks). `[$69AC0]` and the threat routine at `$22C20`.
 - The unit/object list at `$5DCDA` (`$140` bytes per object, count `[$A48]`): the carrier, Mantas, Walruses and enemy units.
 - The per-frame vehicle simulation called from `game_main` (`$17094`, `$1962A`, `$1A56A`, `$1AFAA`, `$1A296`, `$1B746`, `$20730`).
