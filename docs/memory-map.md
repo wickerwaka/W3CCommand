@@ -71,17 +71,20 @@ Per frame, a 3D view (for example `screen_laser_turret`) sets the camera, then r
 
 **Model record**: the first long is the address of the model's draw handler, and `draw_scene_object` does `movea.l (a0)+,a1; jmp (a1)`. Handlers by use count: `$935E` = `model_draw_poly` (57), `$9550` (16), `$9496` (11), `$9A1C` (8), `$99F2` (3), `$935C` (2, possibly an `rts` stub), `$AF16`, `$99F0`.
 
-**`model_draw_poly` layout** so far:
-- `handler.l`
-- `basis_routine.l`: `model_basis_box` `$A78C` (46 models), or `$A89A`, `$AA24`, `$AC16`, `$AF4E`
-- basis parameters: for `$A78C`, three half-extent words that are rotated into 8 basis vectors at `A1+$5D0–$5FF`
-- a vertex count word (into `$8A0`) and a byte stream decoded by `$5A02` (vertices built from basis-vector combinations *(guess)*)
-- projection `$5912`, then faces `$98E6`
+**`model_draw_poly` format** (confirmed; the full spec is in the `tools/stmodel.py` docstring):
+- `handler.l`, then `basis_routine.l`: `model_basis_box` `$A78C` (46 models), or `$A89A` (5), `$AA24` (4), `$AC16`, `$AF4E`. For `$A78C`, three half-extent words give 8 box corners in V[`$F8–$FF`] (`A1+$5D0`).
+- Vertex builder `$5A02`: a count word, then (op, index) byte pairs. The ops are load, store, midpoint, add, sub and negate on an accumulator, dispatched via `jmp (pc,op)` into 24-byte handler slots at `$5A1C`.
+- A count word of vertices to project (`$5912`). The game frame is x right, y up, z forward.
+- Back-face planes `$98E6`: a count, then (a, b, c) index triples. Each plane gets a facing flag.
+- BSP tree `$9382`: nodes are `plane.b off.w <inline child>`. `$FF` leaves hold polygon groups (polygons, lines, discs, optional group back-face test). `$80–$FE` are attachment slots (table at `$6D6`).
+- Polygon colour → `$13CA` table of palette-index pairs (equal = solid, different = dither). Fill via `$5F18`; span/pattern tables at `$1D5A`.
 
-Next: reverse `$5A02`/`$5912`/`$98E6` and write `tools/extract_models.py`. The `$55D4` engine uses a computed jump into a `switch` at `$56F8`, which explains the bogus `CAS2` decodes.
+`tools/extract_models.py` exports the 46 `$935E`/`$A78C` models to OBJ, with previews. Each decoded record ends exactly where the next model starts (allowing for 1 byte of word padding), which validates the format. Identified: 5 Manta, 14 Walrus, 17/18/28/29 missiles, 19/34 larger missiles, 85 carrier hull, 88 runway, 90–98 island structures (91 comms tower), 58–73 flat debris shards.
+
+Not yet decoded: models using handlers `$9550` (16), `$9496` (11), `$9A1C` (8), `$99F2` (3), `$AF16`, `$99F0`, and `$935E` models with the non-box basis routines (11). `$55D4` is the scan-line span filler: it patches a `jmp (a2)` (`$4ED2`) into its unrolled loop at run time. That, plus the vertex-op slots that follow, is why Ghidra decoded bogus `CAS2` instructions there.
 
 ## Known gaps
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
-- `$55D4` contains bytes that decode as 68020-only instructions (`CAS2`), which is probably data inside the function. Needs manual review.
+- `$55D4`'s Ghidra function body is wrong. It includes the vertex-op handler slots at `$5A1C–$5AA6` and their zero padding, and it has bogus `CAS2` decodes. Use `tools/dis68k.py` for this area.
 - Most of `$22E62–$40E25` beyond the UI sprites is still unidentified. Candidates: island terrain/heightmaps, full-screen backgrounds, fonts, sound.

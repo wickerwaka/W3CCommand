@@ -24,6 +24,8 @@ The Python tooling is a uv project. The dependencies are in `pyproject.toml` and
 - Run tools with uv: `uv sync` once, then `uv run python tools/<script>.py`. Don't use bare `python3`.
 - Add a dependency with `uv add <pkg>`, never with `pip install`.
 - `tools/stgfx.py` is the shared library for decoding ST graphics: it reads the payload, decodes palettes and masked sprites, and outputs images with Pillow. Put new format decoders there, so the extraction scripts stay thin.
+- `tools/stmodel.py` decodes 3D models; its docstring is the format spec.
+- `uv run python tools/dis68k.py <addr> [len]` disassembles payload bytes with Capstone, independent of Ghidra's function bounds. Use it where Ghidra's analysis is wrong: computed jumps, handler slots padded with zeros, self-modifying code.
 - Extraction scripts write to `extracted/` (git-ignored and regenerable). Run `tools/split_tos.py` first, then for example `uv run python tools/extract_ui_sprites.py` → `extracted/ui/`.
 
 ## Ghidra project

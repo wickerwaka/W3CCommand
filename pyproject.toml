@@ -4,5 +4,6 @@ version = "0.1.0"
 description = "Decompilation and asset extraction tooling for the Carrier Command (Atari ST) preservation port"
 requires-python = ">=3.14"
 dependencies = [
+    "capstone>=5.0.9",
     "pillow>=12.3.0",
 ]

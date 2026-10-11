@@ -7,6 +7,8 @@ ghidra/*.lock
 ghidra/*.lock~
 ghidra/*.rep/**/*.ps
 ghidra/*.rep/**/~index.bak
+ghidra/*.rep/**/change*.grf
+ghidra/*.rep/**/snapshot*.grf
 
 .DS_Store
 
