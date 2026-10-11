@@ -27,7 +27,7 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$04AD20–$04AD9F` | Island name offsets (64 words) |
 | `$04ADA0–$04AFB5` | Island names (VULCAN … NEMESIS) |
 | `$04AFB6–$04B535` | Island records (64 × 22 bytes) |
-| `$04B72E` | Sound/tune data passed to `$2019A` *(guess)* |
+| `$04B5B6–$04B8A7` | Sound effect records (18): a 6-byte header + channel script |
 | `$04BCCA` | Snapshot buffer for globals `$400–$1235` plus the UI flag table (`$1A4C6`/`$1A518`) |
 | `$04B000–$04BFFF` | Mixed tables |
 | `$04C000–$04CBD3` | Zero fill (end of payload) |
@@ -90,6 +90,27 @@ Extraction:
   - runs the world-simulation step `$1848E` 601 times (`$18474`).
 - **RNG:** `$195FE` is a 64-bit add-with-carry generator with its state at `$1236` (initial `31415926 53589793`). The sound interrupt (Timer A, `$20668`) also advances it, so tree and structure layouts vary from game to game. The same interrupt drives YM2149 volume registers from the RNG output, which is the noise/sample sound path.
 - **Map screen:** `$6658` draws the islands as owner-coloured rectangles and labels them with the vector font. `$68D0` draws the network links.
+
+## Sound
+
+The sound effects are channel scripts run by a small bytecode engine. There's no sample data: "buzz" and noise effects are made by modulating PSG volume from MFP Timer A with RNG output.
+- **Playing an effect:** `jsr $20B90` followed by an inline effect id. The id indexes the effect table at `$20BD0` (positive = record, negative = routine). `$20C??` picks one of 9 distance-graded explosion variants from `$20CB4`. `$2019A` starts a record on one of 6 channels, whose structures are at `$4CBD4+` with pointers at `$20466`; priority is in the header.
+- **Per frame:** the VBL calls `$20486`. It runs each channel script (`$2020A`), assigns the 3 PSG voices by priority, and writes tone, noise, mixer and volume registers. If a channel requests buzz mode, it programs Timer A (`$FA19`/`$FA1F`).
+- **Timer A** (`$20668`): advances the RNG, reloads TADR from it (a random period), and toggles the volumes of the flagged voices. This is also why the RNG, and so the island layouts, differ between games.
+- **Script ops** (one byte op + one byte operand):
+
+  | op | meaning |
+  |---|---|
+  | `$00–$14` | `mov/add/sub/and/or/eor`; the destination is R[n] (`+6`) or P[n] (`+$2E`, bit 7); the source is R, P, a 4-bit immediate or a word immediate |
+  | `$18–$24` | skip next if eq/ne/lt/gt |
+  | `$28` | jump |
+  | `$2C` | decrement and jump if not zero |
+  | `$30` | set or clear a voice enable flag |
+  | `$34` | wait n frames |
+  | `$38` | set `+$26[n]` |
+  | `$3C` | end |
+
+- **Extraction:** `tools/extract_sounds.py` runs this engine under Unicorn (`tools/stsound.py`), logs the PSG writes with timestamps (including Timer A interrupts at their programmed rate), and synthesises WAVs with a simplified YM2149 model (`tools/ym2149.py`). `sounds.txt` lists each effect's call sites with the nearest game message: effect 10 = flare/drone launch, 12 = "Missile heading for Carrier!" alarm, 11 = "Friendly control centre bombed!", 4 = laser, 5/6 = missile launch, and 0/1 = message pings (via `$A128`).
 
 ## Fonts
 
