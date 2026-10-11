@@ -55,6 +55,13 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 - **Sprite placement table**: walked by `$F0BE` (32-px sprites) or `$F0D2` (16-px sprites). 10-byte records `x.w, y.w, rows-1.w, ptr.l`, terminated by a negative x. Callers load the table with `lea table(pc),A1`. `tools/extract_ui_sprites.py` finds all 22 tables this way (77 unique sprites), and a structural scan confirms none are missed. `$C512` is the Walrus/AAV bay icon set (launch, repair, refuel, fuel supply) with bitmaps at `$2BBA2–$2F18x`. `$BFAA` patches two of its pointers (`$C52C`, `$C536`) to swap icon variants (`$2E32A`/`$2E4F6` ↔ `$3562A`/`$357F6`).
 - An 8-byte record list walked by `$54A4` → `$54B6` follows each sprite table (text or box drawing *(guess)*).
 
+## Fonts
+
+Extracted by `tools/extract_font.py`; the formats are in its docstring.
+- **5×5** at `$4B8A8` (`!`–`Z`, 6 px advance), drawn by `$9A56–$9B78`. The text stream uses control codes (`5 n` sets colour n, `6` …). The routine is self-modifying: the plane operations for the current colour are patched into the zeroed slots (`$9B78`). Messages are uppercased first (`$A206`, which copies into the message log list at `$65D10`).
+- **8×8** at `$4B9CA` (ASCII `$20–$7F`), drawn by `$9C8A`, in 8-px character cells.
+- **Vector** (scalable stroke font): offset table `$9DF0`, characters `$20–$5A`, drawn by `$9CEE`/`$9D6E` with line segments (`$5CE2`).
+
 ## Screens
 
 `screen_dispatch` (`$14472`) is called each frame. It jumps through `screen_handler_table` (`$144A0`, 24 longs) indexed by the view number at `$718`. Entries 5–7, 13–15 and 21–23 point to a no-op (`$1449E`). Identified so far: 8 = `screen_laser_turret` (`$15A94`). Other handlers: `$1460A`, `$156FA` (near "Damage Status"), `$14E3C`, `$14C6C`, `$162B0` (near the drone strings), `$165B2`, `$1638C`, `$15EB0`, `$16BA6`, `$14E56`, `$15496`, `$14A40`, `$169FE`.
@@ -112,4 +119,3 @@ Polygon colour → `$13CA` table of palette-index pairs (equal = solid, differen
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4`'s Ghidra function body is wrong. It includes the vertex-op handler slots at `$5A1C–$5AA6` and their zero padding, and it has bogus `CAS2` decodes. Use `tools/dis68k.py` for this area.
 - Most of `$22E62–$40E25` beyond the UI sprites is still unidentified. Candidates: island terrain/heightmaps, full-screen backgrounds, sound.
-- Text renderer at `$9A56–$9B78`, with a 6-px font at `$4B8A8` (characters `!`–`Z`). Not yet extracted.
