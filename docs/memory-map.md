@@ -14,17 +14,20 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$00405A` | `game_main`: init, then the main loop |
 | `$000400–~$001300` | Game globals, accessed as abs.w (flags at `$461–$466`, timers etc.). Interleaved with code from `$405A` |
 | `$00405A–$022E61` | **Code**, with embedded strings and tables (see below) |
-| `$022E62–$040E25` | **Static data**, ~120 KB, low entropy (40–75% zero bytes); 3D models / graphics *(guess)* |
+| `$022E62–$040E25` | **Static data**, ~120 KB, low entropy (40–75% zero bytes). Includes the UI sprite bitmaps (for example `$2BBA2–$2F18x`); the rest is unidentified |
 | `$040E26–$0412xx` | Mouse pointer sprites (16×16, mask + image words) and small UI tables |
 | `$041278–$043800` | UI layout / menu data ("CANCEL", "Start Action Game", …) |
-| `$043800–$04A000` | Medium-entropy data with few zeros; bitmap graphics *(guess)* |
-| `$04A000–$04B000` | High-entropy data (7.3 bits/byte): compressed data, a random/noise table or samples *(guess)* |
+| `$0438E6–$04A069` | **3D models** (99 records, see "3D renderer") |
+| `$04A06A–$04A1F5` | `model_table`: 99 model pointers |
+| `$04A1F6–$04B000` | High-entropy data (7.3 bits/byte); purpose unknown |
 | `$04ADA0–$04AFB5` | Island name table (VULCAN … NEMESIS) |
 | `$04B000–$04BFFF` | Mixed tables |
 | `$04C000–$04CBD3` | Zero fill (end of payload) |
 | `$04CBD4–$06FFFF` | Runtime RAM (BSS-like, not in file) |
 | `$0586AA` | Initial stack top (SP set in `game_main`) |
-| `$069B80–$06FFFF` | Object table: 64 entries × `$192` bytes (positions as 32-bit X at +2, Y at +6) |
+| `$058E2A` | Depth-sorted draw tree for the current frame (18-byte nodes, max 128) |
+| `$05DCDA` | World object list walked by the renderer: `$140` bytes each, count in `$A48`; type word at +2 |
+| `$069B80–$06FFFF` | Object table: 64 entries × `$192` bytes (positions as 32-bit X at +2, Y at +6). Relation to `$5DCDA` unknown |
 | `$069B40` | Per-object type/state byte array (64 bytes) |
 | `$070000`, `$078000` | Screen buffers (double-buffered, 32000 bytes each) |
 | `$07FF9C` | Loader copy stub (only during boot) |
@@ -52,8 +55,33 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 - **Sprite placement table**: walked by `$F0BE` (32-px sprites) or `$F0D2` (16-px sprites). 10-byte records `x.w, y.w, rows-1.w, ptr.l`, terminated by a negative x. Callers load the table with `lea table(pc),A1`. `tools/extract_ui_sprites.py` finds all 22 tables this way (77 unique sprites), and a structural scan confirms none are missed. `$C512` is the Walrus/AAV bay icon set (launch, repair, refuel, fuel supply) with bitmaps at `$2BBA2–$2F18x`. `$BFAA` patches two of its pointers (`$C52C`, `$C536`) to swap icon variants (`$2E32A`/`$2E4F6` ↔ `$3562A`/`$357F6`).
 - An 8-byte record list walked by `$54A4` → `$54B6` follows each sprite table (text or box drawing *(guess)*).
 
+## Screens
+
+`screen_dispatch` (`$14472`) is called each frame. It jumps through `screen_handler_table` (`$144A0`, 24 longs) indexed by the view number at `$718`. Entries 5–7, 13–15 and 21–23 point to a no-op (`$1449E`). Identified so far: 8 = `screen_laser_turret` (`$15A94`). Other handlers: `$1460A`, `$156FA` (near "Damage Status"), `$14E3C`, `$14C6C`, `$162B0` (near the drone strings), `$165B2`, `$1638C`, `$15EB0`, `$16BA6`, `$14E56`, `$15496`, `$14A40`, `$169FE`.
+
+## 3D renderer (partially understood)
+
+Per frame, a 3D view (for example `screen_laser_turret`) sets the camera, then runs:
+
+1. `scene_collect_visible` (`$7BF6`). It walks the world objects at `$5DCDA` and the current island's sub-objects (stride `$40`), and culls each one against `object_cull_table` (`$8598`, 16 bytes per object type: range and distance limits). Visible objects go to `depth_tree_insert` (`$6246`), which builds a binary tree at `$58E2A` keyed on depth. More than 128 nodes → `trap #12`.
+2. `draw_horizon_sea` (`$6402`): clips the horizon line to the view and fills it through the polygon engine at `$55D4`.
+3. `draw_sea_dots` (`$91EC`): the 8×8 "Sea Dots" grid of water points (an option in the settings menu).
+4. `draw_depth_tree` (`$62D4`): an in-order (back-to-front) walk calling `draw_scene_object` (`$7B48`) for each node.
+5. `draw_scene_object` → `$7B72` picks the level of detail. `object_lod_table` (`$8B58`) has 16 bytes per object type: `near_dist.l, mid_dist.l, near_model.w, mid_model.w, far_model.w, pad`. The chosen model is looked up in `model_table` (`$4A06A`).
+
+**Model record**: the first long is the address of the model's draw handler, and `draw_scene_object` does `movea.l (a0)+,a1; jmp (a1)`. Handlers by use count: `$935E` = `model_draw_poly` (57), `$9550` (16), `$9496` (11), `$9A1C` (8), `$99F2` (3), `$935C` (2, possibly an `rts` stub), `$AF16`, `$99F0`.
+
+**`model_draw_poly` layout** so far:
+- `handler.l`
+- `basis_routine.l`: `model_basis_box` `$A78C` (46 models), or `$A89A`, `$AA24`, `$AC16`, `$AF4E`
+- basis parameters: for `$A78C`, three half-extent words that are rotated into 8 basis vectors at `A1+$5D0–$5FF`
+- a vertex count word (into `$8A0`) and a byte stream decoded by `$5A02` (vertices built from basis-vector combinations *(guess)*)
+- projection `$5912`, then faces `$98E6`
+
+Next: reverse `$5A02`/`$5912`/`$98E6` and write `tools/extract_models.py`. The `$55D4` engine uses a computed jump into a `switch` at `$56F8`, which explains the bogus `CAS2` decodes.
+
 ## Known gaps
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4` contains bytes that decode as 68020-only instructions (`CAS2`), which is probably data inside the function. Needs manual review.
-- The internal formats of the `$22E62–$40E25` block are not yet identified. Next step: follow the `move.l #$2E32A…` / `#$3562A…` pointer pairs from `$BFAE`/`$C4D8` and the renderer's model loads.
+- Most of `$22E62–$40E25` beyond the UI sprites is still unidentified. Candidates: island terrain/heightmaps, full-screen backgrounds, fonts, sound.
