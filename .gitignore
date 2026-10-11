@@ -15,3 +15,7 @@ ghidra/*.rep/**/snapshot*.grf
 # Python
 __pycache__/
 *.pyc
+
+# Hatari working files (GEMDOS drive built from roms/, snapshots)
+emu/hd/
+emu/out/

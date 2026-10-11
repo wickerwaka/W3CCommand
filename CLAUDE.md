@@ -28,6 +28,17 @@ The Python tooling is a uv project. The dependencies are in `pyproject.toml` and
 - `uv run python tools/dis68k.py <addr> [len]` disassembles payload bytes with Capstone, independent of Ghidra's function bounds. Use it where Ghidra's analysis is wrong: computed jumps, handler slots padded with zeros, self-modifying code.
 - Extraction scripts write to `extracted/` (git-ignored and regenerable). `uv run python tools/extract_all.py` regenerates everything (palettes, fonts, UI sprites/panels, items, models, islands, sounds, copy protection) and runs the model cross-check. Each `extract_*.py` docstring documents its format. Run `tools/split_tos.py` first, then for example `uv run python tools/extract_ui_sprites.py` → `extracted/ui/`.
 
+## Hatari (running the original)
+
+Hatari 2.6.1 is installed with `brew install hatari`, and its bundled EmuTOS boots on a 512 KB ST. `tools/hatari.py` builds the GEMDOS drive `emu/hd/` from `roms/` and auto-starts `CARRIER.TOS`. `emu/hd/` and `emu/out/` are git-ignored.
+- `uv run python tools/hatari.py play`: GUI with sound.
+- `uv run python tools/hatari.py snapshot --vbls N --out emu/out/<name>`: runs headless (about 2700 frames/s). N frames after `game_main` it writes `screenshot.png`, `ram.bin` (`$0–$7FFFF`) and `regs.txt`. 1500 frames reaches the title menu.
+- Debugger scripting gotchas:
+  - Use the breakpoint options `:once :trace :file <cmds>`. Without `:trace`, Hatari drops into the interactive debugger after the file runs, even if the file says `c`.
+  - Always run with stdin from `/dev/null`.
+  - `VBL` is Hatari's frame counter, and expressions in quotes are evaluated at definition time (`b VBL="VBL+100"`).
+- Verified live: at `game_main` the RAM from `$400` is byte-identical to `extracted/carrier_payload.bin`.
+
 ## Ghidra project
 
 - `uv run python tools/split_tos.py` writes `extracted/loader.bin` (GEMDOS text before $400) and `extracted/carrier_payload.bin` (loaded at $400).

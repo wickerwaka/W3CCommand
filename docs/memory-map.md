@@ -186,6 +186,17 @@ Polygon colour → `$13CA` table of palette-index pairs (equal = solid, differen
 
 **Identified models**: 1–4/86 carrier (near detail, with turret/lifts), 85 carrier hull, 74 carrier wireframe, 75–82 carrier-system overlays (8, matching the 8 systems on the damage screen), 84 turret wireframe, 5 Manta, 14 Walrus, 17/18/28/29 and 19/34 missiles, 88/36/47 runway (built / near / under construction), 90–98 island buildings with 41–46 near and 48–57 under-construction variants, 7 volcano, 24–27 trees, 10–13 marked pyramids, 58–73 debris shards, 31 flare/flash disc.
 
+## Runtime-modified bytes in the code area
+
+A title-screen snapshot (1500 frames after `game_main`) differs from the file in 18 small ranges of the code area. These are self-modifying patch sites and variables embedded in code, so don't treat them as constants:
+- `$48E6–$49F4` (9 ranges);
+- `$4D65`, `$4D77`;
+- `$539E–$541A` (3 ranges);
+- `$8540`;
+- `$AAB8` (the turret basis angle block at `$AAB4`);
+- `$B187`;
+- `$20654`.
+
 ## Known gaps
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
