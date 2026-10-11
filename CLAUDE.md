@@ -28,12 +28,14 @@ The GEMDOS text segment is only a loader. It enters supervisor mode, masks inter
   - `loader` at $F00000.
   - `io` $FF8000–$FFFFFF, plus the `io_absw` byte-mapped alias at $FFFF8000 for sign-extended `.w` addressing. Shifter, PSG, MFP, ACIA and DMA registers are labeled.
 - `ghidra/scripts/AtariSTVectors.java` (post-script) finds vector installs (`move.l #h,vec` or `lea h(pc),An; move.l An,vec`) and names the handler functions.
+- `ghidra/scripts/AtariSTFindCode.java` (run after the above) recovers code that auto-analysis misses. That's mainly routines reached only through pointer tables. It validates candidates with `PseudoDisassembler` and loops until nothing new turns up. It assumes code ends at `$22E62`.
+- `docs/memory-map.md` is the running map of code, data and runtime RAM. Keep it updated as regions are identified.
 - Rebuild from scratch:
   ```
   /opt/homebrew/Cellar/ghidra/12.1.4/libexec/support/analyzeHeadless ghidra W3CCommand \
     -import extracted/carrier_payload.bin -overwrite -loader BinaryLoader -loader-baseAddr 0x400 \
     -processor 68000:BE:32:default -cspec default -scriptPath ghidra/scripts \
-    -preScript AtariSTMemoryMap.java -postScript AtariSTVectors.java
+    -preScript AtariSTMemoryMap.java -postScript AtariSTVectors.java -postScript AtariSTFindCode.java
   ```
   `-overwrite` discards manual renames and comments made in the GUI/MCP; don't rebuild once real analysis work exists.
 - Re-run a script on the existing program: `analyzeHeadless ghidra W3CCommand -process carrier_payload.bin -noanalysis -scriptPath ghidra/scripts -postScript <Script>.java`. Ghidra must not have the project open (it's locked).
