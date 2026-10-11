@@ -69,22 +69,47 @@ Per frame, a 3D view (for example `screen_laser_turret`) sets the camera, then r
 4. `draw_depth_tree` (`$62D4`): an in-order (back-to-front) walk calling `draw_scene_object` (`$7B48`) for each node.
 5. `draw_scene_object` → `$7B72` picks the level of detail. `object_lod_table` (`$8B58`) has 16 bytes per object type: `near_dist.l, mid_dist.l, near_model.w, mid_model.w, far_model.w, pad`. The chosen model is looked up in `model_table` (`$4A06A`).
 
-**Model record**: the first long is the address of the model's draw handler, and `draw_scene_object` does `movea.l (a0)+,a1; jmp (a1)`. Handlers by use count: `$935E` = `model_draw_poly` (57), `$9550` (16), `$9496` (11), `$9A1C` (8), `$99F2` (3), `$935C` (2, possibly an `rts` stub), `$AF16`, `$99F0`.
+**Model record**: the first long is the address of the model's draw handler, and `draw_scene_object` does `movea.l (a0)+,a1; jmp (a1)`. Models are reached only by object type: `object_lod_table` covers types 0–83, and each type maps to its own model (plus distance-based near/far substitutes). The one exception is the laser turret screen, which calls model 84's handler directly.
 
-**`model_draw_poly` format** (confirmed; the full spec is in the `tools/stmodel.py` docstring):
-- `handler.l`, then `basis_routine.l`: `model_basis_box` `$A78C` (46 models), or `$A89A` (5), `$AA24` (4), `$AC16`, `$AF4E`. For `$A78C`, three half-extent words give 8 box corners in V[`$F8–$FF`] (`A1+$5D0`).
-- Vertex builder `$5A02`: a count word, then (op, index) byte pairs. The ops are load, store, midpoint, add, sub and negate on an accumulator, dispatched via `jmp (pc,op)` into 24-byte handler slots at `$5A1C`.
-- A count word of vertices to project (`$5912`). The game frame is x right, y up, z forward.
-- Back-face planes `$98E6`: a count, then (a, b, c) index triples. Each plane gets a facing flag.
-- BSP tree `$9382`: nodes are `plane.b off.w <inline child>`. `$FF` leaves hold polygon groups (polygons, lines, discs, optional group back-face test). `$80–$FE` are attachment slots (table at `$6D6`).
-- Polygon colour → `$13CA` table of palette-index pairs (equal = solid, different = dither). Fill via `$5F18`; span/pattern tables at `$1D5A`.
+All 99 models are decoded. The full format is in the `tools/stmodel.py` docstring. Handlers:
 
-`tools/extract_models.py` exports 69 of the 99 models to OBJ, with previews. Each decoded record ends exactly where the next model starts (allowing for 1 byte of word padding), which validates the format. Identified: 5 Manta, 14 Walrus, 17/18/28/29 missiles, 19/34 larger missiles, 85 carrier hull, 88 runway, 90–98 island structures (91 comms tower), 58–73 flat debris shards.
+| Handler | Models | Meaning |
+|---|---|---|
+| `$935E` `model_draw_poly` | 57 | basis, vertex ops, back-face planes, BSP tree of polygon/line/disc groups |
+| `$9550` | 16 | `dist.l` + the `$935E` body; nearer than `dist` uses a clipping projection (`$5902`) and BSP walker (`$9582`) |
+| `$9496` | 11 | hidden-line wireframe: always-drawn lines, conditional lines, faces that reveal conditional lines |
+| `$9A1C` / `$99F2` | 8 / 3 | lines only, with the drawn line count overwritten from object `+$38` (construction-progress wireframes of the island buildings) |
+| `$AF16` | 1 | a single screen-space disc, radius from object `+$1E` |
+| `$935C` / `$99F0` | 3 | `rts`: empty |
 
-Also decoded: `$9550` near/far LOD models (same body, with a distance threshold), `$9496` hidden-line wireframes, and the `$A89A` (box + explicit Q15 vertices), `$AA24` (flat quad: trees) and `$AF4E` (two boxes) basis routines. Identified: 4/86 carrier (near detail), 74 carrier wireframe, 7 volcano, 24–27 trees, 10–13 marked pyramids. Not yet decoded (30): handlers `$9A1C` (8), `$99F2` (3), `$AF16`, `$99F0`, and the `$935C` rts stub (2); basis routines `$AA78`, `$AABE`, `$AB42`, `$A660`, `$ADA4`, `$ABE8` (turret, model 84) and `$AC16` (animated); and 8 wireframes that reuse state from a previous draw (basis `$A8DA` enters `$A89A` past its box setup, or the `$935C` stub). `$55D4` is the scan-line span filler: it patches a `jmp (a2)` (`$4ED2`) into its unrolled loop at run time. That, plus the vertex-op slots that follow, is why Ghidra decoded bogus `CAS2` instructions there.
+**Basis routines** fill V[`$F8–$FF`] (and sometimes below) before the vertex ops:
+- `$A78C` box (three half-extents → 8 corners in V[`$F8–$FF`] at `A1+$5D0`).
+- `$A89A` box plus explicit Q15 vertices.
+- `$AA24` flat quad (trees).
+- `$AF4E` two boxes.
+- `$AA78`/`$AABE`/`$AB42` carrier with turret boxes (heading `$6CC`, gun elevation `$6CA`) and lifts (`$DD6`/`$DD8`).
+- `$AC16`/`$ADA4` animated (object `+$24` blends vertex pairs).
+- `$A660` procedural (object `+$1E`/`+$20`).
+- `$ABE8` turret.
+- `$A8DA` re-enters `$A89A` past its box setup, reusing the edge vectors left by the previous model.
+
+Vertex builder `$5A02`: a count word, then (op, index) pairs with the ops load, store, midpoint, add, sub and negate. They're dispatched via `jmp (pc,op)` into 24-byte slots at `$5A1C`. Projection is `$5912`. The game frame is x right, y up, z forward. Rotation helpers `$A4EA–$A5DE` apply (sin, cos) pairs from `$A68–$A7E` (2.14 fixed point; sine table at `$1F5A`). The camera pairs `$A74–$A7E` are set per frame by `$A484`/`$A494`/`$A4A4`.
+
+Polygon colour → `$13CA` table of palette-index pairs (equal = solid, different = dither). Fill via `$5F18`; span/pattern tables at `$1D5A`. `$55D4` is the scan-line span filler: it patches a `jmp (a2)` (`$4ED2`) into its unrolled loop at run time.
+
+**Extraction**: `tools/extract_models.py` exports all 96 non-empty models to OBJ with previews.
+- 80 are decoded in Python. `tools/check_models.py` checks them against the game's own code run in Unicorn (`tools/stemu.py`), and all match.
+- The 19 with runtime-dependent basis routines are evaluated in the emulator. The context used is in `stmodel.EMULATION_CONTEXT`:
+  - 75–82 are drawn after parent model 74. This is inferred: their vertices are fractions of 74's box, or index 74's vertices directly.
+  - Animated models use `+$24 = $200` (fully deployed).
+  - Model 8 uses sample object values (100, 100).
+  - Lifts are at 0 and the turret faces forward.
+
+**Identified models**: 1–4/86 carrier (near detail, with turret/lifts), 85 carrier hull, 74 carrier wireframe, 75–82 carrier-system overlays (8, matching the 8 systems on the damage screen), 84 turret wireframe, 5 Manta, 14 Walrus, 17/18/28/29 and 19/34 missiles, 88/36/47 runway (built / near / under construction), 90–98 island buildings with 41–46 near and 48–57 under-construction variants, 7 volcano, 24–27 trees, 10–13 marked pyramids, 58–73 debris shards, 31 flare/flash disc.
 
 ## Known gaps
 
 - Auto-analysis missed code reached only through pointer tables (for example `$BFAA`). `AtariSTFindCode.java` added 239 functions, then 163 more from orphan code runs (about 890 in total). Some orphan runs may be tails of larger functions; merge them when found. About 41 KB of the code area is still undefined, mostly embedded tables.
 - `$55D4`'s Ghidra function body is wrong. It includes the vertex-op handler slots at `$5A1C–$5AA6` and their zero padding, and it has bogus `CAS2` decodes. Use `tools/dis68k.py` for this area.
-- Most of `$22E62–$40E25` beyond the UI sprites is still unidentified. Candidates: island terrain/heightmaps, full-screen backgrounds, fonts, sound.
+- Most of `$22E62–$40E25` beyond the UI sprites is still unidentified. Candidates: island terrain/heightmaps, full-screen backgrounds, sound.
+- Text renderer at `$9A56–$9B78`, with a 6-px font at `$4B8A8` (characters `!`–`Z`). Not yet extracted.

@@ -6,4 +6,5 @@ requires-python = ">=3.14"
 dependencies = [
     "capstone>=5.0.9",
     "pillow>=12.3.0",
+    "unicorn>=2.1.4",
 ]

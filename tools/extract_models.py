@@ -42,6 +42,8 @@ def write_obj(p: Payload, palette: list, m, path: Path) -> None:
         mats[c] = material(p, palette, c)
     for *_, c in m.lines:
         mats[c] = material(p, palette, c)
+    for *_, c in m.discs:
+        mats[c] = material(p, palette, c)
     mtl = [f"newmtl {name}\nKd {r:.4f} {g:.4f} {b:.4f}\n" for name, (r, g, b) in mats.values()]
     path.with_suffix(".mtl").write_text("".join(mtl))
 
@@ -56,6 +58,11 @@ def write_obj(p: Payload, palette: list, m, path: Path) -> None:
     for v0, v1, c in m.lines:
         lines.append(f"usemtl {mats[c][0]}")
         lines.append(f"l {v0 + 1} {v1 + 1}")
+    for v, radius, c in m.discs:
+        # Screen-space disc (always faces the camera); OBJ has no circle, so emit a point.
+        lines.append(f"# disc at vertex {v + 1}, radius {radius if radius is not None else 'object +$1E'}, colour {c}")
+        lines.append(f"usemtl {mats[c][0]}")
+        lines.append(f"p {v + 1}")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -89,6 +96,10 @@ def render_preview(p: Payload, palette: list, m, path: Path, size: int = 256) ->
             draw.line([screen(i) for i in idx], fill=fill)
     for v0, v1, c in m.lines:
         draw.line([screen(v0), screen(v1)], fill=palette[colour_pair(p, c)[0]], width=1)
+    for v, radius, c in m.discs:
+        x, y = screen(v)
+        rr = radius * s if radius else size / 6
+        draw.ellipse([x - rr, y - rr, x + rr, y + rr], fill=palette[colour_pair(p, c)[0]])
     img.save(path)
 
 
@@ -106,10 +117,14 @@ def main() -> None:
             summary.append(f"{i:2d} ${addr:05X} skipped: handler ${handler:05X}"
                            + (f" basis ${p.u32(addr + basis_at):05X}" if basis_at else ""))
             continue
+        if not m.vertices:
+            summary.append(f"{i:2d} ${addr:05X} handler=${m.handler:05X} empty (draws nothing)")
+            continue
         write_obj(p, palette, m, OUT / f"model_{i:02d}.obj")
         render_preview(p, palette, m, OUT / f"model_{i:02d}.png")
         exported += 1
-        summary.append(f"{i:2d} ${addr:05X} handler=${m.handler:05X} basis=${m.basis:05X} extents={m.extents} "
+        basis = f"${m.basis:05X}" if m.basis is not None else "-"
+        summary.append(f"{i:2d} ${addr:05X} handler=${m.handler:05X} basis={basis} extents={m.extents} "
                        f"verts={len(m.vertices)} polys={len(m.polys)} lines={len(m.lines)} discs={len(m.discs)} "
                        f"attachments={m.attachments}" + (f" near_dist={m.near_dist}" if m.near_dist else ""))
     (OUT / "index.txt").write_text("\n".join(summary) + "\n")
