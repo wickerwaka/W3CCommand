@@ -1678,6 +1678,8 @@ export abstract class UnitCore extends WorldState {
         }
       }
     }
+    m.set16(0x95c, 2); // redraw countdowns (units_render): bay status,
+    m.set16(kind === "Manta" ? 0x95e : 0x960, 2); // the arming panels
   }
 
   /** $11856 (Manta) / $11F6A (Walrus): flight preparation in 10 s units: damage left
@@ -2999,6 +3001,7 @@ export abstract class UnitCore extends WorldState {
     const m = this.mem;
     const ht = m.s16(hitter + 2);
     if (0x0a <= ht && ht <= 0x0d) return;
+    m.set16(0x95c, 2); // bay status redraw (units_render)
     this.events.push(["message", "Defence drone destroyed", this._ping()]);
     m.set8(DOCKED_WALRUS, m.u8(v) & 4 ? 0xff : 0);
     m.set16(DOOR_STATE, 3);

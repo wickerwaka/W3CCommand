@@ -223,6 +223,7 @@ class VehicleMixin:
         and empty the lift or dock if it was on it."""
         m = self.mem
         manta = kind == "Manta"
+        m.set16(0x95E if manta else 0x960, 1)   # the arming panel's redraw (stunits_render)
         self._msg(f"{kind} {m.u16(v + 0x1A) + 1} has been destroyed!")
         if m.u32(COMMS_POD) == v:
             m.set32(COMMS_POD, 0)
@@ -538,6 +539,7 @@ class VehicleMixin:
                 m.set8(a1 + 0x1D, 0)
                 m.set8(a1 + 0x1C, 1)
                 m.set8(MANTA_LANDING, 0)
+                m.set16(0x95C, 2)                # bay status redraw (stunits_render)
             m.set32(a4 + 0x0E, y)
             self._manta_on_deck(a1, a4)
 
@@ -588,6 +590,7 @@ class VehicleMixin:
                 m.set8(a4 + 1, m.u8(a4 + 1) & ~4)
                 m.set8(LIFT_BAY, 0xFF)
                 self.dock_attach()
+                m.set16(0x95C, 2)                # bay status redraw (stunits_render)
         m.set16(a4 + 6, m.u16(CARRIER_OBJ + 6))
         self._deck_pos(a4)
 
@@ -1234,6 +1237,7 @@ class VehicleMixin:
             if (d3 & 0xFFFFFFFF) > 0x4000:
                 m.set8(WALRUS_DOCKING, 0)
                 m.set8(a1, m.u8(a1) & 0xFC)
+                m.set16(0x95C, 2)                # bay status redraw (stunits_render)
                 m.set16(a1 + 6, 0)
                 self._msg(f"Walrus {m.u16(0x6E0) + 1} - Docking aborted")
                 return
@@ -1321,6 +1325,7 @@ class VehicleMixin:
         m.set8(stunits.DOCKED_WALRUS, 0xFF)
         m.set8(WALRUS_DOCKING, 0)
         self.dock_attach()
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
         if m.u8(a1 + 0x33):
             m.set8(a1, m.u8(a1) & 0xFE)
 
@@ -1575,6 +1580,8 @@ class VehicleMixin:
                 m.set8(MANTA_RECS + REC * bay + 1, 8)
                 self._msg(f"Manta {bay + 1} is now on the flight deck")
             self.dock_attach()
+            m.set16(0x95C, 2)                    # redraws (stunits_render): bay status,
+            m.set16(0x95E, 2)                    # the Manta arming panel
             return
         bay = m.s16(LIFT_BAY)
         if bay >= 0:
@@ -1600,6 +1607,8 @@ class VehicleMixin:
             m.set16(LIFT_BAY, 0xFFFF)
             self.dock_attach()
             m.set16(stunits.LIFT_STATE, 3)
+            m.set16(0x95C, 2)                    # redraws (stunits_render): bay status,
+            m.set16(0x95E, 2)                    # the Manta arming panel
             return
         d3 = m.u16(LIFT_NEXT)
         a0 = self.obj(MANTA_OBJ) + s16(w16(d3 * 0x140))
@@ -1768,6 +1777,7 @@ class VehicleMixin:
             return self._msg(f"{'Manta' if kind == 'Manta' else 'AAV'} is fully functional")
         m.set8(a0 + 1, 1)
         m.set16(0xDC0 if kind == "Manta" else 0xDC2, 1)
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
 
     def _replace(self, a0: int, kind: str) -> None:
         """$117D4 / $11EF0: a destroyed bay is refilled from storage, empty and repaired."""
@@ -1784,6 +1794,7 @@ class VehicleMixin:
         m.set16(a0 + 0x14, 0xFA0)
         if kind == "Manta":
             m.set8(a0 + 0x1C, 0)
+        m.set16(0x95E if kind == "Manta" else 0x960, 1)   # the arming panel's redraw (stunits_render)
 
     def cmd_manta_repair(self, bay: int = None) -> None:
         """$1176A: repair (status 1), or replace a destroyed Manta."""
@@ -1805,12 +1816,14 @@ class VehicleMixin:
         """$1182A: start flight preparation (status 2)."""
         a0 = self._manta_selected(bay)
         self.mem.set8(a0 + 1, 2)
+        self.mem.set16(0x95C, 2)                 # bay status redraw (stunits_render)
         self.preparation_time(a0, "Manta")
 
     def cmd_walrus_prepare(self, bay: int = None) -> None:
         """$11F3E."""
         a0 = self._walrus_selected(bay)
         self.mem.set8(a0 + 1, 2)
+        self.mem.set16(0x95C, 2)                 # bay status redraw (stunits_render)
         self.preparation_time(a0, "Walrus")
 
     def _bay_status_message(self, st: int, bay: int, kind: str) -> None:
@@ -1844,6 +1857,7 @@ class VehicleMixin:
         m.set16(LIFT_NEXT, d1)
         self.dock_attach()
         m.set16(0xDC0, 2)
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
 
     def cmd_manta_to_hangar(self) -> None:
         """$1242A: take the Manta on deck (mode 1) down the lift."""
@@ -1856,6 +1870,7 @@ class VehicleMixin:
         m.set8(MANTA_RECS + REC * bay + 1, 3)
         m.set16(stunits.LIFT_STATE, 1)
         self.dock_attach()
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
 
     def cmd_manta_take_off(self) -> None:
         """$12002: the Manta on deck takes off (mode 2); without a waypoint it gets one
@@ -1878,6 +1893,7 @@ class VehicleMixin:
             x, z = self.matrix_rotate(0, 0xE890)
             m.set32(a0 + 0x1E, x + m.u32(c + 0x0A))
             m.set32(a0 + 0x26, z + m.u32(c + 0x12))
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
         self._msg(f"Launching Manta {bay + 1}")
 
     def cmd_manta_land(self, bay: int = None) -> None:
@@ -1900,6 +1916,7 @@ class VehicleMixin:
         dx = s32(m.u32(a0 + 0x0A) - m.u32(c + 0x0A))
         dz = s32(m.u32(a0 + 0x12) - m.u32(c + 0x12))
         if dx != s16(dx) or dz != s16(dz) or s32(dx * dx + dz * dz) > 0x10000000:
+            m.set16(0x95C, 2)                    # bay status redraw (stunits_render)
             return self._msg(f"Manta {n} is out of range")
         if m.u16(stunits.LIFT_STATE):
             return self._msg("Lift in use")
@@ -1910,6 +1927,7 @@ class VehicleMixin:
         m.set8(a1, m.u8(a1) | 1)
         m.set8(a1 + 0x1C, 0)
         m.set8(a1 + 0x1D, 0)
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
         m.set16(0xDDC, m.u16(0xDCC))
         self._msg(f"Manta {n} is landing")
 
@@ -1962,6 +1980,7 @@ class VehicleMixin:
         m.set16(a1 + 0x0E, 0xFFFF)
         for code in codes:
             self.loadout_fit(code, a1, a0)
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
         m.set8(WALRUS_DOCKING, 0xFF)
         m.set16(0x6E0, m.u16(a0 + 0x1A))
         self._door(1)
@@ -1998,6 +2017,7 @@ class VehicleMixin:
         m.set8(a1, 0x41)
         m.set8(a1 + 0x1A, 0)
         m.set8(a1 + 0x1B, 0)
+        m.set16(0x95C, 2)                        # bay status redraw (stunits_render)
         m.set8(WALRUS_DOCKING, 0xFF)
         m.set16(0x6E0, m.u16(a0 + 0x1A))
         self._msg(f"Walrus {n} is docking")

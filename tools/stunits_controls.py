@@ -759,7 +759,8 @@ class ControlsMixin:
     # ---- damage screen 1 ------------------------------------------------------------------
     def cmd_select_system(self, k: int) -> bool:
         """$FB3A: show system k (0-9) on the damage screen: $B58 (and the lift's part cycle
-        $B5A from 0); the 3D highlight bits at $64D50 are left out (display only)."""
+        $B5A from 0), and its part of the damage diagram (the model list's entries from
+        $64D50) highlighted (visible bit) instead of the old one's."""
         m = self.mem
         if not (0 <= k <= 9 and self._clickable(T_SYSTEM + k, (0xB64, 0))):
             return False
@@ -768,12 +769,20 @@ class ControlsMixin:
             return True
         m.set8(a, m.u8(a) | 0x20)
         old = m.s16(SYSTEM_SHOWN)
+        parts = MODEL_LIST + 0x52                               # $64D50: the diagram's parts
         if old >= 0:
             b = FLAG_TABLE + s16(2 * old + 0x60)                # bclr #5,(a1,d0.w)
             m.set8(b, m.u8(b) & 0xDF)
+            part = old if old != 8 else m.s16(PART_SHOWN)
+            if old <= 8 and part != 8:
+                e = parts + s16(w16((part & 0xFFFF) * 0x40))
+                m.set8(e + 1, m.u8(e + 1) & 0xFD)
         m.set16(SYSTEM_SHOWN, k)
-        if k == 8:
-            m.set16(PART_SHOWN, 0)
+        if k <= 8:
+            if k == 8:
+                m.set16(PART_SHOWN, 0)
+            e = parts + 0x40 * (k if k != 8 else 0)
+            m.set8(e + 1, m.u8(e + 1) | 2)
         return True
 
     def _copy_priorities(self) -> None:
@@ -1704,13 +1713,23 @@ class ControlsMixin:
             self._message("Atari Bundle Version    16/02/90")
 
     def damage_input(self) -> None:
-        """$1747A (screen 1): with the lift shown ($B58 = 8) its parts are highlighted in turn
-        ($B5A 0-7); the damage message timer $952 counts down (redraw)."""
+        """$1747A (screen 1): the diagram (model list entry 0) turns by $100; with the lift
+        shown ($B58 = 8) its parts are highlighted in turn ($B5A 0-7, the visible bits from
+        $64D50); the damage message timer $952 counts down (redraw)."""
         m = self.mem
+        m.set16(MODEL_LIST + 0x18, m.u16(MODEL_LIST + 0x18) + 0x100)   # the diagram turns
         if m.s16(SYSTEM_SHOWN) == 8:
-            k = m.s16(PART_SHOWN) + 1
-            if k > 8:
-                k = 0
+            parts = MODEL_LIST + 0x52                   # the highlighted part (visible bit) moves on
+            k = m.s16(PART_SHOWN)
+            if k != 8:
+                e = parts + s16(w16((k & 0xFFFF) * 0x40))
+                m.set8(e + 1, m.u8(e + 1) & 0xFD)
+            k = s16(w16(k + 1))
+            if k != 8:
+                if k > 8:
+                    k = 0
+                e = parts + s16(w16((k & 0xFFFF) * 0x40))
+                m.set8(e + 1, m.u8(e + 1) | 2)
             m.set16(PART_SHOWN, k)
         if m.u16(0x952):
             m.set16(0x952, m.u16(0x952) - 1)

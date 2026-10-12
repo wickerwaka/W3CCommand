@@ -132,7 +132,8 @@ export class Runner {
       // cursors, radar elements, static noise RNG, ...; docs/units.md §10.8), then frame_flip
       // $17F48, whose state part puts the pointer back after a full redraw ($458)
       this.state.render_effects();
-      this.state.frame_flip_flags();
+      // the debug freeze ($1189 with key $866 held) skips the render and frame_flip
+      if (!(this.state.mem.u8(0x1189) && this.state.mem.u8(0x866))) this.state.frame_flip_flags();
     } catch (e) {
       this.state.to_ram(this.ram);
       const msg = e instanceof NotPorted ? `Reached code that isn't ported yet: ${e.message}` : `${(e as Error).name}: ${(e as Error).message}`;

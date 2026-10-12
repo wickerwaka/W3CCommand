@@ -99,7 +99,7 @@ for (let g = 0; g < GAMES; g++) {
       s.ui_frame();
       s.game_frame();
       s.render_effects();
-      s.frame_flip_flags();
+      if (!(s.mem.u8(0x1189) && s.mem.u8(0x866))) s.frame_flip_flags();
       for (const e of s.events.splice(0)) {
         events.push(e.join(" "));
         if (e[0] === "game over") {

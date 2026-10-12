@@ -284,6 +284,7 @@ export class UnitState extends EnemyUnits {
   vehicle_destroyed(kind: string, v: number): void {
     const m = this.mem;
     const manta = kind === "Manta";
+    m.set16(manta ? 0x95E : 0x960, 1); // the arming panel's redraw (units_render)
     this._msg(`${kind} ${m.u16(v + 0x1A) + 1} has been destroyed!`);
     if (m.u32(COMMS_POD) === v) {
       m.set32(COMMS_POD, 0);
@@ -671,6 +672,7 @@ export class UnitState extends EnemyUnits {
         m.set8(a1 + 0x1D, 0);
         m.set8(a1 + 0x1C, 1);
         m.set8(MANTA_LANDING, 0);
+        m.set16(0x95C, 2); // bay status redraw (units_render)
       }
       m.set32(a4 + 0x0E, y);
       this._manta_on_deck(a1, a4);
@@ -731,6 +733,7 @@ export class UnitState extends EnemyUnits {
         m.set8(a4 + 1, m.u8(a4 + 1) & ~4);
         m.set8(LIFT_BAY, 0xFF);
         this.dock_attach();
+        m.set16(0x95C, 2); // bay status redraw (units_render)
       }
     }
     m.set16(a4 + 6, m.u16(CARRIER_OBJ + 6));
@@ -1539,6 +1542,7 @@ export class UnitState extends EnemyUnits {
       if (u32(d3) > 0x4000) {
         m.set8(WALRUS_DOCKING, 0);
         m.set8(a1, m.u8(a1) & 0xFC);
+        m.set16(0x95C, 2); // bay status redraw (units_render)
         m.set16(a1 + 6, 0);
         this._msg(`Walrus ${m.u16(0x6E0) + 1} - Docking aborted`);
         return;
@@ -1645,6 +1649,7 @@ export class UnitState extends EnemyUnits {
     m.set8(DOCKED_WALRUS, 0xFF);
     m.set8(WALRUS_DOCKING, 0);
     this.dock_attach();
+    m.set16(0x95C, 2); // bay status redraw (units_render)
     if (m.u8(a1 + 0x33)) {
       m.set8(a1, m.u8(a1) & 0xFE);
     }
@@ -1957,6 +1962,8 @@ export class UnitState extends EnemyUnits {
         this._msg(`Manta ${bay + 1} is now on the flight deck`);
       }
       this.dock_attach();
+      m.set16(0x95C, 2); // redraws (units_render): bay status,
+      m.set16(0x95E, 2); // the Manta arming panel
       return;
     }
     const bay = m.s16(LIFT_BAY);
@@ -1988,6 +1995,8 @@ export class UnitState extends EnemyUnits {
       m.set16(LIFT_BAY, 0xFFFF);
       this.dock_attach();
       m.set16(LIFT_STATE, 3);
+      m.set16(0x95C, 2); // redraws (units_render): bay status,
+      m.set16(0x95E, 2); // the Manta arming panel
       return;
     }
     const d3 = m.u16(LIFT_NEXT);
@@ -2200,6 +2209,7 @@ export class UnitState extends EnemyUnits {
     }
     m.set8(a0 + 1, 1);
     m.set16(kind === "Manta" ? 0xDC0 : 0xDC2, 1);
+    m.set16(0x95C, 2); // bay status redraw (units_render)
   }
 
   /** $117D4 / $11EF0: a destroyed bay is refilled from storage, empty and repaired. */
@@ -2220,6 +2230,7 @@ export class UnitState extends EnemyUnits {
     if (kind === "Manta") {
       m.set8(a0 + 0x1C, 0);
     }
+    m.set16(kind === "Manta" ? 0x95E : 0x960, 1); // the arming panel's redraw (units_render)
   }
 
   /** $1176A: repair (status 1), or replace a destroyed Manta. */
@@ -2246,6 +2257,7 @@ export class UnitState extends EnemyUnits {
   cmd_manta_prepare(bay: number | null = null): void {
     const a0 = this._manta_selected(bay);
     this.mem.set8(a0 + 1, 2);
+    this.mem.set16(0x95C, 2); // bay status redraw (units_render)
     this.preparation_time(a0, "Manta");
   }
 
@@ -2253,6 +2265,7 @@ export class UnitState extends EnemyUnits {
   cmd_walrus_prepare(bay: number | null = null): void {
     const a0 = this._walrus_selected(bay);
     this.mem.set8(a0 + 1, 2);
+    this.mem.set16(0x95C, 2); // bay status redraw (units_render)
     this.preparation_time(a0, "Walrus");
   }
 
@@ -2296,6 +2309,7 @@ export class UnitState extends EnemyUnits {
     m.set16(LIFT_NEXT, d1);
     this.dock_attach();
     m.set16(0xDC0, 2);
+    m.set16(0x95C, 2); // bay status redraw (units_render)
   }
 
   /** $1242A: take the Manta on deck (mode 1) down the lift. */
@@ -2311,6 +2325,7 @@ export class UnitState extends EnemyUnits {
     m.set8(MANTA_RECS + REC * bay + 1, 3);
     m.set16(LIFT_STATE, 1);
     this.dock_attach();
+    m.set16(0x95C, 2); // bay status redraw (units_render)
   }
 
   /** $12002: the Manta on deck takes off (mode 2); without a waypoint it gets one
@@ -2336,6 +2351,7 @@ export class UnitState extends EnemyUnits {
       m.set32(a0 + 0x1E, x + m.u32(c + 0x0A));
       m.set32(a0 + 0x26, z + m.u32(c + 0x12));
     }
+    m.set16(0x95C, 2); // bay status redraw (units_render)
     this._msg(`Launching Manta ${bay + 1}`);
   }
 
@@ -2363,6 +2379,7 @@ export class UnitState extends EnemyUnits {
     const dx = s32(m.u32(a0 + 0x0A) - m.u32(c + 0x0A));
     const dz = s32(m.u32(a0 + 0x12) - m.u32(c + 0x12));
     if (dx !== s16(dx) || dz !== s16(dz) || s32(dx * dx + dz * dz) > 0x10000000) {
+      m.set16(0x95C, 2); // bay status redraw (units_render)
       return this._msg(`Manta ${n} is out of range`);
     }
     if (m.u16(LIFT_STATE)) {
@@ -2376,6 +2393,7 @@ export class UnitState extends EnemyUnits {
     m.set8(a1, m.u8(a1) | 1);
     m.set8(a1 + 0x1C, 0);
     m.set8(a1 + 0x1D, 0);
+    m.set16(0x95C, 2); // bay status redraw (units_render)
     m.set16(0xDDC, m.u16(0xDCC));
     this._msg(`Manta ${n} is landing`);
   }
@@ -2437,6 +2455,7 @@ export class UnitState extends EnemyUnits {
     for (const code of codes) {
       this.loadout_fit(code, a1, a0);
     }
+    m.set16(0x95C, 2); // bay status redraw (units_render)
     m.set8(WALRUS_DOCKING, 0xFF);
     m.set16(0x6E0, m.u16(a0 + 0x1A));
     this._door(1);
@@ -2481,6 +2500,7 @@ export class UnitState extends EnemyUnits {
     m.set8(a1, 0x41);
     m.set8(a1 + 0x1A, 0);
     m.set8(a1 + 0x1B, 0);
+    m.set16(0x95C, 2); // bay status redraw (units_render)
     m.set8(WALRUS_DOCKING, 0xFF);
     m.set16(0x6E0, m.u16(a0 + 0x1A));
     this._msg(`Walrus ${n} is docking`);

@@ -329,8 +329,9 @@ def compare(export: bytes, cap: Path, passes: int, mode: str, sync_render: bool 
                     m.set8(0x8FD, cout[0x8FD])
             mine = bytearray(ref)
             s.to_ram(mine)
-            for a in render_diffs(mine, ref):                     # not compared
-                mine[a] = (mine[a] & ~mask[a] | ref[a] & mask[a]) & 0xFF
+            if sync_render:
+                for a in render_diffs(mine, ref):                 # not compared
+                    mine[a] = (mine[a] & ~mask[a] | ref[a] & mask[a]) & 0xFF
             d = check_units.diff(mine, ref)
             if d:
                 lines.append(f"pass {n} ({label} the simulation block): MISMATCH")
@@ -388,16 +389,12 @@ def verify(passes: int, mode: str, redraw: bool, only: list) -> int:
             print("  Hatari capture failed")
             ok = False
             continue
-        lines = compare(export, out, passes, mode, redraw=redraw)
+        # the model alone, render_effects included (docs/units.md §10.8): every state byte
+        # compared, nothing taken from Hatari but the VBL's second flags
+        lines = compare(export, out, passes, mode, sync_render=False, redraw=redraw)
         for line in lines:
             print("  " + line)
         ok &= not any("MISMATCH" in x or "differ" in x for x in lines)
-        # informational: the app's model alone, without the 3D render's camera and pipeline
-        # writes (docs/units.md §10.8 "Not ported")
-        alone = compare(export, out, passes, mode, sync_render=False, redraw=redraw)
-        hit = next((i for i, x in enumerate(alone) if "MISMATCH" in x), None)
-        print("  model without the render's writes: "
-              + ("same" if hit is None else alone[hit] + "; " + "; ".join(x.strip() for x in alone[hit + 1:hit + 2])))
     return 0 if ok else 1
 
 

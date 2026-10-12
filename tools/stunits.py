@@ -1442,6 +1442,8 @@ class UnitCore(WorldState):
                     m.set16(r + 0x14, 0xFA0)
                     m.set8(r + 1, 2)
                     self.preparation_time(r, kind)
+        m.set16(0x95C, 2)                    # redraw countdowns (stunits_render): bay status,
+        m.set16(0x95E if kind == "Manta" else 0x960, 2)   # the arming panels
 
     def preparation_time(self, r: int, kind: str) -> None:
         """$11856 (Manta) / $11F6A (Walrus): flight preparation in 10 s units: damage left
@@ -2644,6 +2646,7 @@ class UnitCore(WorldState):
         m = self.mem
         if 0x0A <= m.s16(hitter + 2) <= 0x0D:
             return
+        m.set16(0x95C, 2)                    # bay status redraw (stunits_render)
         self.events.append(("message", "Defence drone destroyed", self._ping()))
         m.set8(DOCKED_WALRUS, 0xFF if m.u8(v) & 4 else 0)
         m.set16(DOOR_STATE, 3)
