@@ -92,7 +92,7 @@ Both share the first `$40` bytes of the layout. Island-buffer entries 0–31 mir
 - **Each slot** goes through `slot_entry_table` `$18066` (8 bytes per slot type: `handler.l, param.l`):
   - a negative handler creates the entry type −handler at the slot's x/z and heading, with **local y = param + `$50`**, and health `+$38` = slot value;
   - the y params are: volcano 600; types `$0E`/`$0F` 60/45; trees 200/250/100/175; `$25` 300, `$26` 30, `$27` 40, `$28`/`$29` 100, `$2A` 500, `$2B`/`$2C` 200, `$2D`/`$2E` 100 (construction types are the same);
-  - this **answers the web viewer's open question on vertical placement**.
+  - this gives each object's vertical placement on the island.
 - **Sync:** `mirror_slot_to_buffer` (`$18276`) and `create_slot_object` (`$182A4`) keep entries in step with the slots.
 
 ### 3.2 Object record (`$140` bytes)
