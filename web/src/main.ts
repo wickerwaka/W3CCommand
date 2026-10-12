@@ -12,6 +12,7 @@ import { readStateFile, writeStateFile } from "./app/state_file.ts";
 import { loadState, saveState, type Slot } from "./app/store.ts";
 import { FreeCamera, GameCamera, type ViewCamera } from "./render/cameras.ts";
 import { WorldView } from "./render/world_view.ts";
+import { ditherCell } from "./render/meshes.ts";
 import { Sound } from "./audio/sound.ts";
 import { MapView } from "./ui/map.ts";
 import { Menu } from "./ui/menu.ts";
@@ -41,6 +42,7 @@ let game: Game | null = null;
 let view: WorldView | null = null;
 let names: string[] = [];
 let freeCamera = false;
+let dither = true;
 let showEnemy = false;
 let sinceAutosave = 0;
 let notice: string | null = null;
@@ -90,6 +92,7 @@ const menu = new Menu({
   canSave: () => !!game,
   options: [
     { label: "Free camera (C)", get: () => freeCamera, set: (v) => setFreeCamera(v) },
+    { label: "ST dithering (else blended colours)", get: () => dither, set: (v) => { dither = v; setDither(); } },
     { label: "Sound", get: () => !muted, set: (v) => { muted = !v; if (sound) sound.muted = muted; } },
     // the original never plots the enemy on the map (docs/units.md §10.7); a debugging aid
     { label: "Show the enemy carrier on the map (debug)", get: () => showEnemy, set: (v) => (showEnemy = v) },
@@ -372,8 +375,14 @@ addEventListener("drop", (e) => {
   if (f) void f.arrayBuffer().then((b) => openState(f.name, new Uint8Array(b)));
 });
 
+/** The dither checker: about one ST pixel (the game's 128-row view across the window). */
+function setDither(): void {
+  ditherCell.value = dither ? Math.max(1, Math.round((innerHeight * renderer.getPixelRatio()) / 200)) : 0;
+}
+
 function resize(): void {
   renderer.setSize(innerWidth, innerHeight, false);
+  setDither();
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }

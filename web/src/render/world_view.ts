@@ -161,6 +161,9 @@ export class WorldView {
   private lineMat = lineMaterial();
   private sea: THREE.Mesh;
   private discGeo = new THREE.SphereGeometry(1, 12, 8);
+  /** Sea dots ($91EC): 8 x 8 points on y = 0 at multiples of $2000, -4..+3 grid steps around
+   * the camera, white (colour 8); drawn while the game option [$1246] is 0. */
+  private seaDots: THREE.Points;
 
   constructor(ram: Uint8Array) {
     this.ram = ram;
@@ -173,6 +176,11 @@ export class WorldView {
     this.sea.scale.setScalar(4e6);
     this.sea.renderOrder = -1;
     this.scene.add(this.sea);
+    const dots = new THREE.BufferGeometry();
+    dots.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(64 * 3), 3));
+    this.seaDots = new THREE.Points(dots, new THREE.PointsMaterial({ color: paletteColour(ram, 8), size: 2, sizeAttenuation: false }));
+    this.seaDots.frustumCulled = false;
+    this.scene.add(this.seaDots);
   }
 
   dispose(): void {
@@ -186,6 +194,15 @@ export class WorldView {
   update(eye: Eye, view: THREE.Quaternion): void {
     const ram = this.ram;
     this.sea.position.set(0, -eye.y, 0);
+    this.seaDots.visible = ram[0x1246] === 0;
+    if (this.seaDots.visible) {
+      const pos = this.seaDots.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const gx = Math.floor(eye.x / 0x2000) * 0x2000, gz = Math.floor(eye.z / 0x2000) * 0x2000;
+      let k = 0;
+      for (let i = -4; i < 4; i++)
+        for (let j = -4; j < 4; j++) pos.setXYZ(k++, gx + i * 0x2000 - eye.x, -eye.y, -(gz + j * 0x2000 - eye.z));
+      pos.needsUpdate = true;
+    }
     // camera forward in game coordinates (three's -z is game +z)
     const f = new THREE.Vector3(0, 0, -1).applyQuaternion(view);
     const fx = f.x, fy = f.y, fz = -f.z;

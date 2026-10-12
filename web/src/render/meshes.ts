@@ -10,7 +10,12 @@
 // vertex shader pulls layer k slightly towards the camera.
 import * as THREE from "three";
 import type { Model } from "./models.ts";
-import { modelColour } from "./palette.ts";
+import { colourPair, modelColour, paletteColour } from "./palette.ts";
+
+/** The ST's dither: a two-colour entry of the $13CA table is drawn as a 2x2 checker of its two
+ * palette colours. ditherCell.value = the checker cell in device pixels (about one ST pixel
+ * at the window's size), or 0 to blend the two colours instead. */
+export const ditherCell = { value: 0 };
 
 /** Fraction of the view distance each decal layer is pulled towards the camera. */
 const LAYER_PULL = 0.0015;
@@ -38,6 +43,23 @@ function patchShader(m: THREE.Material): void {
 export function polyMaterial(): THREE.Material {
   const m = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
   patchShader(m);
+  const vertex = m.onBeforeCompile;
+  m.onBeforeCompile = (shader, renderer) => {
+    vertex(shader, renderer);
+    shader.uniforms.ditherCell = ditherCell;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute vec3 color2;\nvarying vec3 vColor2;")
+      .replace("#include <color_vertex>", "#include <color_vertex>\nvColor2 = color2;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vColor2;\nuniform float ditherCell;")
+      .replace(
+        "#include <color_fragment>",
+        `if (ditherCell > 0.0) {
+           vec2 c = floor(gl_FragCoord.xy / ditherCell);
+           diffuseColor.rgb = mod(c.x + c.y, 2.0) < 1.0 ? vColor.rgb : vColor2;
+         } else diffuseColor.rgb = mix(vColor.rgb, vColor2, 0.5);`,
+      );
+  };
   return m;
 }
 
@@ -93,10 +115,11 @@ export function buildModelMeshes(ram: Uint8Array, model: Model): ModelMeshes {
   const verts = model.vertices.map(toThree);
   let polys: THREE.BufferGeometry | null = null;
   if (model.polys.length) {
-    const pos: number[] = [], col: number[] = [], layer: number[] = [];
+    const pos: number[] = [], col: number[] = [], col2: number[] = [], layer: number[] = [];
     const tn: number[] = [], tp: number[] = [], ton: number[] = [];
     for (const p of model.polys) {
-      const c = modelColour(ram, p.colour);
+      const [ia, ib] = colourPair(ram, p.colour);
+      const c = paletteColour(ram, ia), c2 = paletteColour(ram, ib);
       const pts = p.idx.map((i) => verts[i]).filter((v) => v !== undefined);
       if (pts.length < 3) continue;
       pushTest(groupTest(model, p.test), tn, tp, ton, 3 * (pts.length - 2));
@@ -104,6 +127,7 @@ export function buildModelMeshes(ram: Uint8Array, model: Model): ModelMeshes {
         for (const v of [pts[0], pts[k], pts[k + 1]]) {
           pos.push(v.x, v.y, v.z);
           col.push(c.r, c.g, c.b);
+          col2.push(c2.r, c2.g, c2.b);
           layer.push(p.layer);
         }
       }
@@ -112,6 +136,7 @@ export function buildModelMeshes(ram: Uint8Array, model: Model): ModelMeshes {
       polys = new THREE.BufferGeometry();
       polys.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
       polys.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+      polys.setAttribute("color2", new THREE.Float32BufferAttribute(col2, 3));
       polys.setAttribute("layer", new THREE.Float32BufferAttribute(layer, 1));
       setTestAttributes(polys, tn, tp, ton);
       polys.computeBoundingSphere();

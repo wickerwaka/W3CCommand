@@ -67,10 +67,10 @@ The tabs follow the original's four screen groups: **Carrier**, **Weapons**, **W
 - **Map:**
   - The modern map draws all islands at every zoom, plus the network and your units.
   - The enemy carrier is never shown, as in the original. The menu has a debug option to show it.
-- **Dithering:** two-colour dithered surfaces are shown blended.
+- **Dithering:** two-colour surfaces use the ST's checker dither at about one ST pixel per cell
+  (the menu can switch to blended colours).
 - **Crashes:** where the original crashes the ST, the port does something safe and says so in
   the message log (`docs/units.md` §12).
-- **Sea dots:** the "sea dots" grid isn't drawn.
 
 ## Development
 
