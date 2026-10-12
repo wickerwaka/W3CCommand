@@ -726,7 +726,7 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 | Vehicles | `vehicles_step`; `carrier_step` (speed governor, autopilot, grounding, recoil); the Manta/Walrus loops for bays in the hangar; the laser turret off its screen; crane and observation-turret angles `$1F070`; flares and object 15 `$1F214`; idle supply transfer; idle lift; dock door |
 | Debris and drones | `debris_step`, `free_burst`; `defence_drones_step`: stations, routing round the carrier's box, positions |
 | Island defences | `island_behaviours_step` and every island behaviour: AA turret, SAM launcher, SAM, command centre, drone pad, island drone (fly, search, attack, return, land), anti-ship site, volcano and its rocks, the two dish types; the hostile search and aiming |
-| Weapons in flight | the anti-ship missile and the explosion blast (AI objects) |
+| Weapons in flight | every AI object: laser bolt, homing missile (flare decoys, lost targets), Walrus-guided missile, cruise missile, bouncing bomb, virus bomb, anti-ship missile, explosion blast, and the enemy fighter (cruise, search for units or buildings, attack with homing missiles, return and land on the enemy carrier) |
 | Hits | `collision_response` and all 30 hit handlers: carrier damage by hull position, enemy carrier strength, Manta/Walrus damage, island drones, SAMs, rocks, trees, buildings (score, difficulty, write-back to the slot), command centres (island turns neutral), constructions, virus bombs (capture), blasts, flares, deck drones; `difficulty_add`/`difficulty_apply`; the score |
 | Debris | spawning from the per-type recipes, including the self-modifying branch |
 | Objects | `init_world_object`/`init_island_object`, schedule resets, `find_free_object`/`find_free_island_object`; `object_passes`: island attach/load/release, both collision passes with time-to-contact scheduling and the contact tests |
@@ -735,7 +735,6 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 | Maths | yaw/pitch rotation, rotation matrix, atan2, `aim_angles`, `turn_towards`, `self_centre` |
 
 **Not yet ported** (the model raises `NotImplementedError` instead of guessing):
-- the remaining AI objects: laser bolts, homing and guided missiles, cruise missiles, bombs, virus bombs, enemy fighters;
 - vehicles out of the hangar: flight, driving, lift and dock sequences, and a destroyed Manta or Walrus;
 - the turret screen, supply transfers, and a destroyed supply drone;
 - the enemy's close-range combat (states 10 and 11).
@@ -749,7 +748,8 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 - each routine on the 120 captured states, with 2000 fuzzed states for `carrier_step`;
 - whole passes against the original and against the **Hatari** `pass_*_out` captures: all 120 match;
 - 4000 consecutive passes from the start of the voyage against the original (screen input stubbed, the one-second flag every 8 passes): identical, including an enemy capture along the way;
-- 140 perturbed multi-pass scenarios:
+- 160 perturbed multi-pass scenarios:
+  - **weapons:** every AI-object type in flight around the carrier and the island with live targets, and enemy fighters raiding a player island's buildings;
   - **island defences:** an air raid (Manta objects hovering in range, so AA turrets, SAM sites and island drones engage), a bombardment of the island's buildings, volcano eruptions, island drones returning or losing their pad, and a player-held island firing anti-ship missiles at the enemy carrier;
   - **other:** engagement of the carrier, the carrier's defence drones (stations and launch), flares, turret, voyage, debris, collisions, hangars, construction.
 

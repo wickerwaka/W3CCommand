@@ -1581,7 +1581,7 @@ class UnitState(WorldState):
         if state == 1:
             if self._word_timer(e + 0x1E):
                 return self._volcano_dormant(e)
-            if not self._byte_timer(e + 0x1B):
+            if self._dec_byte(e + 0x1B):
                 return
             a = self.find_free_island_object()
             if a is not None:
@@ -1864,6 +1864,389 @@ class UnitState(WorldState):
         m.set8(a + 0x1B, v)
         if v == 0:
             m.set16(a, 0)
+
+    def _fly_with_floor(self, a: int, speed: int) -> None:
+        """Laser/homing-missile motion: x, z always; y too, but a nose-down object that
+        would go below 0 dies (it still moves)."""
+        m = self.mem
+        dx, dy, dz = self.velocity_from_angles(a, speed)
+        m.set32(a + 0x0A, m.u32(a + 0x0A) + dx)
+        m.set32(a + 0x12, m.u32(a + 0x12) + dz)
+        y = s32(m.u32(a + 0x0E) + dy)
+        if y < 0 and m.s16(a + 4) > 0:
+            m.set16(a, 0)
+        m.set32(a + 0x0E, y)
+
+    def _dec_byte(self, a: int) -> int:
+        """subq.b #1 (no zero test first: 0 wraps to $FF)."""
+        v = (self.mem.u8(a) - 1) & 0xFF
+        self.mem.set8(a, v)
+        return v
+
+    def laser_bolt(self, a: int) -> None:
+        """$1A6A0: straight line at 350 per pass for +$1B passes."""
+        m = self.mem
+        life = (m.u8(a + 0x1B) - 1) & 0xFF
+        m.set8(a + 0x1B, life)
+        if life == 0:
+            m.set16(a, 0)
+            return
+        self._fly_with_floor(a, 0x15E)
+
+    def homing_missile(self, a: int) -> None:
+        """$1A6D0: 5 passes straight, then homes on +$1E (re-aimed every 5 passes; a decoy
+        flare within 6000 steals it). Lost target: 100 more passes straight."""
+        m = self.mem
+        st = m.u8(a + 0x1A)
+        if st == 0:
+            m.set8(a + 0x1B, 0x64)
+            m.set8(a + 0x1C, 5)
+            m.set8(a + 0x1A, 1)
+            return
+        life = (m.u8(a + 0x1B) - 1) & 0xFF
+        m.set8(a + 0x1B, life)
+        if life == 0:
+            m.set16(a, 0)
+            return
+        if st == 1:
+            if self._dec_byte(a + 0x1C) == 0:
+                m.set8(a + 0x1A, 2)
+                m.set8(a + 0x1C, 1)
+            return self._fly_with_floor(a, 0xFA)
+        if self._dec_byte(a + 0x1C) == 0:
+            m.set8(a + 0x1C, 5)
+            for k in (17, 18):
+                f = self.obj(k)
+                if m.u8(f + 1) & 1 and self.cheb2d(a, f) <= 6000:
+                    m.set32(a + 0x1E, f)
+            t = m.u32(a + 0x1E)
+            if t & 0x80000000 or not m.u16(t) & 1:
+                m.set8(a + 0x1A, 1)
+                m.set8(a + 0x1C, 0x64)
+                return
+            if m.u16(t) & 0x8000:
+                p = [m.u32(t + 0x0A + 4 * k) for k in range(3)]
+            else:
+                buf = m.u32(a + 0x3C)
+                if not buf:
+                    m.set8(a + 0x1A, 1)
+                    m.set8(a + 0x1C, 0x64)
+                    return
+                p = [m.s16(t + 0x0A + 2 * k) + m.u32(buf + 2 + 4 * k) for k in range(3)]
+            d = [s32(p[k] - m.u32(a + 0x0A + 4 * k)) for k in range(3)]
+            pitch, heading = self.aim_angles(*d)
+            m.set16(a + 0x22, pitch)
+            m.set16(a + 0x24, heading)
+        m.set16(a + 4, self.turn_towards(m.u16(a + 0x22), m.u16(a + 4), 0x800))
+        m.set16(a + 6, self.turn_towards(m.u16(a + 0x24), m.u16(a + 6), 0x800))
+        self._fly_with_floor(a, 0xFA)
+
+    def cheb2d(self, a: int, b: int) -> int:
+        """$1A866: max(|dx|, |dz|) between two world objects."""
+        m = self.mem
+        dx = self.absl(m.u32(a + 0x0A) - m.u32(b + 0x0A))
+        dz = self.absl(m.u32(a + 0x12) - m.u32(b + 0x12))
+        return dx if dx >= dz else dz
+
+    def guided_missile(self, a: int) -> None:
+        """$1A886: steered by its Walrus through +$1E (yaw) and +$20 (pitch); explodes low
+        or over an island."""
+        m = self.mem
+        if self._dec_byte(a + 0x1C) == 0:
+            m.set16(a, 0)
+            return
+        m.set16(a + 6, m.u16(a + 6) + 2 * m.u16(a + 0x1E))
+        m.set16(a + 4, m.u16(a + 4) - m.u16(a + 0x20))
+        dx, dy, dz = self.velocity_from_angles(a, 0x96)
+        m.set32(a + 0x0A, m.u32(a + 0x0A) + dx)
+        m.set32(a + 0x12, m.u32(a + 0x12) + dz)
+        y = s32(m.u32(a + 0x0E) + dy)
+        m.set32(a + 0x0E, y)
+        if y >= 0x96:
+            return
+        if y > 0x1E:
+            buf = m.u32(a + 0x3C)
+            if not buf:
+                return
+            bx, bz = self.island_box_distance(a, buf)
+            if bx >= 0 or bz >= 0:
+                return
+        m.set16(a, 0)
+
+    def cruise_missile(self, a: int) -> None:
+        """$1A8F6: flies to the point (+$1E, +$22) at 1000, dropping to 140 within 3000;
+        explodes (blast) within 200 or when its life runs out."""
+        m = self.mem
+        if self._dec_byte(a + 0x1B) == 0:
+            return self.explode_blast(a)
+        alt = 0x8C if m.u8(a + 0x1A) else 0x3E8
+        want = w16((m.u16(a + 0x10) - alt) << 3)
+        m.set16(a + 4, self.turn_towards(want, m.u16(a + 4), 0x400))
+        dx = s32(m.u32(a + 0x1E) - m.u32(a + 0x0A))
+        dz = s32(m.u32(a + 0x22) - m.u32(a + 0x12))
+        d = self.absl(dx)
+        if self.absl(dz) > d:
+            d = self.absl(dz)
+        heading = self.atan2(dx, dz)
+        if d <= 0xBB8:
+            if d <= 0xC8:
+                return self.explode_blast(a)
+            m.set8(a + 0x1A, 1)
+        if self.absw(m.u16(a + 6) - heading) <= 0x3E80:
+            m.set16(a + 6, self.turn_towards(heading, m.u16(a + 6), 0x800))
+        vx, vy, vz = self.velocity_from_angles(a, 0xC8)
+        for o, v in ((0x0A, vx), (0x0E, vy), (0x12, vz)):
+            m.set32(a + o, m.u32(a + o) + v)
+
+    def explode_blast(self, a: int) -> None:
+        """$1C5EC: the object itself explodes into a blast volume."""
+        self.hit_blast(a, a, 0)
+
+    def bomb(self, a: int) -> None:
+        """$1A9B0: falls, tumbling; bounces off an island top (3/4 of the speed back, with
+        debris) until the bounce is under 30, then explodes; over the sea it explodes."""
+        m = self.mem
+        if s32(m.u32(a + 0x0E)) < 0x64 and m.u32(a + 0x3C):
+            bx, bz = self.island_box_distance(a, m.u32(a + 0x3C))
+            if bx < 0 and bz < 0:
+                m.set32(a + 0x0E, 0x64)
+                vy = w16(-m.u16(a + 0x22))
+                m.set16(a + 0x1E, 0x1000)
+                if s16(vy) < 0x1E:
+                    return self.explode_blast(a)
+                m.set16(a + 0x22, vy - (s16(vy) >> 2))
+                self.spawn_debris_world(a)
+            elif s32(m.u32(a + 0x0E)) < 0x14:
+                m.set32(a + 0x0E, 0)
+                return self.explode_blast(a)
+        m.set16(a + 4, m.u16(a + 4) + m.u16(a + 0x1E))
+        vx, vy, vz = m.s16(a + 0x20), s16(m.u16(a + 0x22) - 10), m.s16(a + 0x24)
+        if vy < -0x8C:
+            vy = -0x8C
+        m.set16(a + 0x22, vy)
+        for o, v in ((0x0A, vx), (0x0E, vy), (0x12, vz)):
+            m.set32(a + o, m.u32(a + o) + v)
+
+    def virus_bomb(self, a: int) -> None:
+        """$1AA52: tumbles along heading +$20 at 100 per pass; gone (with debris) when its
+        timer runs out or it's low over an island."""
+        m = self.mem
+        gone = self._word_timer(a + 0x1E)
+        if not gone and s32(m.u32(a + 0x0E)) < 0x50 and m.u32(a + 0x3C):
+            bx, bz = self.island_box_distance(a, m.u32(a + 0x3C))
+            gone = bx < 0 and bz < 0
+        if gone:
+            m.set16(a, 0)
+            self.spawn_debris_world(a)
+            return
+        m.set16(a + 6, m.u16(a + 6) + 0x1F4)
+        m.set16(a + 4, m.u16(a + 4) - 0x300)
+        m.set16(a + 8, m.u16(a + 8) + 0x172)
+        vx, vz = self.rotate_yaw(0, 0x64, m.u16(a + 0x20))
+        m.set32(a + 0x0A, m.u32(a + 0x0A) + vx)
+        m.set32(a + 0x12, m.u32(a + 0x12) + vz)
+
+    # enemy fighter ($1AC00)
+    def enemy_fighter(self, a: int) -> None:
+        """$1AC00: +$1A state (1 fly to waypoint +$22/+$26/+$2A, 2 search, 3 attack target
+        +$22, 4 return, 5 land), +$1D next state, +$16 fuel, +$18 missiles, +$38 health."""
+        m = self.mem
+        st = m.u8(a + 0x1A)
+        if st == 0:
+            m.set8(a + 0x1A, 1)
+            m.set8(a + 0x1B, 0xFF)
+            m.set8(a + 0x1D, 2)
+            return
+        if st == 1:
+            return self._fighter_cruise(a)
+        if st == 2:
+            t = self._fighter_find_unit(a)
+            if t is None:
+                t = self._fighter_find_structure(a)
+            if t is None:
+                return self._fighter_wander(a)
+            m.set32(a + 0x22, t)
+            m.set8(a + 0x1A, 3)
+            return self._fighter_steer(a)
+        if st == 3:
+            return self._fighter_attack(a)
+        if st == 4:
+            return self._fighter_home(a)
+        return self._fighter_land(a)
+
+    def _fighter_cruise(self, a: int) -> None:
+        m = self.mem
+        if m.s8(a + 0x1D) < 4:
+            fuel = m.s16(a + 0x16)
+            if m.u8(0x11D0) or fuel < 0xC8:
+                return self._fighter_home(a)
+            fuel -= 1
+            m.set16(a + 0x16, fuel)
+            if fuel == 0:
+                m.set16(a, 0)
+                m.set16(0x11CE, m.u16(0x11CE) - 1)
+                return
+            if m.s16(a + 0x38) <= 0x3E8 or m.u16(a + 0x18) == 0:
+                return self._fighter_home(a)
+        d = self._fighter_aim(a, *(m.u32(a + 0x22 + 4 * k) for k in range(3)))
+        left = (m.u8(a + 0x1B) - 1) & 0xFF
+        m.set8(a + 0x1B, left)
+        if left == 0 or s32(d) <= 0x12C:
+            m.set8(a + 0x1A, m.u8(a + 0x1D))
+        m.set8(a + 0x1C, 0xFF if s32(d) < 0x258 else 0)
+        self._fighter_steer(a)
+
+    def _fighter_aim(self, a: int, x: int, y: int, z: int) -> int:
+        """$1AE96: aim at a point (pitch +$1E, heading +$20); returns the 3D Chebyshev
+        distance. Offsets are quartered until they fit in words ($1A7E4)."""
+        m = self.mem
+        d = [s32(v - m.u32(a + 0x0A + 4 * k)) for k, v in enumerate((x, y, z))]
+        ad = [self.absl(v) for v in d]
+        dist = ad[0]
+        if ad[1] > dist:
+            dist = ad[1]
+        if ad[2] > dist:
+            dist = ad[2]
+        while not all(-0x8000 <= v < 0x8000 for v in d):
+            d = [v >> 2 for v in d]
+        pitch, heading = self.aim_angles(*d)
+        m.set16(a + 0x1E, pitch)
+        m.set16(a + 0x20, heading)
+        return dist
+
+    def _fighter_steer(self, a: int, slow: bool = None) -> None:
+        """$1AE50: turn (pitch $5DC, heading $800) and fly at 220 (110 when close)."""
+        m = self.mem
+        m.set16(a + 4, self.turn_towards(m.u16(a + 0x1E), m.u16(a + 4), 0x5DC))
+        m.set16(a + 6, self.turn_towards(m.u16(a + 0x20), m.u16(a + 6), 0x800))
+        speed = 0xDC >> 1 if m.u8(a + 0x1C) else 0xDC
+        vx, vy, vz = self.velocity_from_angles(a, speed)
+        for o, v in ((0x0A, vx), (0x0E, vy), (0x12, vz)):
+            m.set32(a + o, m.u32(a + o) + v)
+
+    def _fighter_wander(self, a: int, timer: int = 0x14) -> None:
+        """$1ACB2/$1ACB8: a random waypoint within 7000, altitude 500-2547; fly there."""
+        m = self.mem
+        m.set8(a + 0x1B, timer)
+        x = s32(s16(w16(((s16(self.rand()) * 0x1B58) >> 16) * 2)) + m.u32(a + 0x0A))
+        m.set32(a + 0x22, x)
+        z = s32(s16(w16(((s16(self.rand()) * 0x1B58) >> 16) * 2)) + m.u32(a + 0x12))
+        m.set32(a + 0x2A, z)
+        m.set32(a + 0x26, (z & 0x7FF) + 0x1F4)
+        m.set8(a + 0x1A, 1)
+        m.set8(a + 0x1D, 2)
+        m.set8(a + 0x1C, 0xFF)
+        self._fighter_steer(a)
+
+    def _fighter_find_unit(self, a: int):
+        """$1AED0: nearest player unit (objects 2-10) within 20000: Walruses count 5000
+        further, the carrier 5000 nearer."""
+        m = self.mem
+        best, best_d = None, 0xFFFFFFFF
+        for k in range(2, 11):
+            o = self.obj(k)
+            if not m.u8(o + 1) & 1:
+                continue
+            d = self.cheb2d(a, o)
+            if m.u16(o + 2) == 6:
+                d += 5000
+            if o == CARRIER:
+                d -= 5000
+            d = s32(d)
+            if d > 20000:
+                continue
+            if d & 0xFFFFFFFF <= best_d:
+                best, best_d = o, d & 0xFFFFFFFF
+        return best
+
+    def _fighter_find_structure(self, a: int):
+        """$1AF20: nearest attackable structure (flag bit 14) on a player island the fighter
+        is attached to."""
+        m = self.mem
+        buf = m.u32(a + 0x3C)
+        if not buf or self.owner(m.u8(buf + 1)) != 1:
+            return None
+        best, best_d = None, 0xFFFFFFFF
+        for j in range(64):
+            e = buf + 0x12 + 0x40 * j
+            f = m.u16(e)
+            if f & 0x4001 != 0x4001:
+                continue
+            dx = self.absl(m.s16(e + 0x0A) + m.u32(buf + 2) - m.u32(a + 0x0A))
+            dz = self.absl(m.s16(e + 0x0E) + m.u32(buf + 0x0A) - m.u32(a + 0x12))
+            d = (dx if dx >= dz else dz) & 0xFFFFFFFF
+            if d <= best_d:
+                best, best_d = e, d
+        return best
+
+    def _fighter_attack(self, a: int) -> None:
+        m = self.mem
+        t = m.u32(a + 0x22)
+        if not m.u16(t) & 1:
+            return self._fighter_wander(a)
+        if m.u16(t) & 0x8000:
+            p = [m.u32(t + 0x0A + 4 * k) for k in range(3)]
+        else:
+            buf = m.u32(a + 0x3C)
+            if not buf:
+                return self._fighter_wander(a)
+            p = [m.s16(t + 0x0A) + m.u32(buf + 2), m.s16(t + 0x0C), m.s16(t + 0x0E) + m.u32(buf + 0x0A)]
+        d = s32(self._fighter_aim(a, *p))
+        if m.u16(a + 0x18):
+            if d > 40000:
+                return self._fighter_wander(a)
+            if d > 5000:
+                m.set8(a + 0x1C, 0xFF)
+                return self._fighter_steer(a)
+            if self.absw(m.u16(a + 0x20) - m.u16(a + 6)) <= 0x100:
+                b = self.find_free_object()
+                if b is not None:
+                    self.init_world_object(b, 0x11)
+                    self.reset_pair_schedules()
+                    m.set8(b + 0xC0 + 2 * m.u16(0x6F0), 0xFF)
+                    m.set32(b + 0x0E, m.u32(a + 0x0E))
+                    vx, vz = self.yaw_vector(a, 0x64)
+                    m.set32(b + 0x0A, m.u32(a + 0x0A) + vx)
+                    m.set32(b + 0x12, m.u32(a + 0x12) + vz)
+                    for o in (4, 6, 8):
+                        m.set16(b + o, m.u16(a + o))
+                    m.set16(b + 8, 0)
+                    m.set32(b + 0x1E, m.u32(a + 0x22))
+                    m.set16(a + 0x18, m.u16(a + 0x18) - 1)
+        self._fighter_wander(a, 0x64)
+
+    def _fighter_home(self, a: int) -> None:
+        """$1ADD4: waypoint 1500 above the enemy carrier; next state 4 (far) or land."""
+        m = self.mem
+        c = self.obj(19)
+        m.set32(a + 0x22, m.u32(c + 0x0A))
+        m.set32(a + 0x26, m.u32(c + 0x0E) + 0x5DC)
+        m.set32(a + 0x2A, m.u32(c + 0x12))
+        if self.cheb2d(a, c) > 0x1F4:
+            m.set8(a + 0x1D, 4)
+            return self._fighter_recruise(a)
+        self._fighter_land(a)
+
+    def _fighter_land(self, a: int) -> None:
+        """$1ADF8: within 500 and below 240: lands (back in the reserve)."""
+        m = self.mem
+        c = self.obj(19)
+        for k in range(3):
+            m.set32(a + 0x22 + 4 * k, m.u32(c + 0x0A + 4 * k))
+        if self.cheb2d(a, c) <= 0x1F4 and s32(m.u32(a + 0x0E)) <= 0xF0:
+            m.set16(a, 0)
+            m.set16(0x11CE, m.u16(0x11CE) - 1)
+            m.set16(stsim.E_AIRCRAFT, m.u16(stsim.E_AIRCRAFT) + 1)
+            return
+        m.set8(a + 0x1D, 5)
+        self._fighter_recruise(a)
+
+    def _fighter_recruise(self, a: int) -> None:
+        """$1AE3C: back to state 1 and run it again this pass."""
+        m = self.mem
+        m.set8(a + 0x1A, 1)
+        m.set8(a + 0x1B, 0xFF)
+        self._fighter_cruise(a)
 
     AI_BEHAVIOURS = {}
 
@@ -2446,7 +2829,12 @@ UnitState.ISLAND_BEHAVIOURS = {
     0x1989C: UnitState.volcano, 0x1996C: UnitState.volcano_rock,
     0x19AC4: UnitState.sam_launcher, 0x19BC6: UnitState.sam, 0x19C46: UnitState.island_drone,
 }
-UnitState.AI_BEHAVIOURS = {0x1AABA: UnitState.antiship_missile, 0x1A9A6: UnitState.blast}
+UnitState.AI_BEHAVIOURS = {
+    0x1AABA: UnitState.antiship_missile, 0x1A9A6: UnitState.blast,
+    0x1A6A0: UnitState.laser_bolt, 0x1A6D0: UnitState.homing_missile,
+    0x1A886: UnitState.guided_missile, 0x1A8F6: UnitState.cruise_missile,
+    0x1A9B0: UnitState.bomb, 0x1AA52: UnitState.virus_bomb, 0x1AC00: UnitState.enemy_fighter,
+}
 UnitState.HIT_HANDLERS = {0x1C188: UnitState.hit_carrier, 0x1C0F4: UnitState.hit_enemy_carrier, 0x1BF84: UnitState.hit_manta,
                 0x1BE5A: UnitState.hit_walrus, 0x1C2EE: UnitState.hit_rock, 0x1C010: UnitState.hit_deck_drone,
                 0x1BFFA: UnitState.hit_laser, 0x1C06E: UnitState.hit_world_simple, 0x1C080: UnitState.hit_world_simple,

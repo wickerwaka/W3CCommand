@@ -477,7 +477,121 @@ def scenario_enemy_carrier(m, rnd):
     m.set8(stunits.CARRIER + 1, m.u8(stunits.CARRIER + 1) & 0xFE)
 
 
-SCENARIOS = [scenario_air_raid, scenario_bombard, scenario_volcano, scenario_drones_home,
+WEAPON_TYPES = {16: (0x8703, (230, 100, 4, 350)), 17: (0x8703, (125, 60, 5, 250)),
+                18: (0x8703, (150, 150, 8, 150)), 19: (0x9703, (150, 150, 3, 150)),
+                20: (0x9703, (200, 200, 3, 300)), 21: (0x8703, (100, 100, 2, 150)),
+                33: (0x9703, (150, 75, 5, 200))}
+
+
+def scenario_weapons(m, rnd):
+    """Weapons in flight around the carrier and the island: lasers, homing, guided and
+    cruise missiles, bombs, virus bombs and enemy fighters, with live targets (the carrier,
+    hovering Mantas, a flare)."""
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    for k in (2, 3):
+        o = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+        m.set16(o, 0x8603 | 0x200)
+        m.set16(o + 2, 5)
+        for off, v in zip((0x30, 0x32, 0x34, 0x36), (150, 75, 4, 250)):
+            m.set16(o + off, v)
+        m.set16(o + 0x1A, k - 2)
+        _near_island(m, rnd, o, rnd.randrange(250, 2200))
+        m.set16(0x496 + 0x34 * (k - 2) + 0x14, 30000)
+    if rnd.random() < 0.5:
+        f = stunits.OBJECTS + stunits.OBJECT_SIZE * 17
+        m.set16(f, 0x8403)
+        m.set16(f + 2, 0x1E)
+        _near_island(m, rnd, f, rnd.randrange(100, 1500))
+    targets = [stunits.CARRIER, stunits.OBJECTS + stunits.OBJECT_SIZE * 2, stunits.OBJECTS + stunits.OBJECT_SIZE * 3]
+    for k in range(24, 24 + rnd.randrange(3, 10)):
+        o = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+        t = rnd.choice(list(WEAPON_TYPES))
+        fl, params = WEAPON_TYPES[t]
+        m.buf[o:o + 0x40] = bytes(0x40)
+        m.set16(o, fl | 0x400)
+        m.set16(o + 2, t)
+        for off, v in zip((0x30, 0x32, 0x34, 0x36), params):
+            m.set16(o + off, v)
+        _near_island(m, rnd, o, rnd.randrange(20, 2500))
+        for off in range(0xC0, 0x140, 2):
+            m.set16(o + off, m.u16(stunits.FRAME))
+        for a in (4, 6, 8):
+            m.set16(o + a, rnd.randrange(0x10000))
+        m.set8(o + 0x1A, rnd.choice((0, 1, 2, 3, 4, 5)))
+        m.set8(o + 0x1B, rnd.randrange(1, 255))
+        m.set8(o + 0x1C, rnd.randrange(0, 8))
+        m.set8(o + 0x1D, rnd.choice((2, 4, 5)))
+        if t in (17, 33):
+            m.set32(o + 0x1E if t == 17 else o + 0x22, rnd.choice(targets + [0xFFFFFFFF]) if t == 17 else rnd.choice(targets))
+        if t == 33:
+            m.set16(o + 0x16, rnd.choice((150, 2000)))
+            m.set16(o + 0x18, rnd.choice((0, 10)))
+            m.set16(o + 0x38, rnd.choice((900, 5000)))
+            if m.u8(o + 0x1A) in (1, 4, 5) and rnd.random() < 0.5:
+                for kk, off in enumerate((0x22, 0x26, 0x2A)):
+                    m.set32(o + off, m.u32(stunits.CARRIER + 0x0A + 4 * kk) + rnd.randrange(-3000, 3000))
+        if t == 18:
+            m.set16(o + 0x1E, rnd.randrange(-200, 200))
+            m.set16(o + 0x20, rnd.randrange(-200, 200))
+        if t == 19:
+            m.set32(o + 0x1E, m.u32(o + 0x0A) + rnd.randrange(-5000, 5000))
+            m.set32(o + 0x22, m.u32(o + 0x12) + rnd.randrange(-5000, 5000))
+        if t == 20:
+            for off in (0x20, 0x22, 0x24):
+                m.set16(o + off, rnd.randrange(-150, 150))
+        if t == 21:
+            m.set16(o + 0x1E, rnd.randrange(1, 60))
+            m.set16(o + 0x20, rnd.randrange(0x10000))
+    o19 = stunits.OBJECTS + stunits.OBJECT_SIZE * 19
+    m.set16(o19, 0x9E03 | 0x200)
+    _near_island(m, rnd, o19, 160)
+    m.set8(stsim.AI_ENABLED, 0)
+    if rnd.random() < 0.4:                                   # a player island to raid
+        m.set8(stsim.OWNERS + m.u8(buf + 1), 1)
+        if rnd.random() < 0.6:                               # with no player units about
+            for k in range(2, 11):
+                u = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+                m.set8(u + 1, m.u8(u + 1) & 0xFE)
+            for k in range(24, 34):                          # fighters searching
+                u = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+                if m.u16(u + 2) == 33:
+                    m.set8(u + 0x1A, 2)
+                    m.set16(u + 0x18, 10)
+    entries = [buf + 0x12 + 0x40 * j for j in range(1, 32) if m.u16(buf + 0x12 + 0x40 * j) & 1]
+    for k in range(24, 34):
+        o = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+        if m.u16(o + 2) == 17 and entries and rnd.random() < 0.5:
+            m.set32(o + 0x1E, rnd.choice(entries))         # homing on an island object
+        if m.u16(o + 2) == 33 and rnd.random() < 0.3:
+            m.set8(o + 0x1A, rnd.choice((0, 2)))
+
+
+def scenario_fighter_raid(m, rnd):
+    """Enemy fighters over a player island with no player units about: they hunt its
+    buildings."""
+    scenario_weapons(m, rnd)
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    m.set8(stsim.OWNERS + m.u8(buf + 1), 1)
+    for k in range(2, 11):
+        u = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+        m.set8(u + 1, m.u8(u + 1) & 0xFE)
+    for k in range(34, 34 + rnd.randrange(1, 4)):
+        f = stunits.OBJECTS + stunits.OBJECT_SIZE * k
+        m.buf[f:f + 0x40] = bytes(0x40)
+        m.set16(f, 0x9703 | 0x400 | 0x200)
+        m.set16(f + 2, 33)
+        for off, v in zip((0x30, 0x32, 0x34, 0x36), (150, 75, 5, 200)):
+            m.set16(f + off, v)
+        _near_island(m, rnd, f, rnd.randrange(300, 1500))
+        for off in range(0xC0, 0x140, 2):
+            m.set16(f + off, m.u16(stunits.FRAME))
+        m.set8(f + 0x1A, 2)
+        m.set16(f + 0x16, 2000)
+        m.set16(f + 0x18, rnd.choice((1, 10)))
+        m.set16(f + 0x38, 5000)
+
+
+SCENARIOS = [scenario_weapons, scenario_fighter_raid, scenario_air_raid, scenario_bombard, scenario_volcano, scenario_drones_home,
              scenario_enemy_carrier, scenario_engage, scenario_drones, scenario_flares, scenario_turret, scenario_voyage,
              scenario_debris, scenario_collide, scenario_hangars, scenario_build]
 
@@ -553,7 +667,7 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=ROOT / "emu" / "out" / "action")
     ap.add_argument("--routine", action="append")
     ap.add_argument("--fuzz", type=int, default=2000, help="perturbed states per routine (where defined)")
-    ap.add_argument("--scenarios", type=int, default=140, help="perturbed multi-pass runs")
+    ap.add_argument("--scenarios", type=int, default=160, help="perturbed multi-pass runs")
     args = ap.parse_args()
     files = sorted(args.dir.glob("pass_*_in.bin"))
     if not files:
