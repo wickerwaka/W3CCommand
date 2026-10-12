@@ -330,6 +330,28 @@ addEventListener("keydown", (e) => {
   }
   e.preventDefault();
 });
+/** Drag on the 3D view to steer (bridge rudder, Manta/Walrus turn and climb, turret aim): the
+ * drag offset from where it started is an analogue stick, like holding the keys partly. */
+const STEER_SCREENS = new Set([0, 8, 18, 27]);
+let steerDrag: { x: number; y: number; id: number } | null = null;
+canvas.addEventListener("pointerdown", (e) => {
+  if (!game || freeCamera || !STEER_SCREENS.has(game.screen)) return;
+  steerDrag = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!steerDrag || e.pointerId !== steerDrag.id) return;
+  const r = Math.min(innerWidth, innerHeight) / 5;
+  const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+  controls.stick = { x: clamp((e.clientX - steerDrag.x) / r), y: clamp((e.clientY - steerDrag.y) / r) };
+});
+const endSteer = () => {
+  steerDrag = null;
+  controls.stick = { x: 0, y: 0 };
+};
+canvas.addEventListener("pointerup", endSteer);
+canvas.addEventListener("pointercancel", endSteer);
+
 /** Screen 10: a click in the drone's picture fires the armed SSM at that point ($13598). Our
  * view is wider than the game's, so the click goes back through the viewport's projection. */
 canvas.addEventListener("pointerdown", (e) => {

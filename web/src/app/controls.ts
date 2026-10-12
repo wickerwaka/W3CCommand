@@ -12,6 +12,8 @@ export type Held = "faster" | "slower" | "left" | "right" | "up" | "down" | "fir
 export class Controls {
   private game: Game | null = null;
   private held = new Set<Held>();
+  /** An analogue stick from dragging on the 3D view (-1..1 each), added to the held keys. */
+  stick = { x: 0, y: 0 };
 
   attach(game: Game): void {
     this.game = game;
@@ -60,22 +62,23 @@ export class Controls {
   private beforePass(): void {
     const s = this.state, m = s.mem, screen = this.game!.screen;
     const h = (k: Held) => (this.held.has(k) ? 1 : 0);
-    const turn = h("right") - h("left"), climb = h("up") - h("down"), speed = h("faster") - h("slower");
-    const clamp = (v: number) => Math.max(-255, Math.min(255, v));
+    const turn = h("right") - h("left") + this.stick.x, climb = h("up") - h("down") - this.stick.y;
+    const speed = h("faster") - h("slower");
+    const clamp = (v: number) => Math.round(Math.max(-255, Math.min(255, v)));
     if (screen === 0) {
-      const sp = speed || climb;              // the arrow keys also change speed on the bridge
+      const sp = speed || h("up") - h("down");  // the arrow keys also change speed on the bridge
       if (sp > 0) s.cmd_carrier_speed_up();
       if (sp < 0) s.cmd_carrier_speed_down();
       if (turn) {
         this.mouseSteer();
-        s.cmd_steer_to(m.s16(C_RUDDER) + turn * RUDDER_RATE);
+        s.cmd_steer_to(clamp(m.s16(C_RUDDER) + turn * RUDDER_RATE));
       }
     } else if (screen === 8) {
       // the turret's arrow buttons repeat while held ($FD2C-$FD44), fire too ($FD60)
-      if (turn > 0) s.cmd_turret_right();
-      if (turn < 0) s.cmd_turret_left();
-      if (climb > 0) s.cmd_turret_up();
-      if (climb < 0) s.cmd_turret_down();
+      if (turn > 0.3) s.cmd_turret_right();
+      if (turn < -0.3) s.cmd_turret_left();
+      if (climb > 0.3) s.cmd_turret_up();
+      if (climb < -0.3) s.cmd_turret_down();
       if (this.held.has("fire")) s.cmd_turret_fire();
     } else if (screen === 27) {
       const v = this.viewedRecord(MANTA_RECS);

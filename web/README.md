@@ -39,6 +39,7 @@ The tabs follow the original's four screen groups: **Carrier**, **Weapons**, **W
 | Walrus control | W/S throttle · A/D turn · F or Enter fire · Q autopilot · E centre · ↑/↓/←/→ steer a Harbinger in flight |
 | Laser turret | arrows aim · F fire (hold) · zoom buttons |
 | Viewing drone | launch the drone, Arm SSM, then click the target in the picture |
+| Touch / mouse | on the bridge, Manta and Walrus control and turret screens, drag on the view to steer or aim (the drag is a joystick); the panels have hold buttons for throttle and fire |
 
 ### Taking your first island (strategy game)
 

@@ -106,6 +106,16 @@ export class VehiclePanel {
       e.onclick = () => this.act(fn);
       return e;
     };
+    /** Acts every pass while pressed, like a held key (throttle, fire). */
+    const hold = (label: string, title: string, what: "faster" | "slower" | "fire") => {
+      const e = h("button", { title }, label);
+      e.onpointerdown = (ev) => {
+        e.setPointerCapture(ev.pointerId);
+        this.controls.hold(what, true);
+      };
+      e.onpointerup = e.onpointercancel = () => this.controls.hold(what, false);
+      return e;
+    };
     const rows: Record<number, HTMLElement[]> = {
       26: [
         btn("To deck", "Send the selected Manta up the lift", () => s.cmd_manta_to_deck(b())),
@@ -130,11 +140,9 @@ export class VehiclePanel {
         btn("Defuel", "", () => s.cmd_walrus_defuel(b())),
       ],
       27: [
+        hold("▲", "Throttle up (W; hold)", "faster"), hold("▼", "Throttle down (S; hold)", "slower"),
         ...WEAPONS.map((w, k) => btn(w, `Select the ${w.toLowerCase()} (${k + 1})`, () => s.cmd_manta_weapon(k))),
-        btn("Fire", "Fire (F or Enter, hold to repeat)", () => {
-          if (s.mem.u8(0x457)) s.cmd_toggle_mouse_steer();
-          s.cmd_vehicle_fire();
-        }),
+        hold("Fire", "Fire (F or Enter; hold to repeat). Drag on the view to steer", "fire"),
         btn("Autopilot", "Fly to the waypoint (Q)", () => s.cmd_manta_autopilot()),
         btn("Centre", "Centre rudder and pitch (E)", () => {
           s.cmd_manta_centre_rudder();
@@ -145,11 +153,9 @@ export class VehiclePanel {
         btn("Runway take-off", "Take off from an island runway", () => s.cmd_manta_runway_take_off()),
       ],
       18: [
+        hold("▲", "Throttle up (W; hold)", "faster"), hold("▼", "Throttle down (S; hold)", "slower"),
         ...WEAPONS.map((w, k) => btn(w, `Select the ${w.toLowerCase()}`, () => s.cmd_walrus_weapon(k))),
-        btn("Fire", "Fire (F or Enter, hold to repeat)", () => {
-          if (s.mem.u8(0x457)) s.cmd_toggle_mouse_steer();
-          s.cmd_vehicle_fire();
-        }),
+        hold("Fire", "Fire (F or Enter; hold to repeat). Drag on the view to steer", "fire"),
         btn("Autopilot", "Drive to the waypoint (Q)", () => s.cmd_walrus_autopilot()),
         btn("Centre", "Centre the rudder (E)", () => s.cmd_walrus_centre_rudder()),
         btn("Turret mode", "Steering turns the turret", () => s.cmd_walrus_turret_mode()),
