@@ -1,3 +1,4 @@
 node_modules/
 # Failing states dumped by npm run check-sim (game memory)
 .sim-fail/
+dist/

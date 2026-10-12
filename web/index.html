@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Carrier Command</title>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <header id="bar">
+      <label class="button" title="Load a RAM image or Hatari snapshot (or drop it on the page)">
+        Load state<input id="file" type="file" accept=".bin,.sav,.gz" hidden />
+      </label>
+      <select id="local" hidden title="Captures in emu/out (dev server only)"></select>
+      <button id="play" title="Run or pause the simulation (Space)">Run</button>
+      <button id="step" title="One simulation pass (N)">Step</button>
+      <select id="speed" title="Simulation speed">
+        <option value="0.25">¼×</option>
+        <option value="0.5">½×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+        <option value="16">16×</option>
+      </select>
+      <button id="camera" title="Switch between the carrier camera and the free camera (C)">Free camera</button>
+      <button id="export" title="Save the current state as a RAM image the emulator can load">Export</button>
+    </header>
+    <footer id="status"></footer>
+    <div id="drop" hidden>Drop a state file</div>
+    <div id="empty">
+      <h1>Carrier Command</h1>
+      <p>Load a game state exported from the emulator: a 512 KB RAM image
+        (<code>tools/hatari.py snapshot</code>, Hatari's <code>savebin &lt;file&gt; 0 $80000</code>)
+        or a Hatari memory snapshot.</p>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

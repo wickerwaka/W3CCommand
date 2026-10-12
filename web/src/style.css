@@ -1,0 +1,112 @@
+:root {
+  --bar: rgba(16, 20, 28, 0.82);
+  --text: #e8e4d0;
+  --muted: #a8a490;
+  --accent: #e0b040;
+  --error: #ff8a70;
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: var(--text);
+  font: 14px/1.4 system-ui, sans-serif;
+}
+
+#view {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  display: block;
+}
+
+#bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px max(16px, env(safe-area-inset-left));
+  background: var(--bar);
+  align-items: center;
+}
+
+#bar button,
+#bar select,
+#bar .button {
+  font: inherit;
+  color: var(--text);
+  background: #2a3040;
+  border: 1px solid #485068;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+#bar button:hover,
+#bar .button:hover {
+  border-color: var(--accent);
+}
+
+#bar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#status {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px max(16px, env(safe-area-inset-left));
+  background: var(--bar);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status .error {
+  color: var(--error);
+}
+
+#drop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 3px dashed var(--accent);
+}
+
+#drop[hidden],
+#empty[hidden] {
+  display: none;
+}
+
+#empty {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  padding: 0 16px;
+  max-width: 560px;
+  margin: 0 auto;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+#empty h1 {
+  color: var(--accent);
+  font-weight: 600;
+}

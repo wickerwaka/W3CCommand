@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-W3CCommand is a planned port of the 1988 Atari ST game Carrier Command to a modern browser app (desktop and mobile). The repository is in the decompilation phase: there is a Ghidra project and its setup tooling (below), but no game code or test suite yet. The island simulation has a Python reference model verified against the original (below). Update this file when more tooling is added.
+W3CCommand is a planned port of the 1988 Atari ST game Carrier Command to a modern browser app (desktop and mobile). The repository is moving from decompilation to the web build: there is a Ghidra project and its setup tooling, a Python reference model of the simulation verified against the original, its TypeScript port, and a first web app that runs it on states loaded from the emulator and renders the world (all below). Update this file when more tooling is added.
 
 ## Source material
 
@@ -36,6 +36,16 @@ The Python tooling is a uv project. The dependencies are in `pyproject.toml` and
 - `tools/stunits.py` extends the model with the unit layer (`UnitState`; `docs/units.md` §14 lists what's ported). `uv run python tools/check_units.py` checks each ported routine against the original under Unicorn: the shared maths on random inputs, then every routine on the action-game pass captures plus fuzzed states. Make those captures with `uv run python tools/capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action`. An action game needs no input: the carrier sails to a waypoint and stops.
 - `uv run python tools/capture_play.py` plays a scripted session in Hatari: clicking panel buttons the way a player would (Manta to deck and take-off, Walrus launch, supply transfer) and poking waypoints. It captures runs of passes to `emu/out/play/`; `check_units.py` compares the model with those too.
 - `web/src/sim/` is the TypeScript port of the model for the web build: the same names, with the Python mixins as one class chain (its README has the conventions). `uv run python tools/export_sim_vectors.py` (several minutes) runs `check_sim.py` and `check_units.py` with a recorder attached and writes every model state and call they make to `extracted/sim_vectors/`; `cd web && npm run check-sim` (about 15 s) replays them on the port: same exceptions, return values, events and state CRC per call. After changing either model, run both.
+
+## Web app (`web/`)
+
+Vite + TypeScript + three.js. `cd web && npm install`, then `npm run dev` (`npm run build` type-checks and builds to `web/dist/`).
+- It ships no game data. The user loads a state exported from the emulator: a 512 KB RAM image (`tools/hatari.py snapshot`, the capture tools, Hatari's `savebin <f> 0 $80000`) or a Hatari memory snapshot (`.sav`, gzip; the RAM is found by the payload signature at `$404`). The payload is in the image, so models, palettes and tables are decoded from it (`src/app/state_file.ts`). Export writes the RAM back (Hatari `loadbin <f> 0`). The dev server lists the captures in `emu/out` (`vite.config.ts`, dev only).
+- `src/app/runner.ts` runs `UnitState.sim_pass()` on the original's clock: a pass every 6 VBLs (the bridge view's rate), the game clock and the once-a-second flags `$8FC/$8FD` per VBL. It stops with a message on unported code (`NotPorted`) or game over.
+- `src/render/models.ts` decodes all 99 models from RAM, including the runtime basis routines (carrier turret/lifts, plateau, animated, overlays). `uv run python tools/export_model_vectors.py` then `npm run check-models` compares it with the game's own vertex code under Unicorn and with `stmodel.py`.
+- `src/render/world_view.ts` draws world objects and the loaded island buffers as the game does, plus every other island built with the model's own `load_island_buffer`. LOD uses camera-space depth like `$7B72`. It's camera-relative (positions are ~2^25), game (x, y, z) → three (x, y, −z). The game has no depth buffer; decal polygons get a layer (pulled towards the camera in the vertex shader), and BSP group visibility tests (`$9902`) run in the shader.
+- `src/render/cameras.ts`: the bridge camera follows `tools/stview.py` exactly (eye y = 240, 100 behind the carrier, focal 256 on a 256×128 viewport, near 64; `docs/memory-map.md` "Bridge view camera and projection"); `uv run python tools/stview.py --check` verifies that reference against the game's render code under Unicorn. The free camera flies anywhere.
+- In dev builds `window.app` exposes the session, camera, renderer and `frame()` (renders one frame; rAF pauses in hidden tabs).
 
 ## Hatari (running the original)
 

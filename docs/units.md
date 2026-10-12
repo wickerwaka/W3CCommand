@@ -85,7 +85,7 @@ The init calls are listed in the frame report: interrupts `$17966`, floppy `$213
 
 Both share the first `$40` bytes of the layout. Island-buffer entries 0–31 mirror the island's structure slots; 32–63 are dynamic (rocks, drones, SAMs).
 
-**Island buffer header:** `+0` in use, `+1` island, `+2/+6/+$A.l` origin x, y, z, `+$E.w` entry count (`$40`), `+$10.w` drones out.
+**Island buffer header:** `+0` in use, `+1` island, `+2/+6/+$A.l` origin x, y, z, `+$E.w` entry count (`$40`), `+$10.w` runway-slot count (`$74E`; the renderer draws that many entries after the island unsorted, see `docs/memory-map.md`). The drone pad's "drones out" counter is at `[$A2C]+$10`, in the island table, not here.
 
 `load_island_buffer` (`$17FB4`) builds one:
 - **Entry 0** is the island itself (type 8, local y `$28`, `+$1E/+$20` = half-extents).
