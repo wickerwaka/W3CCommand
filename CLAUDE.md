@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-W3CCommand is a planned port of the 1988 Atari ST game Carrier Command to a modern browser app (desktop and mobile). The repository is moving from decompilation to the web build: there is a Ghidra project and its setup tooling, a Python reference model of the simulation verified against the original, its TypeScript port, and a first web app that runs it on states loaded from the emulator and renders the world (all below). Update this file when more tooling is added.
+W3CCommand is a port of the 1988 Atari ST game Carrier Command to a modern browser app (desktop and mobile). The MVP (plan phases 1-3) is playable: the whole game's simulation, player commands, screen-state and render-state writes and sound are ported from the original, as a Python reference verified against the original (Unicorn and Hatari) and a TypeScript port verified against the Python; the web app (`web/`, see `web/README.md`) plays full strategy and action games with a modern UI, and states move both ways between it and Hatari. Phase 4 (modernisation) is next. There is also a Ghidra project and its setup tooling (below). Update this file when more tooling is added.
 
 ## Source material
 
