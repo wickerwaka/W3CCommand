@@ -2337,7 +2337,7 @@ class ControlsMixin:
         """$11886 (12,178, type 78): send the arming screen's Manta ([$48E], bay [$DB4]) up
         the lift: the body of $11894 (cmd_manta_to_deck) with d1 = [$DB4]."""
         m = self.mem
-        if not self._clickable(T_HANGAR):
+        if not (self._clickable(T_HANGAR) and self._arming_rec("Manta")):
             return False
         keep = m.u16(0xDCC)
         m.set16(0xDCC, m.u16(0xDB4))
@@ -2346,6 +2346,26 @@ class ControlsMixin:
         finally:
             m.set16(0xDCC, keep)
         return True
+
+    def _arming_rec(self, kind: str) -> bool:
+        """[$48E] / [$568] is the arming bay's record ($DB4 / $DB6), as the original keeps it
+        while screen 24 / 16 is shown (only $116C6 / $11DEE and the enter handlers write them
+        there). The model's commands work from any screen, and other screens' selections and
+        the hangar commands' bay arguments repoint these records (docs/units.md §10.6)."""
+        m = self.mem
+        cur, base, sel = (0x48E, MANTA_RECS, 0xDB4) if kind == "Manta" else (0x568, WALRUS_RECS, 0xDB6)
+        return m.u32(cur) == self._bay_record(base, m.u16(sel))
+
+    def _loadout_clickable(self, kind: str, etype: int = T_BUTTON) -> bool:
+        """The loadout panel's elements: shown in sub-panel 0 ($DC0 / $DC2), and acting on the
+        arming bay's record in the hangar (status 0). On the original's arming screen both
+        always hold when sub-panel 0 is shown: it is chosen from the status ($11738), and the
+        status leaves 0 only by repair (sub-panel 1) or the lift (sub-panel 2). Elsewhere the
+        record may be a vehicle that is out, whose +$C/+$E/+$10 hold counts, not codes."""
+        if not self._clickable(etype, (0xDC0 if kind == "Manta" else 0xDC2, 0)):
+            return False
+        rec = self._manta_rec() if kind == "Manta" else self._walrus_rec()
+        return self._arming_rec(kind) and not self.mem.u8(rec + 1)
 
     def _manta_panel(self) -> None:
         """The Manta loadout panel's redraw ($B418 with $42966, callback $C580, while
@@ -2395,7 +2415,7 @@ class ControlsMixin:
     def cmd_manta_loadout_next(self) -> bool:
         """$1132E (142,84): the stores list cursor $DB8 + 1 (0..5: Assassin x1, x2, x3,
         Quaker, Quasar, comms pod; repeats)."""
-        if not self._clickable(T_BUTTON, (0xDC0, 0)):
+        if not self._loadout_clickable("Manta"):
             return False
         self._cursor_step(LOADOUT_CURSOR, 6, 1)
         self._manta_panel()
@@ -2403,7 +2423,7 @@ class ControlsMixin:
 
     def cmd_manta_loadout_prev(self) -> bool:
         """$11352 (142,108): $DB8 - 1."""
-        if not self._clickable(T_BUTTON, (0xDC0, 0)):
+        if not self._loadout_clickable("Manta"):
             return False
         self._cursor_step(LOADOUT_CURSOR, 6, -1)
         self._manta_panel()
@@ -2430,7 +2450,7 @@ class ControlsMixin:
         ("Stores unable to supply payload" if fewer are on board than it holds). Then
         cmd_drag_release(px, py) over a slot; the next ui_frame fits it (drop $113A4)."""
         m = self.mem
-        if not self._clickable(T_BUTTON, (0xDC0, 0)):
+        if not self._loadout_clickable("Manta"):
             return False
         a1 = self._entry(self._code(MANTA_CODES, m.u16(LOADOUT_CURSOR), 6))
         if m.u16(a1 + 6) > m.u16(m.u32(a1 + 2)):
@@ -2443,7 +2463,7 @@ class ControlsMixin:
         """$114C8 (slots 0 fuselage at 218,70, 1/2 wings at 195,90 / 240,90): pick up a
         fitted item to drag it back to the stores box (drop $11500)."""
         m = self.mem
-        if not (0 <= k <= 2 and self._clickable(T_BUTTON, (0xDC0, 0))):
+        if not (0 <= k <= 2 and self._loadout_clickable("Manta")):
             return False
         off = m.u16(0x11448 + 2 * k)
         if m.u16(self._manta_rec() + off):
@@ -2999,14 +3019,14 @@ class ControlsMixin:
 
     def cmd_walrus_loadout_next(self) -> bool:
         """$11A30 (142,84): $DBA + 1 (repeats)."""
-        if not self._clickable(T_BUTTON, (0xDC2, 0)):
+        if not self._loadout_clickable("Walrus"):
             return False
         self._walrus_cursor_step(1)
         return True
 
     def cmd_walrus_loadout_prev(self) -> bool:
         """$11A76 (142,108): $DBA - 1."""
-        if not self._clickable(T_BUTTON, (0xDC2, 0)):
+        if not self._loadout_clickable("Walrus"):
             return False
         self._walrus_cursor_step(-1)
         return True
@@ -3024,7 +3044,7 @@ class ControlsMixin:
 
     def _plus_minus(self, a: int) -> bool:
         m = self.mem
-        if not self._clickable(T_HARBINGERS, (0xDC2, 0)):
+        if not self._loadout_clickable("Walrus", T_HARBINGERS):
             return False
         h = m.u32(a)
         if h == 0x11CE0:
@@ -3052,7 +3072,7 @@ class ControlsMixin:
         """$11A82 (35,86): pick up the item at the cursor (none or too few on board: "Stores
         unable to supply payload"); drop $11ACE."""
         m = self.mem
-        if not self._clickable(T_BUTTON, (0xDC2, 0)):
+        if not self._loadout_clickable("Walrus"):
             return False
         a1 = self._entry(self._code(WALRUS_CODES, m.u16(LOADOUT_CURSOR + 2), 5))
         stock = m.u16(m.u32(a1 + 2))
@@ -3066,7 +3086,7 @@ class ControlsMixin:
         """$11C16 (slot 0 payload at 173,96, slot 1 weapon at 201,96): pick up a fitted item
         to drag back to stores (drop $11C4E)."""
         m = self.mem
-        if not (0 <= k <= 1 and self._clickable(T_BUTTON, (0xDC2, 0))):
+        if not (0 <= k <= 1 and self._loadout_clickable("Walrus")):
             return False
         off = m.u16(0x11C12 + 2 * k)
         if m.u16(self._walrus_rec() + off):
@@ -4782,7 +4802,6 @@ def _oracle_fit(kind: str):
     decided from its own state, as the model's)."""
     manta = kind == "Manta"
     codes, n, cur = (MANTA_CODES, 6, LOADOUT_CURSOR) if manta else (WALRUS_CODES, 5, LOADOUT_CURSOR + 2)
-    sub = 0xDC0 if manta else 0xDC2
     nxt, pick = (0x1132E, 0x1135E) if manta else (0x11A30, 0x11A82)
     slots, slot_handler = (MANTA_SLOTS, 0x114C8) if manta else (WALRUS_SLOTS, 0x11C16)
 
@@ -4797,13 +4816,13 @@ def _oracle_fit(kind: str):
             k = _u16(oracle, cur)
             if k < n and _u16(oracle, codes + 2 * k) == code:
                 break
-            if not probe(oracle)._clickable(T_BUTTON, (sub, 0)):
+            if not probe(oracle)._loadout_clickable(kind):
                 return
             _regs(oracle, d2=2)
             _call(oracle, nxt)
         else:
             return
-        if not probe(oracle)._clickable(T_BUTTON, (sub, 0)):
+        if not probe(oracle)._loadout_clickable(kind):
             return
         _regs(oracle, d2=2)
         _call(oracle, pick)
@@ -4814,7 +4833,7 @@ def _oracle_fit(kind: str):
 
     def unfit(oracle, state, args, result):
         slot = args[0]
-        if not (0 <= slot < len(slots) and probe(oracle)._clickable(T_BUTTON, (sub, 0))):
+        if not (0 <= slot < len(slots) and probe(oracle)._loadout_clickable(kind)):
             return
         _regs(oracle, d2=2, a3=slots[slot])
         _call(oracle, slot_handler)
@@ -5018,6 +5037,20 @@ def _perturb_vehicles(m, rnd) -> None:
     m.set32(0x492, MANTA_OBJS + 0x140 * (mk if rnd.random() < 0.8 else rnd.randrange(4)))
     m.set32(0x568, WALRUS_RECS + REC * (wk if rnd.random() < 0.8 else rnd.randrange(4)))
     m.set32(0x56C, WALRUS_OBJS + 0x140 * (wk if rnd.random() < 0.8 else rnd.randrange(4)))
+    # The arming screens: their bay ($DB4 / $DB6) mostly the selected record, as the original
+    # keeps it on screens 24 / 16, in any status; elsewhere sometimes too.
+    for sel, cur, base, arming in ((0xDB4, 0x48E, MANTA_RECS, 24), (0xDB6, 0x568, WALRUS_RECS, 16)):
+        k = rnd.randrange(4)
+        m.set16(sel, k)
+        if rnd.random() < (0.9 if screen == arming else 0.7):
+            m.set32(cur, base + REC * k)
+            m.set8(base + REC * k + 1, rnd.choice((0, 0, 0, 0, 0, 0, 1, 2, 3, 8, 0xFF)))
+    for k in range(4):                     # out (or lost): weapon counts and flags, not codes ($1ED46)
+        r = MANTA_RECS + REC * k
+        if m.u8(r + 1) in (8, 0xFF) and rnd.random() < 0.7:
+            m.set16(r + 0x0C, rnd.choice((0, 1, 2, 3, 6)))
+            m.set8(r + 0x10, rnd.choice((0, 0xFF)))
+            m.set8(r + 0x11, rnd.randrange(256))
     if screen == 27:
         m.set32(stunits.VIEWED, MANTA_OBJS + 0x140 * mk)
     elif screen == 18:
@@ -5055,8 +5088,10 @@ def check_vehicle_commands(files) -> bool:
     states = _vehicle_states(files)
     for name in VCOMMANDS:
         runs, stopped = 0, 0
+        # the loadout panels act only on the arming bay's record in the hangar: more tries
+        reps = 8 if any(w in name for w in ("loadout", "fit", "pick", "arming")) else 3
         for f in states:
-            for _ in range(3):
+            for _ in range(reps):
                 m = stsim.Mem(bytearray(f.read_bytes()))
                 _perturb_vehicles(m, rnd)
                 ram = bytes(m.buf)

@@ -46,6 +46,9 @@ export class VehiclePanel {
   private controls: Controls;
   private built = "";
 
+  /** Told when a command is refused (the original has no such button in this state). */
+  onRefused: () => void = () => {};
+
   constructor(controls: Controls) {
     this.controls = controls;
     this.title = h("h2");
@@ -76,7 +79,7 @@ export class VehiclePanel {
   }
 
   private act(fn: () => unknown): void {
-    this.controls.run(fn);
+    if (this.controls.run(fn) === false) this.onRefused();
   }
 
   private select(bay: number): void {

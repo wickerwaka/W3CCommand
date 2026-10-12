@@ -67,6 +67,7 @@ const shell = new Shell(document.getElementById("ui")!, {
 const controls = new Controls();
 let bridge = new BridgeHud(names, controls);
 const vehicles = new VehiclePanel(controls);
+vehicles.onRefused = () => shell.message("Not available now", clockText());
 const weapons = new WeaponsPanel(controls);
 const info = new InfoPanel(controls);
 const damage = new DamagePanel((k, cls) => controls.repairPriority(k, cls));

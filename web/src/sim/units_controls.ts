@@ -2405,7 +2405,7 @@ export abstract class ControlsUnits extends SetupUnits {
    * the lift: the body of $11894 (cmd_manta_to_deck) with d1 = [$DB4]. */
   cmd_manta_arming_to_deck(): boolean {
     const m = this.mem;
-    if (!this._clickable(T_HANGAR)) return false;
+    if (!(this._clickable(T_HANGAR) && this._arming_rec("Manta"))) return false;
     const keep = m.u16(0xdcc);
     m.set16(0xdcc, m.u16(0xdb4));
     try {
@@ -2414,6 +2414,27 @@ export abstract class ControlsUnits extends SetupUnits {
       m.set16(0xdcc, keep);
     }
     return true;
+  }
+
+  /** [$48E] / [$568] is the arming bay's record ($DB4 / $DB6), as the original keeps it
+   * while screen 24 / 16 is shown (only $116C6 / $11DEE and the enter handlers write them
+   * there). The model's commands work from any screen, and other screens' selections and
+   * the hangar commands' bay arguments repoint these records (docs/units.md §10.6). */
+  _arming_rec(kind: string): boolean {
+    const m = this.mem;
+    const [cur, base, sel] = kind === "Manta" ? [0x48e, MANTA_RECS, 0xdb4] : [0x568, WALRUS_RECS, 0xdb6];
+    return m.u32(cur) === this._bay_record(base, m.u16(sel));
+  }
+
+  /** The loadout panel's elements: shown in sub-panel 0 ($DC0 / $DC2), and acting on the
+   * arming bay's record in the hangar (status 0). On the original's arming screen both
+   * always hold when sub-panel 0 is shown: it is chosen from the status ($11738), and the
+   * status leaves 0 only by repair (sub-panel 1) or the lift (sub-panel 2). Elsewhere the
+   * record may be a vehicle that is out, whose +$C/+$E/+$10 hold counts, not codes. */
+  _loadout_clickable(kind: string, etype: number = T_BUTTON): boolean {
+    if (!this._clickable(etype, [kind === "Manta" ? 0xdc0 : 0xdc2, 0])) return false;
+    const rec = kind === "Manta" ? this._manta_rec() : this._walrus_rec();
+    return this._arming_rec(kind) && !this.mem.u8(rec + 1);
   }
 
   /** The Manta loadout panel's redraw ($B418 with $42966, callback $C580, while
@@ -2466,7 +2487,7 @@ export abstract class ControlsUnits extends SetupUnits {
   /** $1132E (142,84): the stores list cursor $DB8 + 1 (0..5: Assassin x1, x2, x3,
    * Quaker, Quasar, comms pod; repeats). */
   cmd_manta_loadout_next(): boolean {
-    if (!this._clickable(T_BUTTON, [0xdc0, 0])) return false;
+    if (!this._loadout_clickable("Manta")) return false;
     this._cursor_step(LOADOUT_CURSOR, 6, 1);
     this._manta_panel();
     return true;
@@ -2474,7 +2495,7 @@ export abstract class ControlsUnits extends SetupUnits {
 
   /** $11352 (142,108): $DB8 - 1. */
   cmd_manta_loadout_prev(): boolean {
-    if (!this._clickable(T_BUTTON, [0xdc0, 0])) return false;
+    if (!this._loadout_clickable("Manta")) return false;
     this._cursor_step(LOADOUT_CURSOR, 6, -1);
     this._manta_panel();
     return true;
@@ -2502,7 +2523,7 @@ export abstract class ControlsUnits extends SetupUnits {
    * cmd_drag_release(px, py) over a slot; the next ui_frame fits it (drop $113A4). */
   cmd_manta_pick_loadout(): boolean {
     const m = this.mem;
-    if (!this._clickable(T_BUTTON, [0xdc0, 0])) return false;
+    if (!this._loadout_clickable("Manta")) return false;
     const a1 = this._entry(this._code(MANTA_CODES, m.u16(LOADOUT_CURSOR), 6));
     if (m.u16(a1 + 6) > m.u16(m.u32(a1 + 2))) {
       this._message("Stores unable to supply payload");
@@ -2516,7 +2537,7 @@ export abstract class ControlsUnits extends SetupUnits {
    * fitted item to drag it back to the stores box (drop $11500). */
   cmd_manta_pick_slot(k: number): boolean {
     const m = this.mem;
-    if (!(0 <= k && k <= 2 && this._clickable(T_BUTTON, [0xdc0, 0]))) return false;
+    if (!(0 <= k && k <= 2 && this._loadout_clickable("Manta"))) return false;
     const off = m.u16(0x11448 + 2 * k);
     if (m.u16(this._manta_rec() + off)) {
       m.set32(DRAG_ELEMENT, MANTA_SLOTS[k]);
@@ -3091,14 +3112,14 @@ export abstract class ControlsUnits extends SetupUnits {
 
   /** $11A30 (142,84): $DBA + 1 (repeats). */
   cmd_walrus_loadout_next(): boolean {
-    if (!this._clickable(T_BUTTON, [0xdc2, 0])) return false;
+    if (!this._loadout_clickable("Walrus")) return false;
     this._walrus_cursor_step(1);
     return true;
   }
 
   /** $11A76 (142,108): $DBA - 1. */
   cmd_walrus_loadout_prev(): boolean {
-    if (!this._clickable(T_BUTTON, [0xdc2, 0])) return false;
+    if (!this._loadout_clickable("Walrus")) return false;
     this._walrus_cursor_step(-1);
     return true;
   }
@@ -3118,7 +3139,7 @@ export abstract class ControlsUnits extends SetupUnits {
 
   _plus_minus(a: number): boolean {
     const m = this.mem;
-    if (!this._clickable(T_HARBINGERS, [0xdc2, 0])) return false;
+    if (!this._loadout_clickable("Walrus", T_HARBINGERS)) return false;
     const h = m.u32(a);
     if (h === 0x11ce0) {
       const d0 = w16(m.u16(HARBINGERS) + 1);
@@ -3145,7 +3166,7 @@ export abstract class ControlsUnits extends SetupUnits {
    * unable to supply payload"); drop $11ACE. */
   cmd_walrus_pick_loadout(): boolean {
     const m = this.mem;
-    if (!this._clickable(T_BUTTON, [0xdc2, 0])) return false;
+    if (!this._loadout_clickable("Walrus")) return false;
     const a1 = this._entry(this._code(WALRUS_CODES, m.u16(LOADOUT_CURSOR + 2), 5));
     const stock = m.u16(m.u32(a1 + 2));
     if (!stock || m.u16(a1 + 6) > stock) {
@@ -3160,7 +3181,7 @@ export abstract class ControlsUnits extends SetupUnits {
    * to drag back to stores (drop $11C4E). */
   cmd_walrus_pick_slot(k: number): boolean {
     const m = this.mem;
-    if (!(0 <= k && k <= 1 && this._clickable(T_BUTTON, [0xdc2, 0]))) return false;
+    if (!(0 <= k && k <= 1 && this._loadout_clickable("Walrus"))) return false;
     const off = m.u16(0x11c12 + 2 * k);
     if (m.u16(this._walrus_rec() + off)) {
       m.set32(DRAG_ELEMENT, WALRUS_SLOTS[k]);

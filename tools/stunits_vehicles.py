@@ -1671,6 +1671,27 @@ class VehicleMixin:
             m.set32(COMMS_POD, obj)
 
     # ---- hangar commands (click handlers; the original takes d2 = 2, a fresh click) ----------
+    # They return False where the original could not have run the handler: during a drag, and,
+    # given a bay (the UI's stand-in for selecting it on the arming screen), for prepare and
+    # replace where the arming screen shows no such button for that bay (docs/units.md §10.6).
+    def _hangar_refused(self) -> bool:
+        """No click handler runs during a drag ($460: the hit test is skipped, held buttons too)."""
+        return bool(self.mem.u8(0x460))
+
+    def _prepare_shown(self, base: int, bay: int, sel: int, sub: int) -> bool:
+        """Prepare (type 79) is in the arming sub-panel 1, shown for a bay under repair or
+        preparing (status 1/2, $11738), or still shown after the preparation ended (status 0)
+        while that bay stays selected ([sel] = bay, [sub] = 1). An out or destroyed vehicle never
+        shows it: its record would go to status 2, then 0, as if in the hangar, keeping the
+        counts of its weapons where the hangar keeps loadout codes."""
+        m = self.mem
+        st = m.u8(base + REC * bay + 1)
+        return st in (1, 2) or (st == 0 and m.u16(sel) == bay and m.u16(sub) == 1)
+
+    def _replace_shown(self, base: int, bay: int) -> bool:
+        """Replace ($117D4 / $11EF0) is reached only through repair's `bmi` (status bit 7)."""
+        return bool(self.mem.u8(base + REC * bay + 1) & 0x80)
+
     def _manta_selected(self, bay):
         m = self.mem
         if bay is not None:
@@ -1738,30 +1759,39 @@ class VehicleMixin:
         if m.u16(0xDC0):
             return
         if max(m.u16(a1 + 0x0C), m.u16(a1 + 0x0E), m.u16(a1 + 0x10)) > 11:
-            raise NotImplementedError("loadout code beyond the item table (unreachable: codes 0-11)")
+            raise NotImplementedError("loadout code beyond the item table (a record that is out holds counts, "
+                                      "not codes; unreachable, docs/units.md §12)")
         d = w16(m.u16(LOADOUT + 26 * m.u16(a1 + 0x0C)) - m.u16(LOADOUT + 26 * m.u16(a1 + 0x0E)))
         m.set8(a1 + 0x1C, 0xFF if w16(self.absw(d)) > 0x50 else 0)
 
     def cmd_manta_refuel(self, bay: int = None) -> None:
         """$1158A (held button: no click test)."""
+        if self._hangar_refused():
+            return False
         a0 = self._manta_selected(bay)
         if not self.mem.u8(a0 + 1) and self._refuel(a0 + 0x0A, FUEL_MANTA):
             self._manta_balance(a0)
 
     def cmd_manta_defuel(self, bay: int = None) -> None:
         """$11676."""
+        if self._hangar_refused():
+            return False
         a0 = self._manta_selected(bay)
         if not self.mem.u8(a0 + 1) and self._defuel(a0 + 0x0A, FUEL_MANTA):
             self._manta_balance(a0)
 
     def cmd_walrus_refuel(self, bay: int = None) -> None:
         """$11D4C."""
+        if self._hangar_refused():
+            return False
         a0 = self._walrus_selected(bay)
         if not self.mem.u8(a0 + 1) and self._refuel(a0 + 8, FUEL_WALRUS):
             self._walrus_panel()                     # the panel redraw $427B6 (stunits_controls)
 
     def cmd_walrus_defuel(self, bay: int = None) -> None:
         """$11DA4."""
+        if self._hangar_refused():
+            return False
         a0 = self._walrus_selected(bay)
         if not self.mem.u8(a0 + 1) and self._defuel(a0 + 8, FUEL_WALRUS):
             self._walrus_panel()                     # the panel redraw $427B6 (stunits_controls)
@@ -1798,22 +1828,38 @@ class VehicleMixin:
 
     def cmd_manta_repair(self, bay: int = None) -> None:
         """$1176A: repair (status 1), or replace a destroyed Manta."""
+        if self._hangar_refused():
+            return False
         self._repair(self._manta_selected(bay), "Manta")
 
     def cmd_walrus_repair(self, bay: int = None) -> None:
         """$11E8A."""
+        if self._hangar_refused():
+            return False
         self._repair(self._walrus_selected(bay), "Walrus")
 
     def cmd_manta_replace(self, bay: int = None) -> None:
         """$117D4 (a0 = the record)."""
+        if self._hangar_refused():
+            return False
+        if bay is not None and not self._replace_shown(MANTA_RECS, bay):
+            return False
         self._replace(self._manta_selected(bay), "Manta")
 
     def cmd_walrus_replace(self, bay: int = None) -> None:
         """$11EF0 (a0 = the record)."""
+        if self._hangar_refused():
+            return False
+        if bay is not None and not self._replace_shown(WALRUS_RECS, bay):
+            return False
         self._replace(self._walrus_selected(bay), "Walrus")
 
     def cmd_manta_prepare(self, bay: int = None) -> None:
         """$1182A: start flight preparation (status 2)."""
+        if self._hangar_refused():
+            return False
+        if bay is not None and not self._prepare_shown(MANTA_RECS, bay, 0xDB4, 0xDC0):
+            return False
         a0 = self._manta_selected(bay)
         self.mem.set8(a0 + 1, 2)
         self.mem.set16(0x95C, 2)                 # bay status redraw (stunits_render)
@@ -1821,6 +1867,10 @@ class VehicleMixin:
 
     def cmd_walrus_prepare(self, bay: int = None) -> None:
         """$11F3E."""
+        if self._hangar_refused():
+            return False
+        if bay is not None and not self._prepare_shown(WALRUS_RECS, bay, 0xDB6, 0xDC2):
+            return False
         a0 = self._walrus_selected(bay)
         self.mem.set8(a0 + 1, 2)
         self.mem.set16(0x95C, 2)                 # bay status redraw (stunits_render)
@@ -1836,6 +1886,8 @@ class VehicleMixin:
 
     def cmd_manta_to_deck(self, bay: int = None) -> None:
         """$11894: send the selected Manta [$DCC] up the lift (status 3, lift state 1)."""
+        if self._hangar_refused():
+            return False
         m = self.mem
         a0 = self._manta_selected(bay)
         d1 = m.u16(0xDCC)
@@ -1861,6 +1913,8 @@ class VehicleMixin:
 
     def cmd_manta_to_hangar(self) -> None:
         """$1242A: take the Manta on deck (mode 1) down the lift."""
+        if self._hangar_refused():
+            return False
         m = self.mem
         if not m.u8(0xB32):
             return self._msg("Lift is out of order")
@@ -1875,6 +1929,8 @@ class VehicleMixin:
     def cmd_manta_take_off(self) -> None:
         """$12002: the Manta on deck takes off (mode 2); without a waypoint it gets one
         6000 ahead of the carrier at (bay + 1) * 300 + 500."""
+        if self._hangar_refused():
+            return False
         m = self.mem
         bay = m.s16(LIFT_BAY)
         if m.u16(stunits.LIFT_STATE) or bay < 0 or m.u8(MANTA_RECS + REC * bay + 0x1C) != 1:
@@ -1899,6 +1955,8 @@ class VehicleMixin:
     def cmd_manta_land(self, bay: int = None) -> None:
         """$120F4: order the selected airborne Manta to land on the carrier (mode 0), if the
         deck and lift are free and it is within 16384."""
+        if self._hangar_refused():
+            return False
         m, c = self.mem, CARRIER_OBJ
         a1 = self._manta_selected(bay)
         a0 = m.u32(0x492)
@@ -1934,6 +1992,8 @@ class VehicleMixin:
     def cmd_walrus_launch(self, bay: int = None) -> None:
         """$1250E: launch the selected Walrus from the dock (mode 2, status 8), fitting its
         two loadout slots; without a waypoint it gets one 4000 astern."""
+        if self._hangar_refused():
+            return False
         m, c = self.mem, CARRIER_OBJ
         self._walrus_selected(bay)
         d0 = m.u16(0xDE4)
@@ -1989,6 +2049,8 @@ class VehicleMixin:
     def cmd_walrus_dock(self, bay: int = None) -> None:
         """$127C4: order the selected Walrus home (mode 0), if it is inside the docking cone
         astern (local z -1500..-8600, |x| <= -(z + 600))."""
+        if self._hangar_refused():
+            return False
         m, c = self.mem, CARRIER_OBJ
         self._walrus_selected(bay)
         n = m.u16(0xDE4) + 1
@@ -2674,6 +2736,13 @@ COMMANDS = {
 }
 
 
+# The commands with a bay argument (the UI's selection; prepare and replace gated by it).
+BAY_COMMANDS = ("cmd_manta_refuel", "cmd_manta_defuel", "cmd_manta_repair", "cmd_manta_replace",
+                "cmd_manta_prepare", "cmd_manta_to_deck", "cmd_manta_land", "cmd_walrus_refuel",
+                "cmd_walrus_defuel", "cmd_walrus_repair", "cmd_walrus_replace", "cmd_walrus_prepare",
+                "cmd_walrus_launch", "cmd_walrus_dock")
+
+
 def _perturb_hangar(m, rnd):
     """Selected bays in every state, tanks and stores at their limits, the lift, deck and
     dock busy or free, vehicles out near the carrier."""
@@ -2699,6 +2768,11 @@ def _perturb_hangar(m, rnd):
             m.set16(r + 0x28, rnd.choice((0, 6, 7, 9)) if n == "Walrus" else m.u16(r + 0x28))
             m.set16(r + 0x0C, rnd.choice((0, 1, 3)) if n == "Manta" else m.u16(r + 0x0C))
             m.set16(r + 0x0E, rnd.choice((0, 4, 10)) if n == "Manta" else m.u16(r + 0x0E))
+            if n == "Manta" and m.u8(r + 1) in (8, 0xFF) and rnd.random() < 0.7:
+                # out (or lost out): weapon counts and flags, not codes (the fit handlers $1ED46)
+                m.set16(r + 0x0C, rnd.choice((0, 1, 2, 3, 6)))
+                m.set8(r + 0x10, rnd.choice((0, 0xFF)))
+                m.set8(r + 0x11, rnd.randrange(256))
     for tank in (FUEL_MANTA, FUEL_WALRUS):
         m.set32(tank, rnd.choice((0, 100, 0x71C, FUEL_MAX, FUEL_MAX - 50, 0x50000)))
     m.set16(STOCK_MANTA, rnd.choice((0, 2)))
@@ -2712,8 +2786,11 @@ def _perturb_hangar(m, rnd):
     m.set8(0x122F, rnd.choice((0, 0, 0, 0xFF)))
     m.set8(0xD40, rnd.choice((0, 0, 0, 0xFF)))
     m.set32(COMMS_POD, rnd.choice((0, 0, _objaddr(2))))
-    m.set16(0xDC0, rnd.choice((0, 0, 1, 2)))
-    m.set16(0xDC2, rnd.choice((0, 0, 1)))
+    m.set16(0xDC0, rnd.choice((0, 0, 1, 1, 2)))
+    m.set16(0xDC2, rnd.choice((0, 0, 1, 1)))
+    m.set16(0xDB4, rnd.randrange(4))
+    m.set16(0xDB6, rnd.randrange(4))
+    m.set8(0x460, 0xFF if rnd.random() < 0.05 else 0)      # a drag in progress: no handler runs
     for k in range(2, 10):
         o = _objaddr(k)
         lx = rnd.choice((rnd.randrange(-2000, 2000), rnd.randrange(-40000, 40000)))
@@ -2734,7 +2811,7 @@ def check_commands(files) -> bool:
     rnd = random.Random(31)
     ok = True
     for name, addr in COMMANDS.items():
-        runs = 0
+        runs, refused = 0, 0
         for f in files[::4]:
             for _ in range(8):
                 m = stsim.Mem(bytearray(f.read_bytes()))
@@ -2742,20 +2819,31 @@ def check_commands(files) -> bool:
                 ram = bytes(m.buf)
                 oracle = check_sim.Oracle(ram)
                 state = stunits.UnitState.from_ram(ram)
-                if name.endswith("replace"):
-                    oracle.uc.reg_write(UC_M68K_REG_A0, m.u32(0x48E if "manta" in name else 0x568))
-                check_units.call_regs(oracle, addr, d2=2)
+                manta = "manta" in name
+                bay = rnd.randrange(4) if name in BAY_COMMANDS and rnd.random() < 0.5 else None
                 try:
-                    getattr(state, name)()
+                    result = getattr(state, name)(*(() if bay is None else (bay,)))
                 except NotImplementedError:
                     continue
+                refused += result is False
+                if result is not False:          # refused: the original's hit test runs no handler
+                    if bay is not None:          # selected as _manta_selected / _walrus_selected do
+                        cur, base, obj, sel = (0x48E, MANTA_RECS, MANTA_OBJ, 0xDCC) if manta else \
+                            (0x568, WALRUS_RECS, WALRUS_OBJ, 0xDE4)
+                        oracle.uc.mem_write(cur, (base + REC * bay).to_bytes(4, "big")
+                                            + _objaddr(obj + bay).to_bytes(4, "big"))
+                        oracle.uc.mem_write(sel, bay.to_bytes(2, "big"))
+                    if name.endswith("replace"):
+                        oracle.uc.reg_write(UC_M68K_REG_A0, (MANTA_RECS if manta else WALRUS_RECS) + REC * bay
+                                            if bay is not None else m.u32(0x48E if manta else 0x568))
+                    check_units.call_regs(oracle, addr, d2=2)
                 ref = oracle.ram()
                 mine = bytearray(ref)
                 state.to_ram(mine)
                 lines = check_units.diff(mine, ref)
                 runs += 1
                 if lines:
-                    print(f"{name}: MISMATCH from {f.name}")
+                    print(f"{name}({'' if bay is None else bay}): MISMATCH from {f.name}")
                     for line in lines:
                         print("  " + line)
                     ok = False
@@ -2764,7 +2852,7 @@ def check_commands(files) -> bool:
                 continue
             break
         else:
-            print(f"{name}: OK ({runs} states)")
+            print(f"{name}: OK ({runs} states, {refused} refused)")
     return ok
 
 

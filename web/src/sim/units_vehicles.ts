@@ -2071,6 +2071,31 @@ export class UnitState extends EnemyUnits {
   }
 
   // ---- hangar commands (click handlers; the original takes d2 = 2, a fresh click) ----------
+  // They return false where the original could not have run the handler: during a drag, and,
+  // given a bay (the UI's stand-in for selecting it on the arming screen), for prepare and
+  // replace where the arming screen shows no such button for that bay (docs/units.md §10.6).
+
+  /** No click handler runs during a drag ($460: the hit test is skipped, held buttons too). */
+  _hangar_refused(): boolean {
+    return this.mem.u8(0x460) !== 0;
+  }
+
+  /** Prepare (type 79) is in the arming sub-panel 1, shown for a bay under repair or
+   * preparing (status 1/2, $11738), or still shown after the preparation ended (status 0)
+   * while that bay stays selected ([sel] = bay, [sub] = 1). An out or destroyed vehicle never
+   * shows it: its record would go to status 2, then 0, as if in the hangar, keeping the
+   * counts of its weapons where the hangar keeps loadout codes. */
+  _prepare_shown(base: number, bay: number, sel: number, sub: number): boolean {
+    const m = this.mem;
+    const st = m.u8(base + REC * bay + 1);
+    return st === 1 || st === 2 || (st === 0 && m.u16(sel) === bay && m.u16(sub) === 1);
+  }
+
+  /** Replace ($117D4 / $11EF0) is reached only through repair's `bmi` (status bit 7). */
+  _replace_shown(base: number, bay: number): boolean {
+    return (this.mem.u8(base + REC * bay + 1) & 0x80) !== 0;
+  }
+
   _manta_selected(bay: number | null): number {
     const m = this.mem;
     if (bay !== null) {
@@ -2157,14 +2182,18 @@ export class UnitState extends EnemyUnits {
       return;
     }
     if (Math.max(m.u16(a1 + 0x0C), m.u16(a1 + 0x0E), m.u16(a1 + 0x10)) > 11) {
-      throw new NotPorted("loadout code beyond the item table (unreachable: codes 0-11)");
+      throw new NotPorted("loadout code beyond the item table (a record that is out holds counts, " +
+        "not codes; unreachable, docs/units.md §12)");
     }
     const d = w16(m.u16(LOADOUT + 26 * m.u16(a1 + 0x0C)) - m.u16(LOADOUT + 26 * m.u16(a1 + 0x0E)));
     m.set8(a1 + 0x1C, w16(UnitCore.absw(d)) > 0x50 ? 0xFF : 0);
   }
 
   /** $1158A (held button: no click test). */
-  cmd_manta_refuel(bay: number | null = null): void {
+  cmd_manta_refuel(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const a0 = this._manta_selected(bay);
     if (!this.mem.u8(a0 + 1) && this._refuel(a0 + 0x0A, FUEL_MANTA)) {
       this._manta_balance(a0);
@@ -2172,7 +2201,10 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $11676. */
-  cmd_manta_defuel(bay: number | null = null): void {
+  cmd_manta_defuel(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const a0 = this._manta_selected(bay);
     if (!this.mem.u8(a0 + 1) && this._defuel(a0 + 0x0A, FUEL_MANTA)) {
       this._manta_balance(a0);
@@ -2180,7 +2212,10 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $11D4C. */
-  cmd_walrus_refuel(bay: number | null = null): void {
+  cmd_walrus_refuel(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const a0 = this._walrus_selected(bay);
     if (!this.mem.u8(a0 + 1) && this._refuel(a0 + 8, FUEL_WALRUS)) {
       this._walrus_panel(); // the panel redraw $427B6 (units_controls)
@@ -2188,7 +2223,10 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $11DA4. */
-  cmd_walrus_defuel(bay: number | null = null): void {
+  cmd_walrus_defuel(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const a0 = this._walrus_selected(bay);
     if (!this.mem.u8(a0 + 1) && this._defuel(a0 + 8, FUEL_WALRUS)) {
       this._walrus_panel(); // the panel redraw $427B6 (units_controls)
@@ -2234,27 +2272,51 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $1176A: repair (status 1), or replace a destroyed Manta. */
-  cmd_manta_repair(bay: number | null = null): void {
+  cmd_manta_repair(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     this._repair(this._manta_selected(bay), "Manta");
   }
 
   /** $11E8A. */
-  cmd_walrus_repair(bay: number | null = null): void {
+  cmd_walrus_repair(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     this._repair(this._walrus_selected(bay), "Walrus");
   }
 
   /** $117D4 (a0 = the record). */
-  cmd_manta_replace(bay: number | null = null): void {
+  cmd_manta_replace(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
+    if (bay !== null && !this._replace_shown(MANTA_RECS, bay)) {
+      return false;
+    }
     this._replace(this._manta_selected(bay), "Manta");
   }
 
   /** $11EF0 (a0 = the record). */
-  cmd_walrus_replace(bay: number | null = null): void {
+  cmd_walrus_replace(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
+    if (bay !== null && !this._replace_shown(WALRUS_RECS, bay)) {
+      return false;
+    }
     this._replace(this._walrus_selected(bay), "Walrus");
   }
 
   /** $1182A: start flight preparation (status 2). */
-  cmd_manta_prepare(bay: number | null = null): void {
+  cmd_manta_prepare(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
+    if (bay !== null && !this._prepare_shown(MANTA_RECS, bay, 0xDB4, 0xDC0)) {
+      return false;
+    }
     const a0 = this._manta_selected(bay);
     this.mem.set8(a0 + 1, 2);
     this.mem.set16(0x95C, 2); // bay status redraw (units_render)
@@ -2262,7 +2324,13 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $11F3E. */
-  cmd_walrus_prepare(bay: number | null = null): void {
+  cmd_walrus_prepare(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
+    if (bay !== null && !this._prepare_shown(WALRUS_RECS, bay, 0xDB6, 0xDC2)) {
+      return false;
+    }
     const a0 = this._walrus_selected(bay);
     this.mem.set8(a0 + 1, 2);
     this.mem.set16(0x95C, 2); // bay status redraw (units_render)
@@ -2280,7 +2348,10 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $11894: send the selected Manta [$DCC] up the lift (status 3, lift state 1). */
-  cmd_manta_to_deck(bay: number | null = null): void {
+  cmd_manta_to_deck(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const m = this.mem;
     const a0 = this._manta_selected(bay);
     const d1 = m.u16(0xDCC);
@@ -2313,7 +2384,10 @@ export class UnitState extends EnemyUnits {
   }
 
   /** $1242A: take the Manta on deck (mode 1) down the lift. */
-  cmd_manta_to_hangar(): void {
+  cmd_manta_to_hangar(): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const m = this.mem;
     if (!m.u8(0xB32)) {
       return this._msg("Lift is out of order");
@@ -2330,7 +2404,10 @@ export class UnitState extends EnemyUnits {
 
   /** $12002: the Manta on deck takes off (mode 2); without a waypoint it gets one
    * 6000 ahead of the carrier at (bay + 1) * 300 + 500. */
-  cmd_manta_take_off(): void {
+  cmd_manta_take_off(): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const m = this.mem;
     const bay = m.s16(LIFT_BAY);
     if (m.u16(LIFT_STATE) || bay < 0 || m.u8(MANTA_RECS + REC * bay + 0x1C) !== 1) {
@@ -2357,7 +2434,10 @@ export class UnitState extends EnemyUnits {
 
   /** $120F4: order the selected airborne Manta to land on the carrier (mode 0), if the
    * deck and lift are free and it is within 16384. */
-  cmd_manta_land(bay: number | null = null): void {
+  cmd_manta_land(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const m = this.mem, c = CARRIER_OBJ;
     const a1 = this._manta_selected(bay);
     const a0 = m.u32(0x492);
@@ -2400,7 +2480,10 @@ export class UnitState extends EnemyUnits {
 
   /** $1250E: launch the selected Walrus from the dock (mode 2, status 8), fitting its
    * two loadout slots; without a waypoint it gets one 4000 astern. */
-  cmd_walrus_launch(bay: number | null = null): void {
+  cmd_walrus_launch(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const m = this.mem, c = CARRIER_OBJ;
     this._walrus_selected(bay);
     const d0 = m.u16(0xDE4);
@@ -2464,7 +2547,10 @@ export class UnitState extends EnemyUnits {
 
   /** $127C4: order the selected Walrus home (mode 0), if it is inside the docking cone
    * astern (local z -1500..-8600, |x| <= -(z + 600)). */
-  cmd_walrus_dock(bay: number | null = null): void {
+  cmd_walrus_dock(bay: number | null = null): false | void {
+    if (this._hangar_refused()) {
+      return false;
+    }
     const m = this.mem, c = CARRIER_OBJ;
     this._walrus_selected(bay);
     const n = m.u16(0xDE4) + 1;
