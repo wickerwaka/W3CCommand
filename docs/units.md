@@ -633,6 +633,8 @@ It then runs `$19778[type]` for entries with flag bit 8.
 
 **Damage** to the enemy comes from any hit (class damage straight off strength, §4.3) and from the strategic bombardment's return fire.
 
+**Destruction.** Either way, at strength ≤ 0 (hit, `$1C0F4`) or < 0 (return fire, `$1B728`): the AI is switched off (`[$464]` = 0; only the new game sets it again), the end timer `[$732]` = 100 and "Enemy Carrier destroyed!!!!" shows. A hit also clears object 19 (debris, 4 × 25000 points); after return fire it stays hidden where it was. The enemy state is left as it was (3, 10 or 11) and never runs again; fighters still airborne fly home to object 19's last position (a hit clears only its flags) and land there as usual, adding to an aircraft count nothing reads any more. 100 passes later `game_frame` requests screen 35. **YES** goes back to the previous tab and the game runs on without the enemy carrier: enemy islands keep their defences, builders and the NEMESIS resupply, and the game ends by the island counts (64 → result 3) or the player carrier's loss. **NO** sets result 4 and goes to the game-over screen. Verified end to end by `check_enemy_destroyed` (`stunits_enemy.py`).
+
 ## 10. Screens and controls
 
 **Screens:** `[$718]` = the current screen (0–35), with 8 tabs (`$714`, last screen per tab in `$720`). Per-screen tables:
@@ -720,9 +722,9 @@ After the handler, `$17094` clears these new flags: right `$883`, 1–4 `$79D–
 | `$17164` | 0 bridge | gauge timers `$954/$956/$958/$962` count down and redraw. The auto button follows `$640` bit 0 (`$12C16`). Autopilot off: a right click toggles `$457`. Insert / Clr-Home zoom the view (`$8B4`, `$8B2`; display only). Control-V → "Atari Bundle Version 16/02/90" | ✔ |
 | `$1747A` | 1 damage | spins the diagram (`$64D16`, display). With the lift shown (`[$B58]` = 8) it cycles `$B5A` 0–7 (part highlight). `$952` counts down and redraws | ✔ |
 | `$17244` | 2, 17, 25 maps | held cursor keys scroll (`$FAB0/$FAC8/$FA84/$FA6C`), held Insert / Clr-Home zoom (`$F984/$F99A`); with `[$766]` = 0 a right click recentres (`$F8B4`). On 17/25 the number keys select a unit (`$132D6` → `$FFB8`/`$FF1E`) | ✔ |
-| `$177DE` | 3 resources | guards the sub-mode `[$D14]`: modes ≥ 2 need comms (`$B0A`). Modes ≥ 4 also need no transfer running and the carrier at the stockpile island. Otherwise it shows the message, sets `$D14` = 0 and reselects the tab | ✘ |
-| `$1741A` | 8 laser turret | `$968` gauge; held cursor keys aim (`$FD2C–$FD44`); Insert / Clr-Home zoom (`$FC9C/$FCAC`); a right click toggles `$457` | ✘ |
-| `$1778E` | 10 viewing drone | drone (object 15) not out: disarms. Otherwise a right click toggles **SSM armed `$1160`**, which also sets the pointer clip `$46E–$47E` | ✘ |
+| `$177DE` | 3 resources | guards the sub-mode `[$D14]`: modes ≥ 2 need comms (`$B0A`). Modes ≥ 4 also need no transfer running (`$D3E`) and the carrier at the stockpile island. Otherwise it shows the message, sets `$D14` = 0 and reselects the tab (`$1227`/`$1228`) | ✔ |
+| `$1741A` | 8 laser turret | `$968` gauge; held cursor keys aim (`$FD3C` up, `$FD44` down, `$FD2C` left, `$FD34` right); Insert / Clr-Home zoom (`$FC9C/$FCAC`); a right click toggles `$457` | ✔ |
+| `$1778E` | 10 viewing drone | drone (object 15) not out: disarms. Otherwise a right click toggles **SSM armed `$1160`**: arming sets the pointer sprite and clips the pointer to the picture (`$46E–$47E`, UI); disarming runs `$F712` (also ends modal mode `$460`). The drone itself can't be steered: it falls on its own (`flares_step`) | ✔ |
 | `$17748` | 16 Walrus arming | number keys → `$11DEE`; hangar animation `$DC8` (± `$DCA`, bouncing between `$6000` and `$A000`) | ✔ |
 | `$17374` | 18 Walrus control | number keys → `$10016`. Re-enters (`$71A` = 18) when `[$70E]` ≠ (status ≥ 8), and then stops. Gauges `$954/$958/$962`. In auto, the auto button follows bit 0 (`$14004` when it isn't lit); in manual, a right click toggles `$457`, but while steering a guided missile (bit 4) it is only consumed and the handler returns (no icon sync); then a lit auto button is cleared (`$14004`) | ✔ |
 | `$17782` | 19 Walrus dock | number keys → `$1249E` | ✔ |
@@ -745,7 +747,7 @@ F = fresh press only, R = repeats while held. Port: ✔ ported, ✘ not yet. The
 | 0 | 78,155 | `$12A26` | R | autopilot off: `$646` = 0 |
 | 0 | 100,155 | `$12A16` | R | autopilot off: `$640` bit 7 (rudder self-centres) |
 | 0 | 100,178 (type 90) | `$12BAC` | F | needs `[$641]` = 1: auto selected → off; else with a course (`$640` bit 1) on, "Autopilot on"; else "No course set" |
-| 0 | 56,155 / 56,178 | `$FCE8` / `$FCF8` | F | view zoom `$8B4` 0–4, `$8B2` = `$2E8` >> zoom (display only; not ported) |
+| 0 | 56,155 / 56,178 | `$FCE8` / `$FCF8` | F | view zoom `$8B4` 0–4, `$8B2` = `$2E8` >> zoom (the renderer's; also Insert / Clr-Home in `$17164`) |
 | 1 | 13…265,155 (types 48–57) | `$FB3A` | F | show system k: `$B58` (`$B5A` = 0 for the lift), part highlights |
 | 1 | 293,155 | `$FBBE` | F | priorities panel: classes → work table `$B44`, `$B62` = `$B64` = 1 |
 | 1 | grid 200,16 (84×100) | `$FC64` | F | `$B44`[(y − 16)/10] = (x − 200)/28 |
@@ -761,8 +763,8 @@ F = fresh press only, R = repeats while held. Port: ✔ ported, ✘ not yet. The
 | 2 | 13,155 | `$1336E` | F | `$710` ^= 1 (course panel / islands panel), re-enter |
 | 2 | 298,155 / 298,178 / 288,159 | `$12E7A $12E8C $12E9E` | R | cruise `$6BC` ± 8 / slider (187 − y)·4, 0–`$70` |
 | 2 | 210,155 (type 92) | `$12E44` | R | `$6C6` = not `$6C6` (report arrival) |
-| 2 | 13,178 `[$710]`=1 | `$137C2` | F | **set the stockpile island** to `[$764]` (`$D4E` = old, `$D4A`, `$21D46` re-ships goods). Refused while re-routing, without comms, with stocks in transit, off an island, on the stockpile already, on a non-friendly or isolated island (✘) |
-| 4 | 144,155 | `$12C2C` | F | clear the message log (✘) |
+| 2 | 13,178 `[$710]`=1 | `$137C2` | F | **set the stockpile island** to `[$764]` (`$D4E` = old, `$D4A`, `$21D46` re-ships goods). Refused while re-routing (`$1235`), without comms, with stocks in transit (`$D50`, unless `$D4A` < 0), off an island, on the stockpile already, on a non-player island (owner ≠ 1) or one with no route from Vulcan (`$67B40 + 2i` < 0); else "NAME is now stockpile island" (logged). `$21D46` adds the queues back to the stockpile counts and ships all of it from `[$D4E]` as carrier-pool entries from `$66A10` on (unchecked; ≤ 255 each; fuel as `>> 12`, low word, kinds 15–17), clears the counts and sets `$D50` (✔) |
+| 4 | 144,155 | `$12C2C` | F | clear the message log (`$A1E8`: `$65D10`, 16 × `$30`, list head `$1148`): "Message log cleared" (`$966` = 2) or "Message log is already clear". The log holds the messages shown through `$A128`; the model leaves it to the app |
 
 **Vehicle control** (all ported, `stunits_controls.py` §10.6; the hangar commands marked ✔ in `stunits_vehicles.py`). Manta record `[$48E]`, object `[$492]`; Walrus record `[$568]`, object `[$56C]`. "Manual" = record `+0` bit 0 clear. Messages "Manta N …" / "Walrus N …" are prefixed by `$A044` / `$A02A`.
 
@@ -817,31 +819,46 @@ All the map handlers do nothing while the island info box is up (`[$766]` ≠ 0)
 - Manta `$42966` → `$C580` → `$C640`: `+$1C` of `[$48E]` = `$FF` (unbalanced, blocks "to deck") when the wing loads' weights differ by more than 80.
 - Walrus `$427B6` → `$BFE8`: with the list on the Harbinger, the Harbinger entry's weight `$CB7A` = 100 + 150·`[$CB80]` and the ± handlers `$4281C`/`$42832` = `$11CE0`/`$11D0C`; on the ACCB `$11D1C`/`$11D40`; type 81's flag = 0 for those two codes, else `$8000` (hidden).
 
-**Resources** (screen 3, sub-mode `$D14`):
+**Resources** (screen 3, sub-mode `$D14`; all ported, type 38, each panel shown only for its sub-mode). Store items `$B76 + $1A·i` (15): `+$10`/`+$12` class and target, `+$14`/`+$16` their edit copies, `+8` on board, `+$18` capacity:
 
-| Handler | Does |
-|---|---|
-| `$1102E` | abort the resupply (`$D42` = `$D46` = 2, `$D40` = 0) or say why not |
-| `$10E4A` | start the supply transfer (✔, `stunits_enemy`) |
-| `$109E8 $10B72 $10C06 $10D52` | open the stores priorities (2), fuel priorities (3), stores queue (4), fuel queue (5) panels; comms needed, 4/5 also the stockpile |
-| `$1098A`, `$109BC` | item picture (1), back (display) |
-| `$10ABC $10B02 $11196 $10AA6 $10A8A`, `$10A66` / `$10A3C` | edit item classes `+$14` and targets `+$16` (keypad), scroll; CANCEL / EXIT **commits** `+$10/+$12` |
-| `$10BDA`, `$10BC6` / `$10BAC` | fuel classes `$D0E–$D12`; EXIT **commits** `$D08–$D0C` |
-| `$10C88 $10CCA $10C7C $10C6A` | stores queue `$D96` ↔ stockpile `$D78`, limited by capacity ("Limit of ACC stores reached") |
-| `$10DA4 $10DC0 $10E18 $10E22 $10E30 $10E3C` | fuel queues `$D6C/$D70/$D74` ↔ stockpile `$D60/$D64/$D68`, step `$4000` ("Limit of ACC tanks reached") |
+| `$D14` | (x, y) | Handler | F/R | Does |
+|---|---|---|---|---|
+| 0 | 12,155 | `$1102E` | F | abort the resupply: `$D42` = `$D46` = 2, `$D40` = 0, "Resupply aborted - drone recalled" (logged); refused: no transfer (`$D3E`), `$D46` = 1 "already completed", 2 "has been aborted", `$D40` with `$DE6` = 4 "Too late to abort resupply" |
+| 0 | 34,155 | `$10E4A` | F | start the supply transfer (✔, `stunits_enemy`) |
+| 0 | 56 / 122 / 188 / 254,155 | `$109E8 $10B72 $10C06 $10D52` | R | open the stores priorities (2: scroll `$D38` = 0, no entry, `+$10/+$12` → `+$14/+$16`), fuel priorities (3: `$D08–$D0C` → `$D0E–$D12`), stores queue (4), fuel queue (5). All need comms; 4 and 5 also no transfer and the carrier at the stockpile |
+| 0 | 15 pictures 44…244, 8…92 | `$1098A` | R | item picture: `$D16` = i, `$D14` = 1; back `$109BC` (142,115) |
+| 2 | 228,22 / 228,114 | `$10A66` / `$10A3C` | R | reset the edit copies / EXIT: commit them (`+$14/+$16` → `+$10/+$12`), `$D14` = 0 |
+| 2 | 176,44 / 176,76 | `$10AA6` / `$10A8A` | R | scroll `$D38` −1 (≥ 0) / +1 (≤ 12): the three rows show items `$D38`… |
+| 2 | 80, 24/60/96 | `$10ABC` | F | class of row r: `+$14` = 2, 1, 0 by the pointer's offset in the field (≤ 10, ≤ 21, else; `$10AE6`) |
+| 2 | 120, 31/67/103 | `$10B02` | F | type the target of row r: `$D18` = r, keypad entry `$11142` (3 digits, old value `+$16`, callback `$10B5A`) |
+| 2 | keypad 216,44 (64 × 64) | `$11196` | F | while `$D1A`: digits (boxes `$111D0`; no leading 0, at most `[$D2C]`) into `$D1B` (count `$D2A`), ENTER (decimal → `+$16` of item `$D18 + $D38`), CANCEL (the old value `$D32` back), DELETE |
+| 3 | 228,22 / 228,114 | `$10BC6` / `$10BAC` | R | reset `$D0E–$D12` / EXIT: commit them to `$D08–$D0C`, `$D14` = 0 |
+| 3 | 136, 24/60/96 | `$10BDA` | F | fuel k's class `$D0E + 2k` = 2, 1, 0 by the pointer offset |
+| 4 | 244,116 / 251,47 / 251,79 | `$10C62 $10C7C $10C6A` | R | back; scroll `$D3A` −1 / +1 (0–12) |
+| 4 | 134 / 163, 35/69/103 | `$10C88` / `$10CCA` | R | row r's item (`$D3A + r`): queue `$D96` → stockpile `$D78` / stockpile → queue, at most the room `+$18 − +8 −` queued ("Limit of ACC stores reached" at 0). Step 1; held (d2 = 1) 1 for `$D3C` (= 5 on the press) more passes, then 10 |
+| 5 | 140,116 | `$10D9C` | R | back |
+| 5 | 134 / 163, 36/61/86 | `$10DA4 $10E18 $10E30` / `$10DC0 $10E22 $10E3C` | R | fuel k: queue `$D6C + 4k` → stockpile `$D60 + 4k` / stockpile → queue, `$4000` a pass (longs), up to `$FFFE0 −` queued `−` tank (`$CFC`, `$D00`, `$D04`): "Limit of ACC tanks reached" |
 
-**Weapons:**
+The keypad entry (`$11142`, whose only caller is `$10B02`) and the sub-panel state `$D0E–$D3B` are game state (the model's region "resources panel $D0E"). The other sub-mode-2 handlers do nothing while `$D1A` is set. There is no keyboard entry: `$1118A` only draws the digits.
 
-| Scr | Handler | Does |
-|---|---|---|
-| 8 | `$FD2C $FD34 $FD3C $FD44` | turret heading `$6CC` / elevation `$6CA` by 300 >> `[$6D2]`, rates cleared |
-| 8 | `$FD60` | fire: `$88C` |
-| 8 | `$FC9C $FCAC` | zoom `$6D2` 0–3, `$A94`/`$A98` |
-| 8 | `$12A34 $12A3C` | `$6D5` bit 7 / 6: centre the aim rates |
-| 9, 10 | `$1338C`, `$134C2`, `$13598` | flare, recon drone, SSM (✔) |
-| 11 | `$104C8` | drag a drone station on the radar (outside ±1500 × ±900, not on another) |
-| 11 | `$10602 $106EC $10706 $10714` | reset stations; formation `$698` ± 1 (0–8); apply formation |
-| 11 | `$10738 $1088C` | launch / recall (✔) |
+**Weapons** (all ported, type 38 unless given):
+
+| Scr | (x, y) | Handler | F/R | Does |
+|---|---|---|---|---|
+| 8 | 100,155 / 122,178 / 100,178 / 122,155 | `$FD3C $FD44 $FD2C $FD34` | R | elevation `$6CA` − / + or heading `$6CC` − / + 300 >> `[$6D2]`; both rates `$6CE/$6D0` cleared |
+| 8 | 117,170 | `$FD60` | R | fire key `$88C` (the turret fires on its next step) |
+| 8 | 144,155 / 144,178 | `$FC9C` / `$FCAC` | F | zoom `$6D2` +1 / −1 (0–3), `$A94/$A98` (`$FCD4`) |
+| 8 | 166,155 / 166,178 | `$12A34` / `$12A3C` | R | `$6D5` bit 7 / 6: the heading / elevation rate self-centres |
+| 9 | 166,155 | `$1338C` | F | decoy flare (✔ `stunits_carrier`) |
+| 10 | 210,155 | `$134C2` | F | launch the viewing drone (✔) |
+| 10 | picture 32,6 (256 × 128) | `$13598` | F | with the SSM armed, a missile at the point under the pointer (✔) |
+| 11 | markers (types 66–69) | `$104C8` | R | drag station k (`$696`); the drop `$104E6` sets `+$A` = (y − `[$4752]` + 1)·60, `+$C` = (x − `[$4750]` − 4)·60 (word compares), refused inside ±900 × ±1500 ("Drone must be outside red boundary") or within √`$24000` of another active station ("Cannot put drones on top of each other"); state `&= 1` |
+| 11 | 12,155 | `$10602` | F | reset the stations to the snapshot `$141DE` (not during a recall: "Cannot cancel docking sequence") |
+| 11 | 298,155 / 298,178 | `$106EC` / `$10706` | R | formation `$698` +1 (9 → 0) / −1 (−1 → 8) |
+| 11 | 188,155 | `$10714` | F | apply formation `[$698]` (table `$1065C`, 9 × 4 stations × `+$A/+$C`); states `&= 1` |
+| 11 | 166,155 / 166,178 | `$10738` / `$1088C` | R / F | launch / recall (✔). Launch repeats while held |
+
+The drag and the formation buttons are refused during a recall (`$122F`: "Cannot override docking sequence"). Screen 12 has no buttons.
 
 **Game status, title, game over:**
 
@@ -851,8 +868,8 @@ All the map handlers do nothing while the island info box is up (`[$766]` ≠ 0)
 | 32 | `$10228 $10230` | format single / double sided |
 | 32 | `$102BE` | **save** slot k (§11); an action game then gets `$2000` difficulty |
 | 32 | `$101D8` | surrender: `$463` = `$FF`, `$466` = 0 |
-| 32 | `$13778` | options `$1246–$1249` (sea dots, message ping, background noise, sound effects) |
-| 33 | `$103B2 / $103A0` | new strategy / action game (`$42A8`, §16) |
+| 32 | `$13778` | options (217,29, `$708` = 7): row k = (y − 29) >> 4 if (y − 29) & 15 < 14; x < 243 off, 252–277 on: `$1246 + k` (sea dots, message ping, background noise, sound effects). The element is 78 high, so a fifth row k = 4 writes `$124A`, the strategy flag (quirk, §12) |
+| 33 | `$103B2 / $103A0` | new strategy / action game: `$124A` = `$FF` / 0, `$42A8` (§16) |
 | 33 | `$103C4 $103D2 $103DE` | load menu, cancel, **load** slot k |
 | 35 | `$13990 / $1399C` | continue / stop (`$466` = 4, screen 34) |
 
@@ -976,7 +993,19 @@ The browser UI calls these methods in place of the mouse, keyboard and click han
 | `key_select(base, handler)`, `manta_control_input()`, `manta_deck_input()`, `manta_arming_input()`, `walrus_control_input()`, `walrus_dock_input()`, `walrus_arming_input()` | `$132D6` and the input handlers `$172BC $1773C $17610 $17374 $17782 $17748` |
 | `vehicle_ui()` | read helper: the selections (`$48C`, `$566`, `$DB4`, `$DB6`, `$DCC`, `$DE4`), controllable `$70C/$70E`, the loadout list cursors' codes, `$CB80`, the drag in progress, the lock timer |
 | `game_frame()` | `$408A–$4190` without `ui_frame`, rendering and sound: `$4194`, `paused_frame`, `debug_keys`, `screen_input`, `sim_pass`, end timer, end request. It records `("game over", 35, [$466])` (enemy carrier destroyed; the original asks whether to continue) or `("game over", 34, [$466])` |
-| `screen_input()` | `$17094` for screens 0, 1, 2/17/25, 16–19, 24–27 and the empty handlers. Screens 3, 8 and 10 raise `NotImplementedError` |
+| `screen_input()` | `$17094`: every screen's input handler |
+| `cmd_bridge_zoom_in/out()`, `bridge_zoom(d)` | `$FCE8/$FCF8` (`$8B4`, `$8B2`) |
+| `cmd_turret_up/down/left/right()`, `cmd_turret_fire()`, `cmd_turret_zoom_in/out()`, `cmd_turret_centre_heading/elevation()`, `turret_input()` | screen 8: `$FD3C $FD44 $FD2C $FD34`, `$FD60`, `$FC9C/$FCAC`, `$12A34/$12A3C`, `$1741A` |
+| `cmd_turret_steer_to(heading_rate, elevation_rate)` | mouse-steer deltas for the turret's aim rates `$6CE/$6D0` (screen 8, `$457` clear); `cmd_vehicle_fire()` fires |
+| `cmd_flare_launch()`, `cmd_recon_launch()`, `cmd_ssm_fire_at(px, py)`, `drone_view_input()` | `$1338C`, `$134C2`, `$13598` with the pointer at (px, py), `$1778E` (a right click, `cmd_toggle_mouse_steer()`, arms the SSM): the gated buttons of `stunits_carrier`'s commands |
+| `cmd_drones_launch()`, `cmd_drones_recall()`, `cmd_drone_stations_reset()`, `cmd_drone_formation_next/prev/apply()`, `cmd_drone_station_pick(k)`, `cmd_drone_station_move(k, px, py)`, `drone_station_pixel(k)` | screen 11: `$10738`, `$1088C`, `$10602`, `$106EC/$10706/$10714`, `$104C8` + drop `$104E6`; the move is pick, release, `ui_frame`; the last is the drop's inverse for the UI |
+| `resources_input()`, `cmd_resupply_abort()`, `cmd_resources_transfer()`, `cmd_item_picture(k)`, `cmd_item_picture_back()` | screen 3: `$177DE`, `$1102E`, `$10E4A` (`cmd_supply_transfer`), `$1098A`, `$109BC` |
+| `cmd_stores_priorities_open/reset/exit()`, `cmd_stores_scroll_up/down()`, `cmd_stores_class(row, cls)`, `cmd_stores_target(row)`, `cmd_keypad(key)` | `$109E8 $10A66 $10A3C`, `$10AA6/$10A8A`, `$10ABC`, `$10B02`, `$11196` (key 0–9, 10 ENTER, 11 CANCEL, 12 DELETE) |
+| `cmd_fuel_priorities_open/reset/exit()`, `cmd_fuel_class(k, cls)` | `$10B72 $10BC6 $10BAC`, `$10BDA` |
+| `cmd_stores_queue_open/back()`, `cmd_stores_queue_scroll_up/down()`, `cmd_stores_unqueue/queue(row, held)`, `cmd_fuel_queue_open/back()`, `cmd_fuel_unqueue/queue(k)` | `$10C06 $10C62`, `$10C7C/$10C6A`, `$10C88/$10CCA` (held = auto-repeat, d2 = 1), `$10D52 $10D9C`, `$10DA4 $10E18 $10E30` / `$10DC0 $10E22 $10E3C` |
+| `cmd_set_stockpile()`, `stockpile_reship()`, `island_name(i)` | `$137C2` (carrier map, islands panel), `$21D46`, the name table `$4AD20` |
+| `cmd_clear_message_log(logged)` | `$12C2C`; the log is the app's, so it says whether there is one |
+| `cmd_game_option(k, on)`, `cmd_title_new_game(strategy)` | `$13778` (k 0–3; 4 is the `$124A` quirk), `$103B2/$103A0` (then `new_game`) |
 
 `screen_input` reads only input and UI state, so `game_frame` runs it before `sim_pass` instead of after the win check and route relaxation; the result is the same. The panel flag table is in the state, as `redraw: panel flags $40EB2`: the UI code changes it too, so `check_units.diff` skips it, and this module's checks compare it themselves.
 
@@ -989,10 +1018,305 @@ The browser UI calls these methods in place of the mouse, keyboard and click han
   - every screen 0–4, 8–12, 16–20, 24–28 and 32 by `cmd_switch_screen` from a random screen, and 33–35 by forced request, from each state (1056 switches), half of them followed by 8 passes of `ui_frame` + `game_frame`;
   - 704 random commands (`ui_frame`, tab and screen icons, `cmd_switch_screen`, game-status buttons, surrender, continue), 30 % followed by 12 passes with further random switches (about 4800 passes after switches in all).
 
-  The passes stub the input handlers that aren't ported (screens 3, 8, 10) on both sides, and the comparison leaves out the element flags that only panel drawing writes (types 79 and 81).
+  The passes run every screen's input handler on both sides; the comparison leaves out the element flags that only panel drawing writes (types 79 and 81).
 - the 66 Manta and Walrus commands (§10.4) against their handlers, called with the registers the hit test passes (d0/d1, d2 = 2 or 1 for held, a3 = the real panel element; the ± buttons through the handler the panel installed; drags released over a slot, the stores box or elsewhere and dropped by the original's `ui_frame`), each on 135 perturbed states (action and play captures with Mantas and Walruses out, landing and docking; vehicle screens, icon and button flags, controllability, record flags, modes, loadouts, weights and Harbingers, stocks, landing/docking flags, map edit values, list cursors, drags, keys);
 - `screen_input` on screens 16–19 and 24–27 against `$17094` on 720 perturbed states (number keys in and out of pointer mode and drags, re-entry, gauges, the auto button, right clicks, missile steering, the lock timer, the hangar animation);
 - 46 runs of 120 passes (`ui_frame` + `game_frame`) on every vehicle screen, entered by clicks from play and action captures, with random vehicle commands, drags, mouse steering, firing, throttle and number keys and right clicks between passes, the original running its own `ui_frame` and `screen_input`.
+- the 52 "War" commands (bridge zoom, turret, flares, viewing drone and SSM, defence drones and the station drag, every resources handler with the keypad entry, the stockpile island, message log, options) against their handlers with the registers the hit test passes (d0/d1, d2 = 2 or 1, a3 = the real element; the drag released on the radar and dropped by the original's `ui_frame`), each on 264 perturbed states (screens 3, 4, 8–12, 32; sub-panels, keypad entries, scrolls, items, stocks, queues and fuel, comms, transfer state, stockpile, turret angles/rates/zoom, drones and stations, recalls, stocks and launcher damage);
+- `screen_input` on screens 3, 8 and 10 (and 0's zoom keys) against `$17094` on about 800 perturbed states;
+- 40 runs of 120 passes on screens 0, 3, 4 and 8–12, entered by clicks, with random War commands, cursor/Insert/Clr-Home keys, right clicks, turret mouse aiming and firing;
+- `cmd_title_new_game` against `$103B2/$103A0` and `ui_frame` from the title image (8 clicks, 4 new games).
+
+### 10.7 What each screen shows
+
+The 2D screens draw everything from state each pass: the render routine (`$144A0`) and the panel draw callbacks (`$43856`, run by `$B400`/`$B418` while their state word matches). `web/src/app/readout_screens.ts` has a read helper for each, named after what it shows, which returns the displayed data (and the formatted text where the original's formatting matters) from a RAM image. `tools/check_readouts.py` checks each helper's Python mirror (`tools/stscreens_*.py`) against the original: `tools/stscreens.py` runs the screen's render and panels under Unicorn, logs every character drawn (5×5 `$9AD2`, 8×8 `$9C94`, vector `$9CEE`) and, per screen, the bar, rectangle, line and icon primitives, and compares on captures plus perturbed states. All 6768 cases match at the default fuzz.
+
+| Screen | Helpers |
+|---|---|
+| shared | `fmtDigits`, `blankZeros`, `numberField`, `percent`, `percentText` |
+| 3 resources | `resourcesSubPage`, `resourcesStoresOnBoard`, `resourcesCarrierFuel`, `resourcesItemPage`, `resourcesStoresPriorities`, `resourcesClassLevel`, `resourcesFuelPriorities`, `resourcesStoresTransfer`, `resourcesFuelTransfer`, `resourcesGate`, `resourcesBar`, `resourcesQty3`, `storeItemName` |
+| 4 messages | `messageLog`, `messageAgeText` |
+| 11 defence radar | `defenceRadar`, `droneState` |
+| 12 weapons status | `weaponsStatus`, `droneState` |
+| 16/24 arming | `armingView`, `armingPanel`, `loadoutCatalogue`, `loadoutEntry`, `baySummary` |
+| 20/28 status | `vehicleStatusPage`, `mapCoordinate` |
+| 2/17/25 maps | `mapViewState`, `mapToScreen`, `mapIslands`, `mapUnits`, `mapMarkerSegments`, `mapLinksDrawn`, `islandsPanel`, `islandInfoBox`, `mapSliders`, `mapBorder`, `mapCopyright`, `mapCoordText`, `MAP_SHOWS_ENEMY_CARRIER` |
+| 32 game status | `gameStatus`, `score`, `gameClock`, `gameOptions` |
+| 34 game over | `gameOver` (35 has fixed text only) |
+
+**Not shown anywhere:** the difficulty, the enemy carrier and enemy units on the map (§ maps below), the stockpile's in-transit flag `$D50`, island production, stocks, buildings and defences, and vehicle fuel/mode/waypoint/telemetry on the status screens (fuel is a bar on the arming screens).
+
+#### Text and number routines (shared by every 2D screen)
+
+- `$9A56` 5×5 string at (d1, d2): characters ≥ `$20` (6 px each, `$9AD2`); `5 n` colour; `6` skips spaces; any other control byte ends it.
+- `$9BC0` 8×8 stream from the cursor `$122B/$122C` (8-px columns, pixel rows; margin `$122A`): 0 end, `1 x`, `2 y`, `3 x y`, 4 margin = x, `5 n` colour, 6 skip spaces, 13 newline (x = margin, y + 8), ≥ `$80` a macro from `$9C8A`; other bytes are cells (`$9C94`).
+- `$9CEE` vector-font string (scale d3).
+- `$9FAA/$9FB6/$9FC2/$9FCE`: 5/4/3/2 digits of an unsigned word by repeated subtraction. The first digit is `'0'` + quotient, so it isn't limited to 9 (2 digits of 105 → `:5`). Callers blank leading zeros: inline `cmpi.b #'0'` (one), or `$9FFE` (n).
+- `$EC3C/$EC4A` percentage: p = (cur & `$FFFF`)·100 / max (`divu`, low word). The text is `100%` only at exactly 100; otherwise it's 3 places, right-aligned, with the tens blank when 0 (`  5%`, ` 44%`).
+
+#### Screen 4: Messages
+
+Render `$162B0`, redrawn only while `$966` ≠ 0 (`$A206` sets it to 2).
+
+| What | Source | Format |
+|---|---|---|
+| Log | linked list from `[$1148]` through 16 records of `$30` bytes at `$65D10`: `next.l`, `time.l` (`[$97A]` when posted), text from `+8` | oldest first, one line per 6 px from y 28 |
+| Age | `[$97A]` − time | `M:SS`: one character `'0'` + age / 60 at x 33, `:` at 38, seconds as 2 digits at 42 (no blanking) |
+| Text | `+8` | at x 59, as `$9A56` draws it |
+| Empty | `[$1148]` = 0 | `NO MESSAGES` at (127, 56) |
+
+- **Adding** (`$A128` → `$A206`): the first free record (top bit of `next` set) gets time `[$97A]` and the text uppercased (a–z only), and is appended at the tail. With all 16 in use, the head (oldest) is reused. So at most 16 messages are shown.
+- **Expiry:** the render drops the leading records older than **300 s** (unsigned compare), marks them free (`st.b` on `next`) and moves `$1148`; everything after the first young one is listed. The PNG bar message (`$9B3`/`$98C`, `$964`/`$988`) is separate.
+- **CLEAR** `$12C2C` empties the log.
+
+#### Screen 11: Defence drones radar
+
+Render `$15EB0`; the panel callback `$D166` draws the frame art and sets `$95A` = 2.
+
+This is a plan view of the carrier at **1/60**, bow to the right, centred on the `$4744` viewport centre (`+$C`, `+$E`) = (160, 70). A carrier-relative point (across, along) is drawn at x = cx + along/60, y = cy + across/60 (`divs`, truncating), and icons go at (−4, −8) from it.
+
+| Element | Source | Shown when |
+|---|---|---|
+| Carrier outline | line list `$16254` over the 39 points `$161BA` (`/60`) | always |
+| Drone k (element type 66 + k, `$42A4E` + `$16`k; draggable) | station record `$65E` + 14k: position `+2` (across), `+4` (along) | `+1` bit 0 (out) and the Radar system works (status byte `$B02` ≠ 0). Otherwise the element is hidden (`$40EB2` flag bit 15) |
+| Its station icon (16-px sprite `$161A2` + 6k) | `+$A` (across), `+$C` (along) | as above, and `+1` bit 1 (on station) clear |
+| Formation preview (box (213, 157)–(294, 196), while `$95A`, counted down) | `$1065C` + 16·`[$698]`: 4 × (across, along) | four 3×3 colour-2 squares centred at (254 + along/192, 177 + across/192) |
+| `DRONES ACTIVE` / `DRONES IN STORAGE` | `$65C` / item 6 `$C1A` | 2 digits, a leading 0 blank, (40, 160) / (40, 168) |
+| Status line (y 184) | as on screen 12 | |
+
+The station flag bits (`$1A296`):
+- bit 0: out;
+- bit 1: on station (on arrival, `+2/+4` = `+$A/+$C`);
+- bit 2: heading to the waypoint `+6/+8`;
+- bit 3: launching.
+
+Formation 0 is the default cross (±3000 on each axis), the stations the game starts with; formations 1–8 are the other preset patterns (table `$1065C`).
+
+#### Screen 12: Weapons status
+
+Render `$16BA6`; the static labels come from the list `$16E46` via `$C6F6`.
+
+| Line | Source | Rule |
+|---|---|---|
+| Laser cannon STATUS / REPAIR STATE | system 4 | `OPERATIVE` if the status **word** `$B1A` ≠ 0, else `INOPERATIVE`; percent `$B14`/`$B16` |
+| Observation turret | system 3 | status **byte** `$B12` ≠ 0; percent `$B0C`/`$B0E` |
+| `LASER OVERHEATING` (45, 61) | heat `$6C8` | > `$3000` (unsigned) |
+| FLARES ACTIVE / IN STORES | `$1152` / item 10 `$C82` | 2 digits, a leading 0 blank |
+| Flare launcher | system 5, byte `$B22`; `$B1C`/`$B1E` | |
+| Flare line (y 61) | | `$C82` = 0 → `NO FLARES AVAILABLE`; else `[$1152]` = 2 or reload `$1150` ≠ 0 → `RELOADING LAUNCHER`; else `FLARE LAUNCHER READY` |
+| VIEWERS / MISSILES IN STORES | item 11 `$C9C` / item 2 `$BB2` | 2 digits |
+| Missile launcher | system 6, byte `$B2A`; `$B24`/`$B26` | |
+| `VIEWING DRONE ACTIVE` (36, 126) | object 15 `+1` bit 0 (`$5EF9B`) | when live |
+| DRONES ACTIVE / IN STORES | `$65C` / item 6 `$C1A` | 2 digits |
+| Drone line (y 126) | `$122F`, stations `$65E` | `$122F` set → `DRONES DOCKING`; none out (bit 0) → `NO DRONES ACTIVE`; all out drones' bit 1 set (no record with bit 1 clear) → `DRONES ON STATION`; else `DRONES IN TRANSIT` |
+
+Systems 3, 5 and 6 use formula B (§5.2), which writes only the high byte (`st.b`/`sf.b`), so their status is a byte. The laser (formula A) is tested as a word.
+
+#### Screen 32: Game status
+
+Panels by sub-mode `[$708]`:
+
+| Mode | Callback | Shows |
+|---|---|---|
+| 0 | `$CD5C` | `GAME STATUS`; `SCORE:` (`$A418`: 12 digit bytes `$918–$923`, most significant first, + `'0'` into `$90A`, up to 11 leading zeros blanked, then control 6 skips them, so a plain decimal); `TIME:` `HH:MM:SS` from `$8F4/$8F6/$8F8` (`$CDC8` into `$900`, 2 digits each, no blanking); `FRIENDLY ISLANDS:` `$D54`, `ENEMY ISLANDS:` `$D56` (2 digits, a leading 0 dropped) |
+| 1 | `$E4E4` | the surrender prompt (fixed) |
+| 3 | `$E510` | the save prompt (fixed) |
+| 6 | `$E4F4` | the format prompt (fixed) |
+| 5 | `$E4FC` | a disk error, `[$70A]` 0–5 (table `$E520`): couldn't format, error writing, not a game disk, error reading, not a valid game, program disk |
+| 7 | `$EAEE` | GAME OPTIONS: Sea Dots `$1246`, Message Ping `$1247`, Background Noise `$1248`, Sound Effects `$1249`. YES (x `$D9`) is lit (bit 13) while the byte is 0, NO (x `$FC`) otherwise |
+
+- Points are added by `$A3EE` (d0 added to the last digit, with carry); `$A3E0` clears them.
+- The clock is run by the VBL (`$17BC8`): 50 frames (`$8FA`) make a second, and it counts only while `$462` is set and `$461` is clear. Hours wrap at 24 into days `$8F2`, which isn't shown.
+- **Difficulty is not shown anywhere.**
+
+#### Screens 34 / 35: Game over
+
+Screen 34: panel callback `$CF42`, viewport `$47B2`.
+
+- `GAME OVER` in the vector font at (10, 20), scale `$600`.
+- The result text `$CFCA[[$466]]`:
+  - 0 `Game was aborted`;
+  - 1 `Aircraft Carrier Destroyed! / All is lost`;
+  - 2 `All islands captured by enemy / All is lost`;
+  - 3 `All islands captured! / Congratulations on completing / Carrier Command`;
+  - 4 `Enemy Carrier Destroyed! / Congratulations …`.
+- `Time:` (as on screen 32), `Final Score:` (the score), and `Islands Taken:` `$D52`, as 4 digits (`$9FB6`) with 3 leading zeros blanked and skipped. `$D52` is +1 for each island the player captures (`$1C362`, `$1C55C`); it's never decreased.
+
+**Screen 35** (`$EBBA`): fixed text `Enemy Carrier Destroyed! / Remaining islands can be captured / for maximum points. / Do you want to continue?`, with NO / YES buttons. There are no values on it.
+
+**Check** (`tools/check_readouts.py misc`, mirror `stscreens_misc.py`): the text and plot positions the original draws were captured by hooking `$9AD2`/`$9C94`/`$9CEE` (characters), `$B292` (radar icons), `$5308` (preview squares) and `$B034` (option buttons), and the element flags and positions after the render. They were compared with the mirror on 15 captures (units-frame, play, action) × 5 screens × (1 + 40 fuzzed states): messages, systems and stocks, drone records and formations, score digits, clock, counts, result and options. That's 3075 cases, all exact.
+
+#### Screen 3: Resources
+
+The render `$14C6C` jumps on the sub-page `[$D14]` (table `$14C7E`: 0 `$14C96`, 2 `$1118A`, 5 `$14D28`, others `rts`). Each sub-page has one panel (state `[$D14]` = n) whose callback draws the data; sub-page 0 also shows the bottom button panel `$42CC8` (`$D188`, icons only). Store items are the 15 records at `$B76` (`$1A` bytes):
+
+| Offset | Meaning |
+|---|---|
+| `+0/+2` | icon position on sub-page 0 |
+| `+4.l` | 32×32 icon |
+| `+8` | **count on board** (what launches and loadouts take) |
+| `+$A.l` | name: 8×8 control-coded text (code 3 x y; x in 8-px columns), then after its NUL the description (5×5 lines separated by control bytes, NUL-terminated) |
+| `+$E` | picture index (64×64 at `$3B426 + $600·n`) |
+| `+$10/+$12` | committed priority class (0–2) and target stock: what the logistics use |
+| `+$14/+$16` | working copies edited on sub-page 2 |
+| `+$18` | carrier capacity (not drawn) |
+
+Numbers: 3 digits by `$9FC2` (repeated subtraction on the unsigned word), then `$9FFE` with 2 blanks up to two leading zeros (`"  0"`, `" 32"`, `"999"`). Values above 999 would print a byte `$30 + n/100` (a control byte ends the 5×5 string); the game caps stores at 999. Bars: `$5488` draws two rows (y and y − 1); first the full 78-px track in colour 0, then the value in colour 2 from x0 to x0 + n, n = `divs.w` quotient (on overflow the value's low word), min 78 (signed compare).
+
+| Sub | Drawn by | Shows | Derivation |
+|---|---|---|---|
+| 0 stores | `$D264`, render `$14C96` | each item's icon at (`+0`, `+2`) and its count `+8` at (x + 7, y + 34); the carrier's tanks as bars at y 192: ship `$CFC` x 60, aircraft `$D00` x 148, AAV `$D04` x 236 | n = fuel / `$3482` (78 px ≈ `$1001BC`) |
+| 1 item | `$D2C6` | item `[$D16]` (the icon clicked): picture at (48, 14), "UNITS : nnn" = `+8` (8×8 at column 14, y 96), the name segments (8×8, colour 3), the description (5×5 at x 115, y 14 + 8·line) | palette `$138A` |
+| 2 stores priorities | `$DEAA`, render `$1118A` | three items from scroll `[$D38]` (0–12): icon, class box for `+$14`, target `+$16` (3 digits at (134, 41 + 36·i)) | class box `$DF84` (x 80–111, rows from y = 24 + 36·i): 0 → bottom third (+22…+30), 1 → middle (+11…+20), other → top (+1…+9). Clicking a third sets 2 (top) / 1 / 0 (`$10AE6`); 2 is the most urgent |
+| 2, keypad | `$112BA` (while `[$D1A]`) | the digits typed at `$D1B` over the target of row `[$D18]`, in a box `$D22–$D28` (colour `[$D2E]`, text `[$D30]`), right-aligned: x = `[$D22]` + 6·(`[$D2C]` − max(`[$D2A]`, 1)); the row box from `$E026` lit in colour 10 | `$10B02` opens it (3 digits); the value goes to `+$16` |
+| 3 fuel priorities | `$E0BA` | three class boxes (x 136; ship, aircraft, AAV) for the working copy `$D0E/$D10/$D12` | as sub-page 2; EXIT (`$10BAC`) commits to `$D08–$D0C`, entering (`$10B72`) copies them back |
+| 4 stores transfer | `$E1B6` | three items from scroll `[$D3A]` (0–12): stockpile stock `$D78[k]` at (97, 47 + 34·i) and queued for the drone `$D96[k]` at (206, …) | 3 digits; the ± buttons are in §10.4 |
+| 5 fuel transfer | render `$14D28` | rows y 49/74/99 (ship, aircraft, AAV): stockpile tanks `$D60/$D64/$D68` as bars at x 44 (n = fuel / `$6905`, 78 px ≈ `$2001E6` ≈ the `$1FFFC0` cap) and queued fuel `$D6C/$D70/$D74` at x 196 (n = fuel / `$3482`) | no numbers |
+
+Sub-page 2 and 3 show the **working** values: EXIT (`$10A3C`) commits `+$14/+$16` → `+$10/+$12`, CANCEL (`$10A66`) and entering (`$109E8`) reload them. The stockpile island's name and the in-transit flag `$D50` aren't drawn on this screen.
+
+**Gating** (`$177DE` every pass, and the buttons `$109E8 $10B72 $10C06 $10D52`): sub-pages ≥ 2 need comms (`[$B0A]` ≠ 0), else "Communications are out". Sub-pages 4 and 5 also need no transfer running (`[$D3E]` = 0, else "Resupply operation in progress") and the carrier at the stockpile island: its island buffer `[$5E996]` (object 10 `+$3C`) ≠ 0 and the buffer's island byte `+1` = `[$D4A]`, else "Stockpile island out of range". On failure the pass handler shows the message, sets `[$D14]` = 0 and re-selects the tab.
+
+Port: `readout_screens.ts` `resourcesSubPage`, `resourcesStoresOnBoard`, `resourcesCarrierFuel`, `resourcesItemPage`, `resourcesStoresPriorities`, `resourcesClassLevel`, `resourcesFuelPriorities`, `resourcesStoresTransfer`, `resourcesFuelTransfer`, `resourcesGate`, `resourcesBar`, `resourcesQty3`, `storeItemName`. Checked (`tools/check_readouts.py resources`, mirror `stscreens_resources.py`): every sub-page's render and panel callback under Unicorn on 14 captures × 13 states (the capture plus 12 perturbed: counts, targets, classes, stockpile and queue stocks, all fuel values incl. negative and overflowing, scrolls, the picture item, the keypad field) against the mirror's strings (position and text), bars (row, x0, x1, colour) and class boxes: 1092 sub-page draws, all equal.
+
+#### Screens 24 / 16: Manta / Walrus arming
+
+The selected bay is `[$DB4]` (Manta) / `[$DB6]` (Walrus); its record `[$48E]` / `[$568]` is set by the enter handler and the bay select. The render (`$15002` / `$14E56`) draws the 3D hangar into the small viewport, then:
+- **Panel redraw** while `$95E` / `$960` is set: the sub-panel `$DC0` / `$DC2` from the record's status (`$11738` / `$11E60`: 0 → 0 loadout, 1–2 → 1 repair, 3 and above, `$FF` included → 2), the bottom icons and the three sub-panels, then `$95C` = 2.
+- **Carrier tank bar** every frame (`$15200`): the aircraft tank `$D00` (Manta) or AAV tank `$D04` (Walrus), a horizontal colour-2 line at y 192 from x 236, length min(tank `divs` `$3482`, 78) px.
+- **Bay list** while `$95C` counts down (2 passes after a redraw), at (106, 159): "MANTA FIGHTERS:" / "WALRUS AAV'S:", then the bay numbers 1–4 and, at (118, 168 + 6k), a status word picked by index = (status byte, sign-extended) + 1, 6 or more → 5:
+
+| Index | Manta | Walrus |
+|---|---|---|
+| 0 (`$FF`) | DESTROYED | DESTROYED |
+| 1 (0) | IN HANGER | IN DOCK |
+| 2 (1) | UNDER REPAIR | UNDER REPAIR |
+| 3 (2) | FLIGHT PREP | LAUNCH PREP |
+| 4 (3) | IN LIFT | IN LIFT (a launching Walrus) |
+| 5 (4 and above) | ACTIVE | ACTIVE |
+
+The strings are dot-led (`"........ DESTROYED"`).
+
+The bottom panel (`$C4D4` / `$BFAA`) is icons only: bays 1–4, refuel, defuel, repair, plus to deck for the Manta. A destroyed bay swaps the icons at `$C52C/$C536`: repair becomes replace.
+
+**Sub-panel 0, loadout** (`$C580` / `$BFE8`):
+
+| What | Where (x, y) | Derivation |
+|---|---|---|
+| "MANTA n" / "WALRUS n" | 205 / 202, 8 | n = bay + 1 (`$C84C` / `$C325`) |
+| List item (cursor `$DB8` / `$DBA` over `$C770` = 1, 2, 3, 4, 5, `$A` / `$C242` = 6, 7, 8, 9, `$B`) | icon at (123, 85) / (35, 86) | loadout entry `$CAC4 + 26·code` (below) |
+| Mounting text (Manta only) | 35, 99 (lines +6) | entry `+$E`: "SINGLE/DUAL/TRIPLE MISSILE MOUNTING", "CENTRE MOUNTING ONLY" |
+| Description | 35, 114 (lines +6) | entry `+$12`, lines split at `$0D`. ACCB: the third line is "POD - " + 8 bytes from `$CAAC + 8·[$DC6]` (RESOURCE / FACTORY / DEFENCE), patched into the code at `$CA6F` |
+| WEIGHT | 35, 91 / 35, 105 | entry `+0`: 3 digits with 2 leading zeros blanked, "WEIGHT   ___KG" (Walrus: 4 digits, 3 blanked). Walrus Harbinger: `+0` is patched to 100 + 150·`[$CB80]` first (`$C038`) |
+| QUANTITY | 35, 85 / 35, 99 | the item's **on-board stock** `[entry +2]` (item record `+8`), 3 digits, 2 blanked |
+| Harbingers to load | 81, 89 | Walrus with the cursor on code 7: the element's descriptor kind (`$416B8`) = entry `+8` = 11 (48-px bitmap + text), text = '0' + `[$CB80]` (`$416CD`). Code 6 has kind 10 (no digit); 8, 9 and 11 kind 1 |
+| Fitted items | slots (218, 70) fuselage `+$10`, (195, 90) / (240, 90) wings `+$C` / `+$E`; Walrus (173, 96) payload `+$26`, (201, 96) weapon `+$28` | icons of each slot's entry (`+$A`; ACCB icon + 160·`+$10`). The Walrus weapon slot's descriptor kind = its entry `+8`. A Harbinger (kind 11) shows '0' + `+$C` (byte) at (219, 99) |
+| REPAIR STATE | 254, 63 / 254, 66 | health `+$14` as `$EC4A` percent of 4000: (h·100) `divu` 4000; "100" or " " + tens (space if 0) + units, then "%" |
+| PAYLOAD WEIGHT: MAXIMUM | 166, 28 / 34 | static 750 / 2000 KG |
+| PAYLOAD WEIGHT: CURRENT | 166, 34 / 40 | record `+$12`, 5 digits with 4 blanked, written over the "000KG" of the string, so no "KG" is left |
+| Vehicle fuel bar | x 180, from y 88 up | `$7A46` / `$7A56`: min(fuel `divs` `$38E`, 36) px (36 = `$7FFF`), colour 2 over a colour-0 line of 36 (`$546C`, `[$484]`). Manta fuel `+$A`, Walrus `+8` |
+| UNBALANCED PAYLOAD | 172, 42 | Manta: \|weight(`+$C` code) − weight(`+$E` code)\| > 80 (unsigned, after `neg`). The same test writes record `+$1C` = `$FF` (blocks "to deck") or 0 |
+
+Loadout entry (`$CAC4`, 26 bytes): `+0` weight, `+2` stock pointer, `+6` quantity taken per fit, `+8` descriptor kind for the Walrus elements (0, 1 = slot 0 payloads, 10 Avatar, 11 Harbinger), `+$A` icon, `+$E` mounting text (Manta), `+$12` description, `+$16` fit handler. Code 0 is the empty slot.
+
+**Sub-panel 1, repair** (`$CBFE` / `$C3A4`): status 1 shows "UNDER REPAIR" (190, 30 / 33), and element type 79 "CANCEL REPAIRS" is enabled (flag `$40F50` = 0). Status 2 shows "UNDERGOING" + "FLIGHT PREPERATIONS" (Walrus: "LAUNCH PREPERATIONS"; misspelt in the original), and type 79 is hidden (`$8000`). Both show "REPAIR STATE :" with the health percent at (256, 48). The prep timer is not shown.
+
+**Sub-panel 2** (`$CCBA` / `$C440`): `$FF` "AIRCRAFT DESTROYED" / "AAV DESTROYED"; status 3 "AIRCRAFT PREPARING" + "TO LAUNCH" (Walrus "AAV PREPARING"); otherwise "AIRCRAFT ACTIVE" / "AAV ACTIVE".
+
+#### Screens 28 / 20: Manta / Walrus status (`$16750` / `$169FE`)
+
+These screens have no panels. Four blocks at (33, 7), (162, 7), (33, 72), (162, 72) (table `$169EE`), one per bay k, with record `$496/$570 + $34k` and object 2+k / 6+k. Lines are 6 px apart; a line is only drawn (and only takes a row) when it applies:
+1. "MANTA k+1" / "WALRUS k+1".
+2. "STATUS:" + DESTROYED (status bit 7), IN HANGER / IN DOCK (status < 8), else ACTIVE. Only ACTIVE units get the lines below.
+3. "POSITION:" x "," z: object `+$A` / `+$12` `divs` `$68E` (1678 world units per map unit, truncated), shown as a sign and the last 4 of 5 digits of the magnitude (`$BCFC`, buffer `$AD3`).
+4. "ISLAND:" the name of the island whose 3D buffer the unit is attached to (object `+$3C`, byte `+1` = island index), or NONE.
+5. "REPAIR STATE:" health `+$14` percent of 4000, leading spaces skipped ("5%", "100%").
+6. "PAYLOAD:" record `+$12` as 4 digits, zeros blanked and skipped, "KG".
+7. Weapons:
+   - Manta: "LASER" if `+$10` (byte) ≠ 0, then "MISSILES (n)" if `+$C` ≠ 0, with n = '0' + `+$C` (one character);
+   - Walrus: "LASER (n)" while `+$A` ≥ 0 (signed; n = Avatar shots, 2 digits, a leading 0 dropped), then "MISSILES (n)" as for the Manta.
+8. Payload: if `+$E` ≠ 0, its low byte names it: 4 CLUSTER BOMB (the Quaker), 8 VIRUS BOMB, 9 ACCB POD, `$A` COMMS POD, `$B` FUEL POD. Other values draw nothing.
+
+Fuel, mode, waypoint and telemetry are not shown here.
+
+**Check** (`tools/check_readouts.py vehicles`, mirror `stscreens_vehicles.py`): the screen's render runs under Unicorn (3D calls stubbed: `$7BF6 $6402 $91EC $62D4`), with `$95E/$960` = 1 and `$95C` = 2, so the panels and bay list are drawn. Each drawn string at a data position, the tank and fuel bar lengths (`$5488`/`$546C` hooks) and the Manta `+$1C` balance flag are compared with the mirror. The inputs are 12 captures (units-frame 16/20/24/28; play flight/combat/launch/late/takeoff; views walrus/manta; action) plus 30 fuzzed states each: bay status, health 0…65535, weight, fuel, loadouts, Harbingers, ACCB type, positions, island buffers, stocks and tanks. Result: 1488 states, all match. The TS readers agree with the mirror on 120 fuzzed states.
+
+#### Maps (screens 2 carrier, 17 Walrus, 25 Manta)
+
+**Render** `$14E3C` (same for all three): the slider bars `$7712`, then the map `$65E2`, or, while `[$766]` ≠ 0, the island information box (panel `$4203A` → `$BB10`) instead of the map. The bottom panels' draw callbacks (`$E9B4`, `$E9E6`, `$BF86`, `$BF5E`, `$BF3E`, `$EA12`, `$EA62`) only draw icons and bevel boxes: every number on these screens comes from the render. Readouts: `mapViewState`, `mapToScreen`, `mapIslands`, `mapUnits`, `mapMarkerSegments`, `mapLinksDrawn`, `islandsPanel`, `islandInfoBox`, `mapSliders`, `mapBorder`, `mapCopyright`, `mapCoordText` (`readout_screens.ts`).
+
+**View and transform.** Viewport `$47F2`: (32, 6)–(287, 133), centre (160, 70). Zoom level `[$758]` (0–10), `[$75A]` = 1 << level, centre world point `[$75C]/[$760]`. `$7526`: sx = 160 + f(x − `[$75C]`), sy = 70 + f(−(z − `[$760]`)), f(d) = `$65C4` = (d asr 8) / zoom with `divs`, **floored** (the quotient is decremented when the remainder is negative); a quotient beyond a word gives ±`$7FFF` by the dividend's sign, and an overflowing add of the centre gives `$7FFF`. So one pixel = 256·zoom world units, north (+z) up. (`map_to_world`, `$F91E`, is the inverse used by clicks.)
+
+**Draw order** (`$65E2`): `$764` = `$FFxx` (`st.b`), `[$73E]` = 2000000; clear the viewport; `$750` = min(zoom, 8); the world-edge frame `$68A6` (32 world points `$7564` through `$7526`, line list `$7694`, colour 4); on the carrier map in islands mode (`[$710]` ≠ 0) the links `$68D0` and the islands panel `$699E`; the islands `$6658`; `$6A9E` (copyright text and the fixed centre reticle, line list `$76CB` over screen points `$7664`); then the units of the screen (`$6AFA` 25, `$6C36` 17, `$6D74` 2).
+
+**Islands** (`$6658`, each of the 64 in order):
+- The centre offset (mx, my) = f(dx), f(dz) must be within ±255 px (unsigned compare after `neg`), else the island is skipped entirely.
+- Nearest: the island with the smallest mx² + my² (< the running `[$73E]`) becomes `[$764]` (index), `[$74C]` (owner), `[$742]/[$746]` (its world x/z). This is the island the INFO button (`$FAF4`) opens and centres on; with none in range `[$764]` stays negative and `$FAF4` does nothing.
+- Label (zoom level ≤ 5, unsigned): the name in the vector font, colour 8, at (left − 35/zoom, top − 32/zoom), scale `$400`/zoom (all `divu`). Drawn before the rectangle's clip test, so it can show for an island whose rectangle is off the map.
+- Rectangle: corners f(dx ∓ halfX) + 160, f(dz ∓ halfZ) + 70 (word adds), widened to 1 px if empty; skipped when wholly outside the viewport, else clipped and filled (`$5308`) with `$6E90`[owner]: neutral `$B` (`$467`), friendly 7 (`$445`), hostile 1 (`$720`).
+- Markers, only at zoom level ≤ 2 (signed) and for a drawn rectangle:
+  - carrier map in islands mode: friendly islands only. Kind marker `$B` + (economy `+0` & 3) (base, resource, factory, defence) at the island centre, `$1000` west on the stockpile island `[$D4A]`, which also gets the stockpile marker `$F` `$1000` east. Other islands: no markers.
+  - otherwise: structure slot 1 of type `$24` (runway) → marker 9 turned by the slot's `+2` angle; slots 2 and 3 of type 7 (volcano) → marker `$A`; at the island + the slot's `+8/+$A` words.
+
+**Markers** (`$6DFE`): shape `$6E96` + 8·k = (points: count.w, (x.w, y.w)…; line list: count.b, (colour.b, i.b, j.b)…). Drawn when the world point's screen position has \|sx\|, \|sy\| ≤ `$200`; points turned with the `$A6C` (sin, cos) pair (word rotation, high word of 4·(x·cos + y·sin), y·cos − x·sin), divided by 12·min(zoom, 8) (`divs`), y negated, plus (sx, sy); lines clipped to the map (`$5C60`). `[$A88]` = drawn, `[$A80]/[$A84]` = (sx, sy). Shapes: 0 Manta and 1 Walrus (the same diamond, ±80), 2 carrier (100 × 200 box), 3 cursor (corner brackets, colour 15 = the cycling colour), 4–7 bay 1–4 waypoints, 8 carrier waypoint, 9 runway, `$A` volcano, `$B–$E` island kinds, `$F` stockpile; all colour 8 except the cursor. Units are turned to (heading + `$800`) & `$F000` (16 directions); waypoints and the cursor are not turned.
+
+**Units:**
+
+| Screen | Drawn (in order) |
+|---|---|
+| 25 Manta (`$6AFA`) | per bay k (record `$496 + $34k`, object 2 + k): status `+1` < 0 (destroyed) → nothing; status ≥ 3 → marker 0 at the object, and a label if the draw mode `[$6AA]` = 2, or `[$6AA]` = 1 and k = `[$48C]`, at zoom level ≤ 1 and the marker was drawn: "MANTA k+1" at (sx + (22 >> level), sy − (22 >> level)) and "x,z" (`$BCFC` each) at (sx + (12 >> level), sy − (10 >> level)), vector font, colour 8, scale `$200` >> level. Then, with record flag bit 1 (course set), marker 4 + k at the waypoint `+$1E/+$26`. Then the carrier (marker 2, object 10) and the cursor (marker 3) at `$69E/$6A6` |
+| 17 Walrus (`$6C36`) | the same with the records `$570 + $34k`, objects 6 + k, marker 1, mode `[$6B8]`, selection `[$566]`, "WALRUS k+1", waypoint `+$1C/+$20`, cursor `$6B0/$6B4` |
+| 2 carrier (`$6D74`) | course mode (`[$710]` = 0): the cursor at `$6BE/$6C2`, the waypoint (marker 8) at `$64E/$652` if `$640` bit 1; then the carrier |
+
+Units on the lift or in the hangar (status 0–2) aren't plotted, but their waypoint is if the flag is set.
+
+**The enemy is never on the map.** No map routine draws objects other than 2–10; the enemy carrier (object 19), enemy aircraft and missiles are not plotted at any zoom, whatever the radar (`$B02` is read only by the vehicle-view radar scope `$146A4` and the defence-drone radar `$15F28`). Enemy activity shows only through island colours (hostile islands) and messages.
+
+**Coordinates** (`$BCFC`): v / 1678 (`divs`, truncated), written as 5 digits with the sign over the first (always 0 in the world's ±`$7FFFFF`): "+0123", "-4415".
+
+**Links** (`$68D0`, carrier map in islands mode only): every network entry (`$2239E`, count.w then (weight.w, island.w)) with a non-zero weight, from both of its islands (each link is drawn twice), between the island centres (`$7526`), clipped. Colour by the owners: both friendly 7; friendly and neutral or hostile `$C` (`$333`); both hostile 1; neutral–neutral and neutral–hostile links aren't drawn.
+
+**Islands panel** (`$699E`, carrier map, `[$710]` = 1; 5×5 at (197, 163)): `$CDF2` first **recounts** `[$D54]` (friendly), `[$D56]` (hostile) and `[$D58 + 2·kind]` for each friendly island's economy `+0` byte (it doesn't clear `$D58`), then prints "FACTORY ISLANDS  nn" (`[$D5C]`), "RESOURCE ISLANDS nn" (`[$D5A]`), "DEFENCE ISLANDS  nn" (`[$D5E]`) (2 digits, a leading 0 as a space; colour 8), "STOCKPILE" (colour 1) and the stockpile island's name at (197, 187), or "NONE!" in colour 15 when `[$D4A]` < 0. The render thus writes simulation state (the island counts) while this panel is up.
+
+**Island information box** (`$BB10`, `[$766]` = 1): opened by INFO (`$FAF4`: `[$764]` ≥ 0 → map centre = `[$742]/[$746]`, `$766` = 1), closed by EXIT (`$FB1A`). Title "ISLAND INFORMATION" (8×8), then 5×5 lines in colour 8 at x 52, y 32 + 6n, label and value on one line:
+
+| Line | Value |
+|---|---|
+| NAME: | the name of `[$764]` |
+| POSITION: | `$BCFC`(`[$742]`) "," `$BCFC`(`[$746]`) |
+| AREA: | a = (halfX·halfZ `mulu` / 10000 `divu`) / 250 `divu` (the first quotient sign-extended), shown in tenths: the 5 digits with up to 3 leading zeros dropped and a "." before the last, then " SQUARE KM" (e.g. 18000 × 18000 → "12.9") |
+| CONTROL: | `[$74C]`: FREE / FRIENDLY / HOSTILE |
+| ISLAND TYPE     : | friendly only: economy `+0` & 3: BASE / RESOURCE / FACTORY / DEFENCE |
+| DISTANCE TO BASE: | friendly, not BASE: "RE-ROUTING" while `[$1235]` (and the box ends there); else route `$67B40`[0][i] (VULCAN row): negative → "ISOLATED", else (w << 16) / 1573 (`divu`; w ≥ 1573 overflows and shows 0), leading zeros dropped |
+| DISTANCE TO STOCKPILE: | friendly, i ≠ `[$D4A]` ≥ 0: route `[i][$D4A]`, same format |
+
+The box reads `[$764]`, `[$74C]` and `[$742/$746]` as the last map render left them; it doesn't re-pick while open. Production, stocks, buildings and defences are not shown anywhere on the map screens.
+
+**Slider bars** (`$7712`, under the bottom-right panel, 2 px wide, from y 195 up, colour 2 over a colour-0 track to y 159): carrier map (course mode) cruise at x 292: (`[$6BC]` asr 2) + 8, ≤ 36; Walrus cruise at x 292: ((`[$6AE]` << 8) & `$FFFF`) / `$2AA`, ≤ 36; Manta altitude at x 248: `[$6A2]`.l / 97, ≤ 36, and cruise at x 292: `[$69C]` / 7. The Manta cruise clamp tests the stale d3 instead of d0, which is harmless: 250/7 = 35. No figures are printed.
+
+**Easter egg** (`$6A9E`): at zoom levels ≤ 5, "COPYRIGHT REALTIME GAMES SOFTWARE LTD 1987/88" (`$76E4`, vector font, colour 15, scale `$400`/zoom) is written at world (`$79BFFF`, −`$7FD800`), the far south-east corner, when its screen point is within \|sx\| < `$400`, \|sy\| < `$100`.
+
+**Check** (`tools/check_readouts.py map`, mirror `stscreens_map.py`): the render `$14E3C` under Unicorn on 9 captures (units-frame 2/17/25, play late/combat/flight/supply, sim enemy AI, action) as screens 2, 17 and 25, plus 30 perturbed states each (`--fuzz`) (zoom level and centre, owners, kinds, stockpile, islands mode, route words, `$1235`, unit statuses, flags, positions, headings, waypoints, cursors, draw modes, selections, sliders), and the info box on every third state (opened as `$FAF4` does): the vector labels (text, position, scale), the 5×5 text, the filled rectangles, every line segment drawn through `$5C60` (border, links, all markers), the slider bars and `[$764]` all match the mirror (1113/1113 states at the default fuzz, 2859/2859 with 80).
+
+### 10.8 State the renders write (`render_effects`)
+
+`screen_dispatch` (`$14472`, after every pass) runs the screen's render from `$144A0`, which also runs some panel callbacks (`$B418`). Traced under Unicorn on every screen (captures switched by the original's clicks, perturbed), it changes these state bytes, which the app must reproduce because it doesn't run the original render. `RenderMixin.render_effects(screen)` (`tools/stunits_render.py`, `units_render.ts`; the app calls it once per frame for the screen shown) ports them:
+
+| Screen | Writes |
+|---|---|
+| all, debug mode | `$210F0` consumes key `$871` bit 0; `$17874` (running game, not the menu) consumes key `$869` bit 0 and flips the frame-rate display `$122D` |
+| 2, 17, 25 maps | `map_render_effects()`: `$764` (nearest island, `st.b` first), `$73E` (its distance², or 2000000), `$74C` (owner, byte), `$742/$746`, `$750` = min(zoom, 8); with the islands panel (`[$710]` ≠ 0, screen 2) the recount `$CDF2` of `$D54`, `$D56`, `$D5A–$D5E` (and `$D58` + 2·kind, which isn't cleared); the marker turn pair `$A6C/$A6E` (screen 2: the carrier's; 17/25: (0, `$4000`)). Nothing while the info box is up (`[$766]` ≠ 0). See "Maps" above for the nearest rule |
+| 4 messages | `$966` − 1 while ≠ 0 (the log's expiry is the app's) |
+| 11 defence radar | drone elements 66–69: flag bit 15 (hidden) unless the drone is out and `[$B02]` ≠ 0 |
+| 8 turret | working turret (`[$B12]` ≠ 0): the zoom record's `$478E/$4790` = `[$6D2]` + 8; broken: static noise, **one `rand`** (`$5538`) |
+| 18 / 27 vehicle views | static noise, one `rand`, while the unit's telemetry (`+$2C` / `+$2E`, copied to `$712`) ≠ 0 (unit live; Manta not destroyed) |
+| 33 title | one `rand` per frame; the model's turret `$6CA/$6CC/$6D4`; Control+A/B set `$124C`; the attract wait `$93C`/`$93A` and its expiry (back to the title, §10.2); debug keypad +/- |
+
+So the renders advance the game RNG on the title and on screens showing static, which changes later random numbers (e.g. the layout of the next new game).
+
+**Not ported** (left out of `render_effects`): the 3D views (screens 0, 1, 8, 9, 10, 16, 18, 19, 24, 26, 27, 33) set the camera object 0 and the view pointer `$9FA`, the island context `$A28–$A57` and matrices `$A68–$A73` of the 3D pipeline (`$7BF6`, `$6402`, `$91EC`, `$62D4`), display fields of island entries (`+1`, `+$1E–$29`), the viewed units' visible bit (+1 bit 1), viewport records and `$6FE`. The arming screens (16, 24) redraw their panels while `$95E`/`$960` are set, which the model doesn't keep (set by the hangar commands, `screen_input` and the vehicle-destroyed routines), writing `$DC0/$DC2`, the Manta balance flag `+$1C` and element flags. In 30-pass runs after a render, none of these bytes changed anything else in the state: the simulation overwrites the pipeline scratch before reading it *(measured on a sample; not proved)*.
+
+**Check** (`check_render_effects`): `$14472` under Unicorn (stscreens' tracer) on the 25 units-frame captures and 600 captures switched to random screens (biased to the maps, 8, 11, 18, 27, 33), each with 3 perturbed variants (map view, zoom, owners, kinds, islands mode, info box; `$966`; drone stations and radar; turret; telemetry; title keys and timers; debug keys): every state region after the render equals the model's, except the unported list above. 2320 renders, all equal (the original faults on 180 perturbed states, which are skipped).
 
 ## 11. Save format
 
@@ -1038,6 +1362,8 @@ The browser UI calls these methods in place of the mouse, keyboard and click han
 - **Lost telemetry** makes a Manta fall but destroys a Walrus outright, with no debris.
 - **The Manta panel redraw** (`$C640`, triggered by refuel/defuel) rewrites record `+$1C`, which is the auto mode in flight: a UI routine changes simulation state.
 - **Walrus guided-missile fire** does `andi.w #$3F` on the record, clearing the whole flag byte.
+- **Options panel:** its element is 78 pixels high, so below the four option rows a click in a fifth row writes `$1246 + 4` = `$124A`, the strategy flag (nothing is drawn there *(guess)*).
+- **Stockpile re-shipping** (`$21D46`) writes carrier-pool entries from the first one on, without looking at what is there or at the pool's end.
 - **Manta bombs** take their velocity from the Manta's pitch and heading. **Walrus laser bolts** start at the turret but copy the hull's angles.
 - **Two Walrus paths corrupt the stack and crash the ST.** The model deviates on purpose: it records a `("deviation", …)` event, and `check_units.py` ends a run there instead of comparing.
   - *Guided missile with no free object* (all of objects 24–63 live). `$1FF0E` `beq`s to the `rts` at `$1FB6C`, but a1 was pushed at `$1FEFA`, so the CPU "returns" into the Walrus record (`$570 + $34·k`) and executes it. Its first word, flags·256 + 8, is an illegal instruction unless the turret bit 5 is set; then the rudder and speed words run, soon reaching a line-F or illegal word. In Hatari (EmuTOS) the exception handler then runs into the game's memory (illegal instruction at `$FD2`) and the pass never finishes: the machine hangs. TOS 1.0 would show bombs at best: the game has overwritten its system variables. **Model:** nothing is fired, as with the other weapons, and the cooldown `$942` = 15 stays.
@@ -1076,10 +1402,11 @@ The browser UI calls these methods in place of the mouse, keyboard and click han
 | Maths | yaw/pitch rotation, rotation matrix, atan2, `aim_angles`, `turn_towards`, `self_centre` |
 
 | Vehicles out of the hangar (`stunits_vehicles.py`) | the Manta loop (telemetry and comms relay, manual flight, ground contact, crashes, fuel, all 7 auto modes: carrier landing, deck, take-off, waypoints, runway landing, landed, runway take-off) and the Walrus loop (telemetry, driving, guided-missile steering, beach ramps, docking, launch, waypoints); Manta and Walrus firing (laser, missile lock-on and locked missile, bomb, guided missile, cargo, ACCB, fuel pod); the lift and loadouts; destruction; 16 hangar commands (refuel, defuel, repair, replace, prepare, to deck/hangar, take off, land, launch, dock) |
-| Enemy close combat and supply (`stunits_enemy.py`) | enemy states 10 and 11 (stern to the player, cruise missiles, fighter launches, retreat, losing contact); the supply drone's 16-state transfer, the transfer command and the drone's destruction |
+| Enemy close combat and supply (`stunits_enemy.py`) | enemy states 10 and 11 (stern to the player, cruise missiles, fighter launches, retreat, losing contact); the carrier's destruction and the game after it (§9); the supply drone's 16-state transfer, the transfer command and the drone's destruction |
 | Carrier weapons (`stunits_carrier.py`) | the laser turret on its screen (aiming, firing, heat); commands: flares, recon drone, surface-to-surface missile, defence drone launch and recall |
-| Controls and game flow (`stunits_controls.py`) | the carrier's bridge, map and damage-screen commands, pause, raw input injection, screen switching (`ui_frame`, tab and screen icons, every enter/leave handler, game-status and continue buttons), the player's control of Mantas and Walruses (every click handler of screens 16–19 and 24–27 and of the Walrus/Manta maps: selection, weapons, autopilot, throttle, steering and firing, courses, abort landing/docking, arming with loadout drags and the panel callbacks that write state), `screen_input` for screens 0, 1, 2, 16–19 and 24–27 (with the number keys and the missile lock timer), and `game_frame` (the whole `game_main` loop without the UI: keys, paused frame and cheat code, debug keys, end timer and end request) (§10.6) |
+| Controls and game flow (`stunits_controls.py`) | the carrier's bridge, map and damage-screen commands, pause, raw input injection, screen switching (`ui_frame`, tab and screen icons, every enter/leave handler, game-status and continue buttons), the player's control of Mantas and Walruses (every click handler of screens 16–19 and 24–27 and of the Walrus/Manta maps: selection, weapons, autopilot, throttle, steering and firing, courses, abort landing/docking, arming with loadout drags and the panel callbacks that write state), the weapons (laser turret, flares, viewing drone and SSM, defence-drone stations and formations), the resources screen (priorities with the keypad entry, stores and fuel queues, resupply abort), the stockpile island, the message log, options and the title's new-game buttons, `screen_input` for every screen (with the number keys and the missile lock timer), and `game_frame` (the whole `game_main` loop without the UI: keys, paused frame and cheat code, debug keys, end timer and end request) (§10.6) |
 | New game (`stunits_setup.py`) | the new-game routine `$42A8` for both game types and the first screen change after it (§16) |
+| Renders and sounds (`stunits_render.py`) | `render_effects(screen)`: the state the screens' render routines write (§10.8); the sound events (§17) are emitted by the modules above and checked here |
 
 The model is split into `UnitCore` (`tools/stunits.py`) and three mixins, one per row above. Each module lists its routines, scenarios and command checks for `check_units.py`.
 
@@ -1089,9 +1416,10 @@ The model is split into `UnitCore` (`tools/stunits.py`) and three mixins, one pe
   - a Walrus guided-missile pointer other than 0 or an object;
   - Walrus payload or loadout codes above 11, and an unknown loadout handler: the arming screens store codes 0–11, and the item table is constant;
   - lift state above 3, and a Manta on the lift (`$DD0` ≥ 0) with no lift object `$6D6`: every write to `$DD0` is followed by `$1DC6C`, which sets `$6D6`.
-- The input handlers of screens 3, 8 and 10, drags other than the four arming drops (the defence-drone radar `$104E6`), the save/load/format panels, and the other click handlers of §10.4 not marked ported: resources (screen 3), the laser turret's buttons, the drone radar, the stockpile island, the message log, the game-status sub-panels and the title buttons.
+- The save, load and format panels (`$10228 $10230 $102BE`, the title's load menu `$103C4 $103D2 $103DE`): the app has its own saves. The message log itself (`$1148`, `$65D10`, written by `$A128`) is left to the app (messages are events).
 - The debug screen dump (Control + F-key while paused in debug mode).
-- UI-only effects: the turret's zoom and cursor keys, on-screen messages (recorded as events) and sounds.
+- UI-only effects: the pointer sprite and clip (`$46E–$47E`), redraw timers, on-screen messages and sounds (both recorded as events, §17).
+- The 3D views' camera and pipeline writes and the arming screens' panel redraws (§10.8).
 
 **Test data** is an **action game**, which needs no input. The carrier sails a few thousand units on autopilot to a waypoint off enemy island THERMOPYLAE (27) and stops: `capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action` captures RAM around 120 whole passes. Under Unicorn, a whole pass reproduces the Hatari capture exactly, apart from interrupt-driven counters and the stack.
 
@@ -1112,6 +1440,7 @@ The session captures 300 passes across these phases. All 300 match the model byt
 - every command (Manta, Walrus, supply, carrier weapons) against its original handler on 240 perturbed states, and 3000 single calls each of the supply step and enemy states 10/11;
 - the Manta missile lock-on on screen 27 captures (`emu/out/views`, made by `tools/capture_views.py`) with 0–5 lockable objects placed around the sight (near, far, Z ≥ `$8000`, exact ties): the original renders the screen (`$15244`, which builds the tree and the sight), then 200 calls of `$1FFEA` and 200 whole passes with the fire key down, against the model from the rendered state;
 - 300 perturbed multi-pass scenarios, including Manta flight, weapons, carrier and runway landings and the lift, Walrus driving, weapons, docking and launch, ACCB drops on a neutral island (often onto trees), enemy close combat and retreat, supply transfers, and the turret screen;
+- **the enemy carrier destroyed**, end to end (`check_enemy_destroyed`): six games, by the bombardment's return fire at a player-held NEMESIS and by a cruise-missile blast with its fighters airborne, through screen 35 and YES (3000 passes on without the enemy) or NO;
 - **capturing an island**, end to end (`check_accb_capture`), three runs (ACCB types 0–2) from the play session's `pass_flight_0_in`. Island 27 loses its command centre and turns neutral; Walrus 1 drives on autopilot up the beach to a spot inland; the player takes over and drops the ACCB onto a planted tree; the builder grows until the island is the player's (pass 1606), then 100 more passes. All about 1700 passes match the original, with the drop, the tree cut, the capture and the island kind checked;
 - the original 160 scenarios:
   - **weapons:** every AI-object type in flight around the carrier and the island with live targets, and enemy fighters raiding a player island's buildings;
@@ -1192,3 +1521,84 @@ New regions: the strategy flag `$124A`, the map view copies `$768–$797`, and r
 - against Hatari (`uv run python tools/stunits_setup.py` captures `emu/out/newgame/`): from the RAM at the click, the state when `$42A8` returns, at the first pass and after it, for both game types.
 
 All match.
+
+## 17. Sound triggers
+
+This section lists every place the original starts a sound. The model emits an event at each one (below), for `web/src/audio/sound.ts` (`play(id)`, `explosion(level, x, y, z)`, `gameOver()`). The engine itself is in `docs/memory-map.md` "Sound".
+
+**How the calls work**
+- `jsr $20B90` + id plays an effect-table entry. Every call site checks the sound-effects option `$1249` itself; the routine doesn't.
+- `$20C30` (object A1: its longs `+$A/+$E/+$12`) and `$20C08` (island-buffer entry A1: its words `+$A/+$C/+$E` + `[$A4A/$A4E/$A52]`) play a graded explosion. Each checks `$1249` and needs `[$A02]` ≠ 0. The variant is level + 6 − max(0, (d − 5000) >> 13), where d is the Chebyshev distance to `[$A02]`, so it's 3–8.
+- Every level is a constant `move.w #n,d0` just before the call. "Every hit" means the hit handler plays it unconditionally.
+- No sound path in the ported routines raises `NotImplementedError` / `NotPorted`.
+
+**Events** (Python tuples, TS arrays; the same in both):
+- `("sound", id)`: an effect call (`$20B90`), emitted only where the original makes it, so after its call site's `$1249` test (`UnitCore._sfx`). Ids 7 and 8 are silent table entries, but the calls happen.
+- `("explosion", level, a)` for `$20C30` with A1 = `a` (the object: its longs `+$A/+$E/+$12` give the position), and `("explosion", level, x, y, z)` for `$20C08` (the island entry's words plus `[$A4A/$A4E/$A52]`, computed at the call). Every call is emitted; the routine's own gates (`$1249`, `[$A02]` ≠ 0) and the distance grade are the player's. Quirk: `hit_enemy_fighter` calls it with the A1 that the debris routine `$1CA8E` leaves, the debris burst it used (or the fighter if none), so that address is the event's (`debris_a1`); the sound plays at that record's `+$A/+$E/+$12`, not at the fighter.
+- `("message", text, ping)`: ping is 1 when the message routine calls `$20B90` itself (id 0 from `$A0DE`, 1 from `$A128`): `[$1247]` = 0 and the header byte's bit 7 clear; a bit-7 message through `$A0DE` still pings while sound effects are off (`[$1249]` ≠ 0). `WorldState._ping(bit7, first)`. The bit-7 messages: "Decoy flare launched", "Recon drone launched", "Surface to surface missile launched", "Missile heading for Carrier!", "motion blocked by object" (all `$A0DE`, header `$99`/`$8F`) and "Carrier has grounded" (`$A128`, `$99`): the callers play their own effect after them. All other 154 message calls have a bit-7-clear header (`$19`, `$1E`, `$32`, `$50`).
+- `("attacked", i)`, `("fallen", i)`, `("repulsed", i)`, `("captured", i, owner)` and `("neutral", i)` are `$A128` messages too (headers `$19`/`$1E`): they ping when `[$1247]` = 0. Their format is unchanged.
+- `("sound", "game over")`: the tune of `leave_game_over` (`$2019A` with `$4B72E`, `[$466]` = 1; ungated).
+
+**Check** (`tools/stunits_render.py`, run by `check_units.py`): the original runs under Unicorn with hooks on `$20B90` (id from the inline word; calls from `$A11E`/`$A168` are the message pings), `$20C30`/`$20C08` (level d0, A1, the computed position), `$A0DE`/`$A128` and `$14446`; its log must equal the model's events pass by pass (or call by call):
+- `check_sound_events`: a 3000-pass run from the first action capture, 60 passes from 25 play captures, 120 perturbed scenario runs of every module (with `$1247`/`$1249` switched at random) and 60 Manta/Walrus weapon runs with sound effects on;
+- `check_virus_capture`: 300 direct calls of `$1C512` (capture sound 11, both explosions);
+- `check_sound_commands`: the carrier, hangar, controls, vehicle and war command checks, screen switching, the vehicle and war runs, the lock-on and the ACCB capture, re-run with every state comparison also comparing the sound log (about 57000 comparisons, 7300 calls).
+
+Every effect id 0–12, "game over", every explosion level of both forms and both ping values occur and match.
+
+**Effect calls** (`$20B90`). "sfx" means skipped when `$1249` ≠ 0.
+
+| Site | id | Routine | Model method (Python; TS same name) | Condition |
+|---|---|---|---|---|
+| `$A11E` | 0 | `$A0DE` message | `_unit_message` (stunits_controls / units_controls) and every `("message", …)` from `$A0DE` | `$1247` = 0 (ping on) and (`$1249` ≠ 0 or header byte bit 7 clear). Bit 7 set means the caller plays its own sound. |
+| `$A168` | 1 | `$A128` message (second routine) | as above | `$1247` = 0 and header bit 7 clear. `$1249` isn't tested. |
+| `$13424` | 10 | `$1338C` | `cmd_launch_flare` (stunits_carrier) | sfx; flare launched |
+| `$13546` | 10 | `$134C2` | `cmd_launch_recon_drone` (stunits_carrier) | sfx; drone launched |
+| `$136D0` | 5 | `$13598` | `cmd_fire_ssm` (stunits_carrier) | sfx; cruise missile (type 19) created |
+| `$1AB32` | 12 | `$1AABA` anti-ship missile (type 34) | `antiship_missile` (stunits) | sfx; first leaves its island box (`+$1A` 0 → 1) with `+$1C` = 0 (aimed at the player) |
+| `$1BED4` | 0 | `$1BE5A` | `hit_walrus` (stunits) | sfx; Walrus rammed (class 11), "motion blocked" |
+| `$1C59E` | 11 | `$1C512` | `hit_virus_bomb` (stunits) | sfx; capture: hitter type `$29`, angle test passes, island not already the player's |
+| `$1E8F2` | 1 | `$1E8CE` | `carrier_ground` (stunits) | sfx; carrier runs aground |
+| `$1EF56` | 4 | `$1EDFC` | `carrier_laser_turret_step` (stunits_carrier) | sfx; a bolt is fired (screen 8, cooldown 0, fire, turret health ≠ 0, a free object) |
+| `$1FA82` | 7 | `$1F9E8` | `manta_fire` (stunits_vehicles) | sfx; bomb dropped. The entry is 0, so this is silent. |
+| `$1FB44` | 2 | `$1FA9C` | `_manta_laser` | sfx; bolt fired (`$940` = 0, a free object) |
+| `$1FC04` | 8 | `$1FBA4` | `_walrus_drop` | sfx; virus bomb dropped. The entry is 0, so this is silent. |
+| `$1FED6` | 3 | `$1FE4A` | `_walrus_laser` | sfx; ammo > 0, `$942` = 0, a free object |
+| `$1FF88` | 6 | `$1FEEA` | `_walrus_missile` | sfx; guided missile (type 18) fired |
+| `$2002A` | 9 | `$1FFEA` | `manta_lock_scan` | sfx; lock-on (`$116C` = 25) |
+| `$200CA` | 5 | `$1FFEA` | `_manta_missile` | sfx; homing missile (type 17) fired at `$1168` (second press) |
+| `$14446` | (record `$4B72E`) | `$14438` | `leave_game_over` (stunits_controls) | `[$466]` = 1 (carrier destroyed). Ungated. Use `gameOver()`. |
+
+**Graded explosions.** All of these methods are in `tools/stunits.py` / `units_core.ts`, except `supply_drone_destroyed` (also in stunits_enemy).
+
+| Site | Level | Form | Routine → model method | Condition |
+|---|---|---|---|---|
+| `$1A8EE` | 1 | object | `$1A886` `guided_missile` | Hits the ground or an island: y < 150 and (y ≤ 30 or inside the island box). Expiry is silent. |
+| `$1AA08` | 1 | object | `$1A9B0` `bomb` | Bounce: over its island box at y < 100 with rebound ≥ 30 |
+| `$1BF52` | 1 | object | `$1BF42` `_vehicle_damage` (from `hit_walrus`) | Walrus health ≤ 0 |
+| `$1BFB0` | 1 | object | `$1BF84` `hit_manta` | class ≠ 0, `$118A` = 0, Manta health ≤ 0 |
+| `$1C008` | 0 | object | `$1BFFA` `hit_laser` | Bolt hit by anything but a bolt |
+| `$1C060` | 0 | object | `$1C010` `hit_deck_drone` | Hit by anything but a drone of types 10–13 |
+| `$1C072` | 0 | object | `$1C06E` `hit_world_simple` (type 17 homing missile) | Every hit |
+| `$1C084` | **1** | object | `$1C080` `hit_world_simple` (type 18 guided missile) | Every hit. The model method serves three handlers with different levels, so it needs the handler address. |
+| `$1C318` | 0 | object | `$1C312` `hit_world_simple` (type 32 recon drone) | Every hit |
+| `$1C0B8` | 1 | island | `$1C092` `hit_island_drone` | class ≠ 0 and health ≤ 0 |
+| `$1C0E2` | 1 | object | `$1C0CA` `hit_supply_drone` → `supply_drone_destroyed` | class ≠ 0 and health ≤ 0 |
+| `$1C118` | 2 | object | `$1C0F4` `hit_enemy_carrier` | class ≠ 0, hitter type ≠ `$21`, strength `[$11C6]` ≤ 0 (destroyed) |
+| `$1C278` | 1 | island | `$1C272` `hit_tree` | Every hit |
+| `$1C298` | 0 | island | `$1C292` `hit_sam` | Every hit |
+| `$1C2AA` | 0 | object | `$1C2A4` `hit_flare` | Every hit |
+| `$1C2C4` | 1 | object (itself) | `$1C2BA` `explode_world` | Anti-ship missile's life runs out (`$1AAC4`) |
+| `$1C2D8` | 1 | object | `$1C2D2` `hit_antiship` | Every hit |
+| `$1C2FC` | 0 | island | `$1C2EE` `hit_rock` | Hitter isn't the volcano (type 7) |
+| `$1C39E` | 2 | island | `$1C324` `hit_command_centre` | Not a virus bomb; health ≤ 0 (island freed) |
+| `$1C474` / `$1C480` | 2 / 1 | island | `$1C45E` `hit_building` | Health ≤ 0. Level 2 if `[$AA8]` ≠ 0 (types 37, 40, 42–46), else level 1 (types 38, 39). |
+| `$1C4BA` | 0 | island | `$1C4B6` `hit_construction` | Every hit, before the damage |
+| `$1C500` | 2 | object | `$1C4E0` `hit_enemy_fighter` | Hitter type ≠ 4 and health ≤ 0 |
+| `$1C5B6` | 0 | object | `$1C512` `hit_virus_bomb` | Any hit other than the capture, including "Friendly control centre bombed!" |
+| `$1C5F4` | 2 | object | `$1C5EC`/`$1C5EE` `explode_blast` / `hit_blast` | Every cruise-missile or bomb blast: life ends or within 200 of the target (`$1A8FA`/`$1A944`); bomb rebound < 30 or y < 20 over the sea (`$1A9F0`/`$1AA4E`) |
+
+**Other notes**
+- `jsr $20CD8` (a bare `rts`) at `$1A9D2`, `$1C5E6` and `$1C60A` are removed sound calls.
+- The vehicle sounds aren't events. Call `sound.pass()` after each simulation pass, as `game_main` calls `$20730`. Call `sound.reset()` where the original calls `$20716` (new game `$4212`/`$4280`, `$13AFA`, `$14266`). The pause button calls `$20434`/`$2045E`: `sound.setEnabled`.
+- With sound effects on, `$20B90` also writes the caller's A0/D0 to `$A80`/`$A84`. The model ignores this scratch.

@@ -19,7 +19,9 @@ const GAME_OVER: Record<number, string> = {
   1: "Game over: the carrier has been destroyed",
   2: "Game over: the enemy holds every island",
   3: "Victory: you hold every island",
+  4: "Victory: the enemy carrier has been destroyed",
 };
+export const resultText = (r: number) => GAME_OVER[r] ?? "Game over";
 
 export type RunnerStatus = "running" | "paused" | "stopped";
 
@@ -37,6 +39,11 @@ export class Runner {
   /** Runs before each pass: held controls feed their input then, as the original's IKBD
    * interrupt would have between passes. */
   beforePass: (() => void) | null = null;
+  /** Runs after each completed pass (e.g. the engine sound, $20730, follows each pass). */
+  afterPass: (() => void) | null = null;
+  /** Set when the game ends: screen 35 (enemy carrier destroyed: the player may continue)
+   * or 34 (game over), with the result [$466]. */
+  gameOver: { screen: number; result: number } | null = null;
   private vblDebt = 0;
   private vblsInPass = 0;
 
@@ -121,8 +128,10 @@ export class Runner {
       this.beforePass?.();
       this.state.ui_frame();          // $F636: screen and tab requests (the UI's clicks are commands)
       this.state.game_frame();
-      // the original then renders (the UI; not modelled) and calls frame_flip $17F48, whose
-      // state part puts the pointer back after a full redraw ($458)
+      // the original then renders the screen: the state its render writes (map counts and
+      // cursors, radar elements, static noise RNG, ...; docs/units.md §10.8), then frame_flip
+      // $17F48, whose state part puts the pointer back after a full redraw ($458)
+      this.state.render_effects();
       this.state.frame_flip_flags();
     } catch (e) {
       this.state.to_ram(this.ram);
@@ -133,11 +142,17 @@ export class Runner {
     }
     this.state.to_ram(this.ram);
     this.passes++;
+    this.afterPass?.();
     const over = this.state.events.slice(events).find((e) => e[0] === "game over");
-    if (over) this.stop(GAME_OVER[Number(over[2])] ?? "Game over");
+    if (over) {
+      this.gameOver = { screen: Number(over[1]), result: Number(over[2]) };
+      // screen 35 asks whether to continue (the game loop keeps running, the simulation is
+      // held by the status flag $461); screen 34 is the end
+      if (this.gameOver.screen === 34) this.stop(resultText(this.gameOver.result));
+    }
   }
 
-  private stop(reason: string): void {
+  stop(reason: string): void {
     this.status = "stopped";
     this.stopReason = reason;
   }

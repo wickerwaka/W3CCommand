@@ -249,6 +249,16 @@ class WorldState:
     def owner(self, i: int) -> int: return self.mem.u8(OWNERS + i)
     def route(self, i: int, j: int) -> int: return self.mem.s16(ROUTES + 128 * i + 2 * j)
 
+    def _ping(self, bit7: bool = False, first: bool = False) -> int:
+        """1 if the message routine plays its ping (jsr $20B90, id 0 from $A0DE (first),
+        1 from $A128): message ping on ([$1247] = 0) and the header byte's bit 7 clear;
+        $A0DE also pings a bit-7 message while sound effects are off ([$1249] != 0).
+        docs/units.md §17. The third element of every ("message", text, ping) event."""
+        m = self.mem
+        if m.u8(0x1247):
+            return 0
+        return 1 if not bit7 or (first and m.u8(0x1249)) else 0
+
     island_index = property(lambda s: s.mem.u16(G_ISLAND), lambda s, v: s.mem.set16(G_ISLAND, v))
     island_class = property(lambda s: s.mem.u16(G_CLASS), lambda s, v: s.mem.set16(G_CLASS, v))
     building = property(lambda s: s.mem.s16(G_BUILDING), lambda s, v: s.mem.set16(G_BUILDING, v))
@@ -659,7 +669,10 @@ class WorldState:
         that minimises weight + distance (unsigned compares). Returns (neighbour word, weight)
         or None."""
         m = self.mem
-        d1 = m.u16(ROUTES + 128 * cur + 2 * dest)
+        # Row and column are word-indexed (d0.w = 2 * dest, signed): an invalid stockpile
+        # ($D4A = $FFxx after `st.b`, see enemy_assault) reads 512 bytes before the row.
+        col = w16(2 * dest)
+        d1 = m.u16(ROUTES + 128 * cur + s16(col))
         if d1 & 0x8000:
             return None
         net = NETWORK + NETWORK_SIZE * cur
@@ -668,7 +681,7 @@ class WorldState:
             weight, nb = m.u16(net + 2 + 4 * k), m.u16(net + 4 + 4 * k)
             if nb & 0x8000:
                 continue
-            d = m.u16(ROUTES + w16(nb << 7) + 2 * dest)
+            d = m.u16(ROUTES + s16(w16(w16(nb << 7) + col)))
             if d >= d1:
                 continue
             d = w16(d + weight)
@@ -1230,9 +1243,15 @@ class WorldState:
                     v = m.s16(E_STRENGTH) - 0x400
                     m.set16(E_STRENGTH, v)
                     if s16(v) < 0:
+                        # $1B728: destroyed. The AI stops, the end timer starts and the message
+                        # routine $A128 shows it; it leaves d0.w = 0 (the message's terminator),
+                        # so the bombardment returns "not fallen" without its remaining return
+                        # fire or the command-centre check, and enemy_assault, seeing strength
+                        # <= 2400, calls the attack repulsed (state 1) unless at NEMESIS.
                         m.set8(AI_ENABLED, 0)
                         m.set16(GAME_END_TIMER, 100)
-                        raise EnemyDestroyed()
+                        self.events.append(("message", "Enemy carrier destroyed", self._ping()))
+                        return False
                     continue
                 if m.u16(E_AIRCRAFT) == 0:
                     continue
@@ -1369,7 +1388,8 @@ class TacticalMode(Exception):
 
 
 class EnemyDestroyed(Exception):
-    """Enemy strength went negative: the AI stops and the game-end timer starts."""
+    """No longer raised: the destruction is modelled (enemy_bombard). Kept for callers that
+    still list it among the stops."""
 
 
 def s32(v: int) -> int:

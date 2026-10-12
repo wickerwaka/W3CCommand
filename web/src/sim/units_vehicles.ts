@@ -153,7 +153,7 @@ export class UnitState extends EnemyUnits {
   }
 
   _msg(text: string): void {
-    this.events.push(["message", text]);
+    this.events.push(["message", text, this._ping()]);
   }
 
   /** |dx|, |dz| by neg.l, the larger by a signed compare. */
@@ -957,6 +957,7 @@ export class UnitState extends EnemyUnits {
       m.set16(b + offs[i], v[i]);
     }
     this._msg("Bomb dropped");
+    this._sfx(7);
   }
 
   /** $1FA9C: a type-16 bolt from 50 below the nose, cooldown 4. */
@@ -977,6 +978,7 @@ export class UnitState extends EnemyUnits {
     this._copy_angles(a4, b);
     m.set16(b + 0x34, 2);
     m.set8(b + 0x1B, 0x14);
+    this._sfx(2);
   }
 
   /** $1FFEA: the second press fires at the locked target ($1168) from alternating wings
@@ -999,6 +1001,7 @@ export class UnitState extends EnemyUnits {
     this._copy_angles(a4, b);
     m.set16(b + 8, 0);
     m.set32(b + 0x1E, m.u32(LOCK_TARGET));
+    this._sfx(5);
     m.set16(0x940, m.s16(a1 + 6) < 0x78 ? 4 : 0x0A);
     m.set16(a1 + 0x0C, m.u16(a1 + 0x0C) - 1);
     m.set16(a1 + 0x12, m.u16(a1 + 0x12) - 0x37);
@@ -1026,6 +1029,7 @@ export class UnitState extends EnemyUnits {
       return;
     }
     m.set16(LOCK_TIMER, 0x19);
+    this._sfx(9);
   }
 
   /** $200F6, for one depth-tree node (camera-space Z, X, Y of the object at obj): a
@@ -1723,6 +1727,7 @@ export class UnitState extends EnemyUnits {
     this._place(b, a4, x, 0x64, z);
     this._copy_angles(a4, b);
     m.set8(b + 0x1B, 0x14);
+    this._sfx(3);
     m.set16(a1 + 0x0A, m.u16(a1 + 0x0A) - 1);
   }
 
@@ -1753,6 +1758,7 @@ export class UnitState extends EnemyUnits {
     m.set8(b + 0x1C, 0x78);
     m.set16(b + 0x1A, m.u16(a4 + 0x1A) + 4);
     m.set32(a4 + 0x20, b);
+    this._sfx(6);
     m.set16(a1 + 0x0C, m.u16(a1 + 0x0C) - 1);
     m.set16(a1 + 0x12, m.u16(a1 + 0x12) - 0x96);
     m.set16(a1, m.u16(a1) & 0x3F);                   // andi.w: clears the whole flag byte
@@ -1775,6 +1781,7 @@ export class UnitState extends EnemyUnits {
     m.set32(b + 0x0E, m.u32(b + 0x0E) + 0x28);
     m.set16(b + 0x20, m.u16(a4 + 6) + m.u16(a4 + 0x26));
     m.set16(b + 0x1E, 0x32);
+    this._sfx(8);
   }
 
   /** $1FC10: an automatic command-centre builder: on a neutral island, 2000 inside its

@@ -5,18 +5,22 @@
 import * as THREE from "three";
 import "./style.css";
 import { Controls, type Held } from "./app/controls.ts";
-import { Game, SCREENS } from "./app/game.ts";
-import { islandNames } from "./app/readout.ts";
+import { Game, SCREENS, vblsPerPass } from "./app/game.ts";
+import { resultText } from "./app/runner.ts";
+import { islandNames, islands } from "./app/readout.ts";
 import { readStateFile, writeStateFile } from "./app/state_file.ts";
 import { loadState, saveState, type Slot } from "./app/store.ts";
 import { FreeCamera, GameCamera, type ViewCamera } from "./render/cameras.ts";
 import { WorldView } from "./render/world_view.ts";
+import { Sound } from "./audio/sound.ts";
 import { MapView } from "./ui/map.ts";
 import { Menu } from "./ui/menu.ts";
 import { BridgeHud, DamagePanel } from "./ui/panels.ts";
 import { Gunsight } from "./ui/gunsight.ts";
 import { Shell } from "./ui/shell.ts";
 import { VEHICLE_SCREENS, VehiclePanel } from "./ui/vehicles.ts";
+import { WEAPON_SCREENS, WeaponsPanel } from "./ui/weapons.ts";
+import { INFO_SCREENS, InfoPanel } from "./ui/screens.ts";
 
 const canvas = document.getElementById("view") as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
@@ -29,6 +33,8 @@ const AUTOSAVE_SECONDS = 30;
 const MAP_SCREENS = new Set<number>([SCREENS.map, SCREENS.mantaMap, SCREENS.walrusMap]);
 /** The hangar arming screens: their 3D hangar view isn't modelled; the panel stands alone. */
 const ARMING_SCREENS = new Set<number>([SCREENS.mantaArming, SCREENS.walrusArming]);
+/** 2D screens: no 3D view behind their panel. */
+const FLAT_SCREENS = new Set<number>([3, 4, 12, 20, 28]);
 
 let title: Uint8Array | null = null;
 let game: Game | null = null;
@@ -38,6 +44,15 @@ let freeCamera = false;
 let showEnemy = false;
 let sinceAutosave = 0;
 let notice: string | null = null;
+/** The original's sound engine and YM2149 (src/audio), started on the first user gesture. */
+let sound: Sound | null = null;
+let muted = false;
+let soundOn = false;
+const startSound = () => {
+  if (sound && !sound.started) void sound.start().catch(() => {});
+};
+addEventListener("pointerdown", startSound);
+addEventListener("keydown", startSound);
 
 // ---- UI --------------------------------------------------------------------------------
 const shell = new Shell(document.getElementById("ui")!, {
@@ -50,9 +65,16 @@ const shell = new Shell(document.getElementById("ui")!, {
 const controls = new Controls();
 let bridge = new BridgeHud(names, controls);
 const vehicles = new VehiclePanel(controls);
+const weapons = new WeaponsPanel(controls);
+const info = new InfoPanel(controls);
 const damage = new DamagePanel((k, cls) => controls.repairPriority(k, cls));
 const map = new MapView(names, {
   onWaypoint: (x, z) => setWaypoint(x, z),
+  onIsland: (i) => {
+    if (!game || game.screen !== SCREENS.map) return;
+    const isl = islands(game.ram, names)[i];
+    controls.setStockpile(isl.x, isl.z);
+  },
   showEnemy: () => showEnemy,
 });
 
@@ -68,7 +90,9 @@ const menu = new Menu({
   canSave: () => !!game,
   options: [
     { label: "Free camera (C)", get: () => freeCamera, set: (v) => setFreeCamera(v) },
-    { label: "Show the enemy carrier on the map", get: () => showEnemy, set: (v) => (showEnemy = v) },
+    { label: "Sound", get: () => !muted, set: (v) => { muted = !v; if (sound) sound.muted = muted; } },
+    // the original never plots the enemy on the map (docs/units.md §10.7); a debugging aid
+    { label: "Show the enemy carrier on the map (debug)", get: () => showEnemy, set: (v) => (showEnemy = v) },
   ],
 });
 document.body.append(menu.el);
@@ -78,6 +102,48 @@ noSignal.className = "no-signal";
 noSignal.textContent = "NO PICTURE";
 noSignal.hidden = true;
 document.body.append(noSignal);
+
+/** The end of a game: the result, and after the enemy carrier is destroyed the original's
+ * "continue?" (screen 35, cmd_continue). */
+const gameOverDialog = document.createElement("dialog");
+gameOverDialog.className = "menu";
+document.body.append(gameOverDialog);
+let shownGameOver: object | null = null;
+function showGameOver(): void {
+  const g = game, over = g?.runner.gameOver;
+  if (!g || !over || shownGameOver === over) return;
+  shownGameOver = over;
+  const r = g.runner;
+  const title = document.createElement("h1");
+  title.textContent = over.screen === 35 ? "Enemy carrier destroyed" : resultText(over.result);
+  const p = document.createElement("p");
+  p.textContent = over.screen === 35 ? "Continue to take the remaining islands, or end the game here?" : clockText();
+  const buttons = document.createElement("section");
+  const button = (label: string, fn: () => void) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => {
+      gameOverDialog.close();
+      fn();
+    };
+    buttons.append(b);
+  };
+  if (over.screen === 35) {
+    button("Continue", () => {
+      controls.run(() => r.state.cmd_continue(1));
+      r.gameOver = null;
+      r.play();
+    });
+    button("End the game", () => {
+      controls.run(() => r.state.cmd_continue(0));
+      r.stop(resultText(4));
+    });
+  }
+  button("New strategy game", () => newGame(true));
+  button("New action game", () => newGame(false));
+  gameOverDialog.replaceChildren(title, p, buttons);
+  gameOverDialog.showModal();
+}
 const gunsight = new Gunsight();
 document.body.append(gunsight.el);
 
@@ -99,6 +165,11 @@ function start(g: Game): void {
   setNotice(g.runner.stopReason);
   sinceAutosave = 0;
   carrierCam.update(g.ram);
+  if (!sound) sound = new Sound(g.ram);
+  sound.ram = g.ram;
+  sound.muted = muted;
+  sound.reset();
+  g.runner.afterPass = () => sound?.pass();
   showScreen();
 }
 
@@ -167,8 +238,12 @@ function setScreen(id: number): void {
   showScreen();
 }
 
+let shownScreen = -1;
 function showScreen(): void {
   const id = game?.screen ?? SCREENS.bridge;
+  if (shownScreen !== id) sound?.reset();       // $20716 runs on screen changes
+  shownScreen = id;
+  if (game) game.runner.vblsPerPass = vblsPerPass(id);
   shell.showScreen(id);
   const panels: HTMLElement[] = [];
   if (MAP_SCREENS.has(id)) panels.push(map.el);
@@ -176,8 +251,10 @@ function showScreen(): void {
   else if (id === SCREENS.damage) panels.push(damage.el);
   else if (id === SCREENS.bridge && !freeCamera) panels.push(bridge.el);
   else if (VEHICLE_SCREENS.has(id) && !MAP_SCREENS.has(id) && !freeCamera) panels.push(vehicles.el);
+  else if (WEAPON_SCREENS.has(id) && !freeCamera) panels.push(weapons.el);
+  if (INFO_SCREENS.has(id) && !freeCamera) panels.push(info.el);
   shell.content.replaceChildren(...panels);
-  shell.content.classList.toggle("opaque", MAP_SCREENS.has(id) || ARMING_SCREENS.has(id));
+  shell.content.classList.toggle("opaque", MAP_SCREENS.has(id) || ARMING_SCREENS.has(id) || FLAT_SCREENS.has(id));
 }
 
 function setFreeCamera(on: boolean): void {
@@ -196,6 +273,19 @@ const clockText = () => {
   const c = game.runner.clock, two = (n: number) => String(n).padStart(2, "0");
   return `Day ${c.days + 1} ${two(c.hours)}:${two(c.minutes)}:${two(c.seconds)}`;
 };
+
+/** The island events are $A128 messages in the original ("<name> is being attacked!" etc.). */
+function islandMessage(ev: (string | number)[]): string | null {
+  const name = names[Number(ev[1])] ?? "";
+  switch (ev[0]) {
+    case "attacked": return `${name} is being attacked!`;
+    case "repulsed": return `${name} - attack repulsed`;
+    case "fallen": return `${name} is now a free island`;      // its command centre fell: neutral
+    case "neutral": return `${name} is now a free island`;
+    case "captured": return Number(ev[2]) === 1 ? `${name} is now a friendly island` : `${name} is now an enemy island!`;
+    default: return null;
+  }
+}
 
 // ---- input -------------------------------------------------------------------------------
 const HELD: Record<string, Held> = {
@@ -240,6 +330,19 @@ addEventListener("keydown", (e) => {
   }
   e.preventDefault();
 });
+/** Screen 10: a click in the drone's picture fires the armed SSM at that point ($13598). Our
+ * view is wider than the game's, so the click goes back through the viewport's projection. */
+canvas.addEventListener("pointerdown", (e) => {
+  if (!game || freeCamera || game.screen !== 10 || !game.ram[0x1160]) return;
+  const ram = game.ram, u16 = (a: number) => (ram[a] << 8) | ram[a + 1], s16 = (a: number) => (u16(a) << 16) >> 16;
+  const vp = ((ram[0x6fe] << 24) | (ram[0x6ff] << 16) | (ram[0x700] << 8) | ram[0x701]) >>> 0;
+  if (!vp) return;
+  const tanY = Math.tan((camera.fov * Math.PI) / 360), tanX = tanY * camera.aspect;
+  const nx = (e.clientX / innerWidth) * 2 - 1, ny = (e.clientY / innerHeight) * 2 - 1;
+  const px = Math.round(s16(vp + 12) + nx * tanX * 2 ** s16(vp + 8));
+  const py = Math.round(s16(vp + 14) + ny * tanY * 2 ** s16(vp + 10));
+  if (!controls.run(() => game!.runner.state.cmd_ssm_fire_at(px, py))) shell.message("Target outside the drone's picture", clockText());
+});
 addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => {
   e.preventDefault();
@@ -280,20 +383,42 @@ function frame(now = performance.now()): void {
   const r = game.runner;
   r.advance(dt);
   for (const ev of r.state.events.splice(0)) {
-    if (ev[0] === "message") shell.message(String(ev[1]), clockText());
+    // sounds the original plays at these points (docs/units.md §17): effects, graded
+    // explosions at an object, and the message ping (third element 1)
+    if (ev[0] === "sound") ev[1] === "game over" ? sound?.gameOver() : sound?.play(Number(ev[1]));
+    else if (ev[0] === "explosion") {
+      if (ev.length >= 5) sound?.explosion(Number(ev[1]), Number(ev[2]), Number(ev[3]), Number(ev[4]));
+      else sound?.explosionAt(Number(ev[1]), Number(ev[2]));
+    }
+    if (ev[0] === "message") {
+      shell.message(String(ev[1]), clockText());
+      if (ev[2] === 1) sound?.play(0);
+    }
+    const island = islandMessage(ev);
+    if (island) {
+      shell.message(island, clockText());
+      if (!r.state.mem.u8(0x1247)) sound?.play(1);    // $A128's ping, unless the option is off
+    }
     // where the original would crash the ST, the model does something safe (docs/units.md §12)
     else if (ev[0] === "deviation") shell.message(`[port] ${ev[1]}`, clockText());
   }
-  if (r.stopReason && r.stopReason !== notice) setNotice(r.stopReason);
+  if (r.gameOver) showGameOver();
+  else if (r.stopReason && r.stopReason !== notice) setNotice(r.stopReason);
   if (r.status === "running" && (sinceAutosave += dt) > AUTOSAVE_SECONDS) {
     sinceAutosave = 0;
     void save("auto");
   }
   shell.setStatus(clockText(), r.status === "running", r.status === "stopped");
+  if (sound && soundOn !== (r.status === "running")) {
+    soundOn = r.status === "running";
+    sound.setEnabled(soundOn);
+  }
 
   const screen = game.screen;
+  if (screen !== shownScreen) showScreen();       // the game switched screens itself
   noSignal.hidden = true;
-  if (MAP_SCREENS.has(screen) || ARMING_SCREENS.has(screen)) {
+  if (MAP_SCREENS.has(screen) || ARMING_SCREENS.has(screen) || FLAT_SCREENS.has(screen)) {
+    if (INFO_SCREENS.has(screen)) info.update(game.ram, screen);
     gunsight.update(game.ram, -1, 0, 1);
     if (MAP_SCREENS.has(screen)) map.draw(game.ram, screen);
     else {
@@ -302,6 +427,8 @@ function frame(now = performance.now()): void {
     }
     if (VEHICLE_SCREENS.has(screen)) vehicles.update(game.ram, screen);
   } else {
+    if (WEAPON_SCREENS.has(screen)) weapons.update(game.ram, screen);
+    if (INFO_SCREENS.has(screen)) info.update(game.ram, screen);
     if (screen === SCREENS.bridge) bridge.update(game.ram, names);
     if (screen === SCREENS.damage) damage.update(game.ram);
     if (VEHICLE_SCREENS.has(screen)) vehicles.update(game.ram, screen);
@@ -343,7 +470,7 @@ void (async () => {
 
 if (import.meta.env.DEV)
   (window as unknown as { app: unknown }).app = {
-    get game() { return game; }, get view() { return view; }, camera, renderer, frame, freeCam, carrierCam, setScreen, newGame, openLocal,
+    get game() { return game; }, get view() { return view; }, get sound() { return sound; }, camera, renderer, frame, freeCam, carrierCam, setScreen, newGame, openLocal,
     /** Render at the game's 256x128 viewport shape, scaled 2x, for comparing with Hatari. */
     gameSize() {
       Object.assign(canvas.style, { width: "512px", height: "256px", top: "60px", left: "20px" });

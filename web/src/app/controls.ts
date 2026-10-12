@@ -70,6 +70,13 @@ export class Controls {
         this.mouseSteer();
         s.cmd_steer_to(m.s16(C_RUDDER) + turn * RUDDER_RATE);
       }
+    } else if (screen === 8) {
+      // the turret's arrow buttons repeat while held ($FD2C-$FD44), fire too ($FD60)
+      if (turn > 0) s.cmd_turret_right();
+      if (turn < 0) s.cmd_turret_left();
+      if (climb > 0) s.cmd_turret_up();
+      if (climb < 0) s.cmd_turret_down();
+      if (this.held.has("fire")) s.cmd_turret_fire();
     } else if (screen === 27) {
       const v = this.viewedRecord(MANTA_RECS);
       if (!v) return;
@@ -138,6 +145,27 @@ export class Controls {
     const s = this.state, screen = this.game!.screen;
     return this.run(() =>
       screen === 25 ? s.cmd_set_manta_waypoint(x, z) : screen === 17 ? s.cmd_set_walrus_waypoint(x, z) : s.cmd_set_carrier_waypoint(x, z));
+  }
+
+  /** Make island i the stockpile as a player does on the carrier map's islands panel: centre
+   * the map on it (right click, zooming out first if it's off the map), let the map render
+   * pick it as the nearest island ($764), then press "set stockpile" ($137C2). Refusals come
+   * as the original's messages. */
+  setStockpile(x: number, z: number): boolean {
+    const s = this.state;
+    return this.run(() => {
+      if (this.game!.screen !== 2) s.cmd_switch_screen(2);
+      if (s.mem.u16(0x710) !== 1) {
+        s.cmd_carrier_map_mode();
+        s.ui_frame();
+      }
+      for (let k = 0; k < 8 && !s.world_to_map(x, z); k++) s.cmd_map_zoom_out();
+      const p = s.world_to_map(x, z);
+      if (!p) return false;
+      s.cmd_map_recentre(p[0], p[1]);
+      s.map_render_effects();
+      return s.cmd_set_stockpile();
+    });
   }
 
   repairPriority(system: number, cls: number): boolean {

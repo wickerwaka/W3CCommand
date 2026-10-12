@@ -45,6 +45,22 @@ function vehicleCommand(s: UnitState, bay: number, rnd: () => number): void {
   pick(cmds)();
 }
 
+/** A random weapons / resources command (the turret, flares, drones, SSM, supply). */
+function warCommand(s: UnitState, rnd: () => number): void {
+  const k = Math.floor(rnd() * 3);
+  const cmds: (() => unknown)[] = [
+    () => s.cmd_switch_screen([3, 8, 9, 10, 11, 12][Math.floor(rnd() * 6)]),
+    () => s.cmd_turret_left(), () => s.cmd_turret_right(), () => s.cmd_turret_up(), () => s.cmd_turret_fire(),
+    () => s.cmd_turret_zoom_in(), () => s.cmd_turret_zoom_out(), () => s.cmd_flare_launch(), () => s.cmd_recon_launch(),
+    () => s.cmd_toggle_mouse_steer(), () => s.cmd_ssm_fire_at(32 + Math.floor(rnd() * 256), 6 + Math.floor(rnd() * 128)),
+    () => s.cmd_drones_launch(), () => s.cmd_drones_recall(), () => s.cmd_drone_formation_next(), () => s.cmd_drone_formation_apply(),
+    () => s.cmd_resources_transfer(), () => s.cmd_resupply_abort(), () => s.cmd_stores_queue_open(), () => s.cmd_stores_queue(k),
+    () => s.cmd_stores_unqueue(k), () => s.cmd_stores_queue_back(), () => s.cmd_fuel_queue_open(), () => s.cmd_fuel_queue(k),
+    () => s.cmd_fuel_queue_back(),
+  ];
+  cmds[Math.floor(rnd() * cmds.length)]();
+}
+
 const title = new Uint8Array(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "public", "data", "title.bin")));
 const ISLAND_TABLE = 0x69b80, ISLAND_SIZE = 0x192;
 let failed = 0;
@@ -75,12 +91,14 @@ for (let g = 0; g < GAMES; g++) {
       } else if (r < 0.061) s.cmd_set_repair_priority(Math.floor(rnd() * 10), Math.floor(rnd() * 3));
       else if (r < 0.0625) s.cmd_switch_screen([0, 0, 1, 2, 16, 17, 18, 19, 24, 25, 26, 27][Math.floor(rnd() * 12)]);
       else if (r < 0.075) vehicleCommand(s, Math.floor(rnd() * 4), rnd);
+      else if (r < 0.082) warCommand(s, rnd);
       if (frame % 8 === 0) {
         s.mem.set8(0x8fc, 0xff);
         s.mem.set8(0x8fd, 0xff);
       }
       s.ui_frame();
       s.game_frame();
+      s.render_effects();
       s.frame_flip_flags();
       for (const e of s.events.splice(0)) {
         events.push(e.join(" "));

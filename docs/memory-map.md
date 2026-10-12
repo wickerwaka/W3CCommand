@@ -55,7 +55,7 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$17A90` | `vbl_handler` (writes palette `$FF8240`) |
 | `$17CB2` | `mfp_vec_timer_c_handler` |
 | `$17CF8` | `mfp_vec_acia_handler` (keyboard/mouse) |
-| `$20668` | `mfp_vec_timer_a_handler` (installed separately at `$20550`; sound *(guess)*) |
+| `$20668` | `mfp_vec_timer_a_handler`: sound buzz mode (installed at `$20550`, see "Sound") |
 | `$20E94` | "Andy's exception handler" strings: crash reporter |
 | `$7526`, `$C312`–`$CD49` | Carrier/AAV/Manta UI screens |
 | `$F0EC`–`$F44A` | Language select (EN/DE/FR) and manual-word copy protection prompts |
@@ -97,24 +97,146 @@ Extraction:
 
 ## Sound
 
-The sound effects are channel scripts run by a small bytecode engine. There's no sample data: "buzz" and noise effects are made by modulating PSG volume from MFP Timer A with RNG output.
-- **Playing an effect:** `jsr $20B90` followed by an inline effect id. The id indexes the effect table at `$20BD0` (positive = record, negative = routine). `$20C??` picks one of 9 distance-graded explosion variants from `$20CB4`. `$2019A` starts a record on one of 6 channels, whose structures are at `$4CBD4+` with pointers at `$20466`; priority is in the header.
-- **Per frame:** the VBL calls `$20486`. It runs each channel script (`$2020A`), assigns the 3 PSG voices by priority, and writes tone, noise, mixer and volume registers. If a channel requests buzz mode, it programs Timer A (`$FA19`/`$FA1F`).
-- **Timer A** (`$20668`): advances the RNG, reloads TADR from it (a random period), and toggles the volumes of the flagged voices. This is also why the RNG, and so the island layouts, differ between games.
-- **Script ops** (one byte op + one byte operand):
+The sound effects are channel scripts run by a small bytecode engine (`$20188–$20CD8`). There's no sample data. "Buzz" and noise effects come from switching PSG volumes on and off from MFP Timer A at random intervals. The engine is fully decoded, and `web/src/audio/engine.ts` ports it. `npm run check-sound` checks the port write for write against the original under Unicorn (see "Verification" below).
 
-  | op | meaning |
-  |---|---|
-  | `$00–$14` | `mov/add/sub/and/or/eor`; the destination is R[n] (`+6`) or P[n] (`+$2E`, bit 7); the source is R, P, a 4-bit immediate or a word immediate |
-  | `$18–$24` | skip next if eq/ne/lt/gt |
-  | `$28` | jump |
-  | `$2C` | decrement and jump if not zero |
-  | `$30` | set or clear a voice enable flag |
-  | `$34` | wait n frames |
-  | `$38` | set `+$26[n]` |
-  | `$3C` | end |
+**Entry points**
 
-- **Extraction:** `tools/extract_sounds.py` runs this engine under Unicorn (`tools/stsound.py`), logs the PSG writes with timestamps (including Timer A interrupts at their programmed rate), and synthesises WAVs with a simplified YM2149 model (`tools/ym2149.py`). `sounds.txt` lists each effect's call sites with the nearest game message: effect 10 = flare/drone launch, 12 = "Missile heading for Carrier!" alarm, 11 = "Friendly control centre bombed!", 4 = laser, 5/6 = missile launch, and 0/1 = message pings (via `$A128`).
+| Address | Routine |
+|---|---|
+| `$20188` | Free all 6 channels. Called from `hw_init` (`$17A18`) and `$20716`. |
+| `$2019A` | Start the sound record at A0 (see "Starting a record"). |
+| `$20434` / `$2045E` | Sound off / on: the pause button (`$FD8C` / `$FDAA`). Off clears the enable byte `$20484`, so `$20486` returns at once and the channels freeze. It also writes reg 7 = `$7F` and vol A/B/C = 0. Timer A isn't stopped. |
+| `$20486` | Per VBL, called first thing in `vbl_handler` (`$17A94`). |
+| `$20668` | Timer A interrupt. Installed at `$134` by `$20550`. |
+| `$20716` | Reset the vehicle sounds (`$A16` = −1, `$A06`/`$A0A` high bytes = `$FF`, `$A10` = 0), then `$20188`. Called at new game `$4212`/`$4280`, `$13AFA` and `$14266`. |
+| `$20730` | Once per game pass (`game_main` `$412E`). Calls `$2073A` (engine sound), then `$2092A` (nearest other vehicle). |
+| `$20B90` | `jsr $20B90` + inline word id. The id indexes the 14-long effect table `$20BD0`: positive = record (start it), 0 = nothing, negative = routine at −value (no entry uses this). The routine saves A0/D0 in `$A80`/`$A84` (so it clobbers that scratch). It has no gate of its own: every call site tests `$1249` (sound effects off) itself. |
+| `$20C30` | Graded explosion at the object A1 (longs `+$A/+$E/+$12`), level D0.w. |
+| `$20C08` | Graded explosion at an island-buffer entry A1: words `+$A/+$C/+$E` sign-extended and added to the island base `$A4A/$A4E/$A52`. |
+| `$20CD8` | A bare `rts`, the target of three stubbed-out sound calls. |
+
+**Effect table** `$20BD0`. Ids 2/3 and 5/6 share records.
+
+| id | Record | Sound |
+|---|---|---|
+| 0 | `$4B5B6` | Message ping |
+| 1 | `$4B5CC` | Second message ping (`$A128`); also carrier grounding |
+| 2, 3 | `$4B758` | Manta / Walrus laser |
+| 4 | `$4B77E` | Carrier laser turret |
+| 5, 6 | `$4B888` | Missile launch (SSM, Manta homing, Walrus guided): buzz |
+| 7, 8 | 0 | Bomb / virus bomb drop: nothing |
+| 9 | `$4B7A4` | Manta missile lock-on |
+| 10 | `$4B7BE` | Flare / recon drone launch (noise sweep) |
+| 11 | `$4B7E2` | Virus bomb captures an island: random-pitch tune |
+| 12 | `$4B864` | "Missile heading for Carrier" alarm |
+| 13 | 0 | Nothing |
+
+**Graded explosions** `$20CB4`: 9 records, `$4B5E2 … $4B72E`. They run from quiet and short to loud and long: start volume 8 … 15, noise period 10 … 24. Variants 5–8 use buzz (noise bytes `$32`, `$50`, `$64`, `$78`).
+
+**Choosing the variant.** Both `$20C30` and `$20C08` do the following:
+1. Return if `[$1249]` ≠ 0 or `[$A02]` (the controlled object) = 0.
+2. Take each long delta between the explosion and the controlled object. If a delta doesn't fit a signed word, return.
+3. Take `neg.w` of each delta (−32768 stays negative), then the signed maximum: d.
+4. Compute index = level + 6. If d − 5000 (a word) isn't negative, index −= (d − 5000) >>> 13. If that borrows, return.
+5. Start `$20CB4[index]`.
+
+The game only passes levels 0–2, so the index stays within 3–8. The game-over screen (`$14446`, when `[$466]` = 1) starts `$4B72E` directly.
+
+**Starting a record** (`$2019A`). A record has a 6-byte header (priority words for sub-voices 0, 1 and 2), then the script.
+- **Finding a channel.** Take the first channel whose word `+0` = 0 (`$201C0`).
+- **Stealing a channel.** If none is free, `$201D0` takes the channel with the lowest sub-voice-0 priority `+$26`. That priority must be ≤ the record's (signed; on ties the later channel wins), and channels with word `+0` = 1 are skipped. The stolen channel is cleared. If no channel qualifies, nothing plays.
+- **Initialising.** Set `+$26` = the header long, `+$2A` = the header word, `+2` = the script address, `+0` = `$FFFF`.
+
+**Channel structure** (`$4A` bytes). The six channels are at `$4CBD4 + $4A·k`, with the pointer list at `$20466` ending in −1.
+
+| Offset | Contents |
+|---|---|
+| `+0.w` | 0 = free; `$FFFF` = script running; 1 = owned by a vehicle sound (no script; never stolen) |
+| `+2.l` | Script pc |
+| `+6` | R0–R15 (words) |
+| `+$26/+$28/+$2A` | Priorities of sub-voices 0–2 (≤ 0 never sounds) |
+| `+$2C.b` | Wait counter |
+| `+$2E` | P0–P15 (words). See below. |
+| `+$3E/+$40/+$42` | Tone enable of sub-voices 0–2 (≠ 0 = on) |
+| `+$44/+$46/+$48` | Noise enable of sub-voices 0–2 |
+
+The P registers are parameters:
+- P0–P2 (`+$2E/+$30/+$32`) are the tone periods of sub-voices 0–2. The PSG gets the low byte, then the high byte.
+- P3 (`+$34`, low byte `+$35`) is the noise byte. Bits 0–4 go to PSG reg 6; bits 5–7 are the Timer A prescaler (buzz).
+- P4–P6 (`+$36/+$38/+$3A`, low bytes used) are the volumes of sub-voices 0–2. Bit 4 selects envelope mode.
+- P7 (`+$3C`) is the envelope period: reg 12 = high byte, reg 11 = low byte.
+
+So a channel has three sub-voices, which share one noise byte and one envelope period. Channels are cleared with 37 `clr.w` at `$201F8`.
+
+**Scripts** (`$2020A`, run only while `+0` is negative). If the wait counter is nonzero, it's decremented and nothing else happens. Otherwise ops run until a wait or the end. Each op is an op byte and an operand byte. The op class is `op & $7C` (`$40` and above means end). Bit 7 of op selects P instead of R as the destination. `op & 3` is the source mode: R[a>>4], P[a>>4], the immediate a>>4 (0 = 16), or the next word. Operand bits 0–3 give the destination index.
+
+| op & `$7C` | Meaning |
+|---|---|
+| `$00/$04/$08/$0C/$10/$14` | dst = src / dst += src / −= / &= / \|= / ^= (words) |
+| `$18/$1C/$20/$24` | Skip the next op if src = dst / ≠ / < / > (signed). The skip passes the next op word, plus a word operand if that op's bit 9 (source mode bit 1) is set and its class isn't `$20`. Immediate mode 2 is skipped wrongly the same way. |
+| `$28` | pc += signed operand |
+| `$2C` | R[op & 3] −= 1; if the result ≠ 0, pc += signed operand |
+| `$30` | Tone enable (bit 7 clear) or noise enable (bit 7 set) of sub-voice a & 15 = op bit 0 ? `$FFFF` : 0 |
+| `$34` | Wait: save pc, counter = operand. The script resumes `operand + 1` VBLs later. |
+| `$38` | Priority of sub-voice a & 15 = src |
+| `$3C` | End: clear the channel |
+
+Explosions set R15 with a word immediate (`$030F`, as if they meant P3) and clear tone 0, which was never on. Both are no-ops.
+
+**Per VBL** (`$20486`). If `$20484` = 0, return. Otherwise run the six scripts in order, clear the 18 allocation flags (`$20640`), clear the "noise written" and "envelope written" bytes (`$20482`/`$20483`), and set mixer = `$7F` and buzz mask = 0. Then, for PSG voice 2, 1, 0:
+- **Allocation** (`$20600`). Scan channels 5 → 0, skipping free ones (flag pointer += 3). For each, scan sub-voices 2 → 0. Pick the highest priority > the best so far (signed, starting at 0) whose flag is clear. So the first one seen wins ties. Set its flag; when nothing is picked, a dummy at `$20654` is set instead.
+- **Nothing picked:** vol = 0.
+- **Tone enabled:** clear mixer bit v; write reg 2v = P low byte, reg 2v+1 = P high byte.
+- **Noise enabled:**
+  - Only the first such voice in the VBL writes reg 6 (the noise byte) and handles Timer A. If bits 5–7 differ from `$20714`, Timer A is reprogrammed: IMRA, IERA and ISRA bit 5 cleared, TACR = bits 5–7 (stored in `$20714`). Unless that's 0, the vector `$134` = `$20668` is installed and IERA/IMRA are set again. `$20713` = (noise & 31) × 6 is unused.
+  - Every noise voice clears mixer bit v+3 and sets buzz-mask bit v.
+- **Volume:** write vol reg 8+v = the volume byte, also saved in `$2070E+v`. With bit 4 set, the first such voice writes reg 11/12 from its channel's P7.
+
+After the three voices:
+- If no noise was written, TACR = 0, IMRA bit 5 is cleared, and `$20714` = 0.
+- Write reg 7 = mixer (bits 6–7 = 01: port A is output, port B is input).
+- Write `$20715` = buzz mask.
+- PSG write order: voice 2, 1, 0 (tone lo, tone hi, [reg 6], vol, [11, 12]), then reg 7.
+
+**Timer A** (`$20668`) works as follows:
+- It advances the 64-bit RNG at `$1236` the way `$195FE` does: `add.w`, then `addx.w` chained over the two longs.
+- It writes TADR = the new low byte. It's a delay-mode timer, so a random period of prescale × (1–256) / 2.4576 MHz.
+- It toggles `$20712` with `not.b`. When the result is negative, it restores the buzz-mask voices' volumes from `$2070E`; otherwise it writes 0 to them.
+- It ends with `bclr #5,ISRA` (software end-of-interrupt).
+
+TACR 1/2/3/4 (÷4, ÷10, ÷16, ÷50) give interrupts every 1.6 µs–21 ms. At ÷4 most periods are shorter than the handler (about 430 CPU cycles), so the real rate is CPU-bound, at roughly 18 kHz. Because the handler advances the **game RNG**, sound changes the game's random numbers. This is the reason island layouts differ between games (`docs/units.md` §16). The port keeps a private RNG copy, so the simulation stays deterministic.
+
+**Vehicle sounds** (`$20730`, per game pass). These use channels marked 1, driven by code instead of a script.
+- **Engine sound** (`$2073A`). When `[$A02]` changes:
+  - Stop the proximity sound (`$20B72`), then stop the old kind `[$A16]` through `$2088C`: 0 frees `[$A18]`, 1 frees `[$A1E]`, 2 does nothing, and 3 calls `$2092A`.
+  - If `[$A02]` = 0, or `$1248` (background noise off) is set, `[$A16]` = −1. Otherwise `[$A16]` = `[$A14]` (0 Manta, 1 Walrus, 2 carrier, 3 drone).
+  - Start through `$2089C`. A Manta (`$208AC`) or Walrus (`$208E0`) takes a free channel, or channel 5 if none is free; that channel isn't cleared. It stores the pointer in `$A18`/`$A1E`, sets speed memory `$A1C`/`$A22` = −1, `+0` = 1, priorities `$B4`, `$23`, 0, P3 = 4 (Manta) or 2 (Walrus), tone on sub-voice 0, noise on sub-voice 1. Carrier and drone have no engine sound.
+- **Every pass** (`$207A8`):
+  - **Manta** (needs `$70C`). The bay record is `$496 + $34·[obj+$1A]`. Speed = rec`+6` + 100, or 50 when on autopilot (bit 0) and in mode 1 or 5. It's smoothed with `turn_towards` (`$1A18A`, ±2 per pass). P0 = 120 − (speed − 100) >> 3, and both volumes = 6.
+  - **Walrus** (needs `$70E`). Speed = rec(`$570+…`)`+4`, smoothed the same way. P0 = 400 − speed, volumes = 6.
+  - Without control, the volumes are 0. For a drone, `$A16` is set to −1.
+- **Nearest other vehicle** (`$2092A`; skipped if `$1248` is set or `[$A02]` = 0). Every 16 passes (`$A10`), it rescans objects 2–9 (`$5DF5A`, the Mantas and Walruses) for the nearest visible one (`+1` bit 0) other than `[$A02]`. Distance is the Chebyshev distance on longs; on an unsigned tie the later object wins.
+  - None: stop.
+  - Same as before: update only.
+  - Otherwise stop the old one, then take a channel for the new one: `+0` = 1, priorities `$2D`, `$1E`, 0, P3 = `$1A`, the P0 high byte = `$FF` (no smoothing the first time), tone on sub-voice 0, noise on sub-voice 1, `$A12` = 0 for type 5 or 1 for type 6.
+  - **Bug:** `$201C0` leaves A1 pointing into its channel list. The update that follows therefore measures from there instead of from `[$A02]`, and normally finds no valid distance (volume 0) on that pass.
+  - **Update** (`$2094A`). d = the Chebyshev distance. If d doesn't fit a word, volume = 0. Otherwise volume = max(0, 6 − d>>>11), and the closing speed = d − the previous d (`$A0E`).
+    - Manta: P0 = clamp(`$50` + (speed if \|speed\| > 32, else 0), `$2D`, `$96`).
+    - Walrus: P0 = clamp(`$190` + (speed if \|speed\| > 32, else speed>>4), `$12C`, `$1F4`).
+    - Either way, P0 moves ±1 per pass towards the target.
+
+**Variables.** `$A06` previous `[$A02]`, `$A0A` proximity object (high byte `$FF` = none), `$A0E` its last distance, `$A10` rescan timer, `$A12` its kind, `$A16` engine kind, `$A18`/`$A1E`/`$A24` the Manta/Walrus/proximity channel pointers, `$A1C`/`$A22` smoothed speeds. In the code area: `$20482` noise written, `$20483` envelope written, `$20484` enabled, `$20640` allocation flags, `$2070E` saved volumes, `$20712` toggle, `$20713` unused, `$20714` current TACR, `$20715` buzz mask.
+
+**PSG register 13** (envelope shape) is never written by the game. The one envelope-volume effect (id 9, two frames of volume `$10`) therefore plays whatever TOS left there, which is a finished single-shot shape (keyclick 3, bell 9). That voice is silent, so the lock-on is a "pip – pip".
+
+**Extraction and verification**
+- `tools/stsound.py` runs the engine under Unicorn with an MFP Timer A model, in integer MFP cycles (49152 per frame):
+  - The timer is free-running, and a counter reload takes the data register written by the previous interrupt.
+  - Changing TACR restarts the prescaler.
+  - The handler takes 132 MFP cycles. Timeouts during it collapse into one pending interrupt.
+- `tools/extract_sounds.py` renders WAVs with `tools/ym2149.py`.
+- `tools/export_sound_vectors.py` records scenarios to `extracted/sound_vectors.json.gz`: every id, every level at 12 distances, overlaps with stealing, pause, vehicle sounds, and 6 fuzz runs. `npm run check-sound` (`web/scripts/check-sound.ts`) replays them through `engine.ts`: identical PSG writes (time, register, value), Timer A state, and a CRC of the engine state after every event.
+- `web/src/audio/` plays the engine live: `sound.ts` is the API, `worklet.ts` runs the engine and a YM2149 (`ym2149.ts`) in an AudioWorklet.
 
 ## Palettes
 

@@ -274,6 +274,16 @@ export class WorldState {
   owner(i: number): number { return this.mem.u8(OWNERS + i); }
   route(i: number, j: number): number { return this.mem.s16(ROUTES + 128 * i + 2 * j); }
 
+  /** 1 if the message routine plays its ping (jsr $20B90, id 0 from $A0DE (first),
+   * 1 from $A128): message ping on ([$1247] = 0) and the header byte's bit 7 clear;
+   * $A0DE also pings a bit-7 message while sound effects are off ([$1249] != 0).
+   * docs/units.md §17. The third element of every ["message", text, ping] event. */
+  _ping(bit7 = false, first = false): number {
+    const m = this.mem;
+    if (m.u8(0x1247)) return 0;
+    return !bit7 || (first && m.u8(0x1249)) ? 1 : 0;
+  }
+
   get island_index(): number { return this.mem.u16(G_ISLAND); }
   set island_index(v: number) { this.mem.set16(G_ISLAND, v); }
   get island_class(): number { return this.mem.u16(G_CLASS); }
@@ -726,7 +736,10 @@ export class WorldState {
    * or None. */
   next_hop(cur: number, dest: number): [number, number] | null {
     const m = this.mem;
-    const d1 = m.u16(ROUTES + 128 * cur + 2 * dest);
+    // Row and column are word-indexed (d0.w = 2 * dest, signed): an invalid stockpile
+    // ($D4A = $FFxx after `st.b`, see enemy_assault) reads 512 bytes before the row.
+    const col = w16(2 * dest);
+    const d1 = m.u16(ROUTES + 128 * cur + s16(col));
     if (d1 & 0x8000) return null;
     const net = NETWORK + NETWORK_SIZE * cur;
     let best: number | null = null, best_w = 0xffff, best_cost = 0xffff;
@@ -734,7 +747,7 @@ export class WorldState {
     for (let k = 0; k < cnt; k++) {
       const weight = m.u16(net + 2 + 4 * k), nb = m.u16(net + 4 + 4 * k);
       if (nb & 0x8000) continue;
-      let d = m.u16(ROUTES + w16(nb << 7) + 2 * dest);
+      let d = m.u16(ROUTES + s16(w16(w16(nb << 7) + col)));
       if (d >= d1) continue;
       d = w16(d + weight);
       if (d >= best_cost) continue;
@@ -1369,9 +1382,15 @@ export class WorldState {
           const v = m.s16(E_STRENGTH) - 0x400;
           m.set16(E_STRENGTH, v);
           if (s16(v) < 0) {
+            // $1B728: destroyed. The AI stops, the end timer starts and the message
+            // routine $A128 shows it; it leaves d0.w = 0 (the message's terminator),
+            // so the bombardment returns "not fallen" without its remaining return
+            // fire or the command-centre check, and enemy_assault, seeing strength
+            // <= 2400, calls the attack repulsed (state 1) unless at NEMESIS.
             m.set8(AI_ENABLED, 0);
             m.set16(GAME_END_TIMER, 100);
-            throw new EnemyDestroyed();
+            this.events.push(["message", "Enemy carrier destroyed", this._ping()]);
+            return false;
           }
           continue;
         }
@@ -1546,7 +1565,8 @@ export class TacticalMode extends Error {
   }
 }
 
-/** Enemy strength went negative: the AI stops and the game-end timer starts. */
+/** No longer thrown: the destruction is modelled (enemy_bombard). Kept for callers that
+ * still list it among the stops. */
 export class EnemyDestroyed extends Error {
   constructor() {
     super("");

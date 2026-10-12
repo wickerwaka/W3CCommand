@@ -470,3 +470,69 @@ button.bay {
 .panel.vehicles.compact .bay {
   padding: 3px 8px;
 }
+
+.panel.info-panel {
+  top: 12px;
+  left: var(--gutter);
+  width: min(640px, calc(100% - 2 * var(--gutter) - 28px));
+  max-height: calc(100% - 40px);
+  overflow: auto;
+}
+
+.info {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.info .msg {
+  font-family: ui-monospace, monospace;
+}
+
+.info .time {
+  color: var(--muted);
+}
+
+.info table.stores {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.info table.stores td,
+.info table.stores th {
+  padding: 2px 8px;
+  text-align: left;
+  border-bottom: 1px solid #222a3a;
+}
+
+.info .fuel {
+  display: flex;
+  gap: 20px;
+}
+
+.status-block {
+  border-bottom: 1px solid #222a3a;
+  padding-bottom: 4px;
+}
+
+svg.radar {
+  width: 100%;
+  max-width: 512px;
+}
+
+.radar-bg {
+  fill: #062018;
+}
+
+.radar-carrier {
+  fill: #8a8a8a;
+}
+
+.radar-drone {
+  fill: #6fe08a;
+}
+
+.radar-station {
+  fill: none;
+  stroke: #6fe08a;
+}

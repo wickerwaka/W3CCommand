@@ -277,7 +277,7 @@ class EnemyMixin:
         cb, db = m.u32(c + 0x3C), m.u32(a + 0x3C)
         if not cb:
             m.set16(S_STATE, 2)
-            self.events.append(("message", "Too far from island - drone returning"))
+            self.events.append(("message", "Too far from island - drone returning", self._ping()))
             return
         if not self._box_side(m, c, db) & self._box_side(m, a, db):
             return
@@ -392,7 +392,7 @@ class EnemyMixin:
         if z >= -1000:
             self._bump()
             m.set16(S_TIMER, 0)
-            self.events.append(("message", "Drone docked - transferring stores"))
+            self.events.append(("message", "Drone docked - transferring stores", self._ping()))
         self._supply_follow()
 
     def _supply_stores(self) -> None:            # 13 $1F84C
@@ -441,7 +441,7 @@ class EnemyMixin:
                 self._bump()
                 m.set16(S_TIMER, 0)
                 m.set16(S_DONE, 1)
-                self.events.append(("message", "Transfer complete"))
+                self.events.append(("message", "Transfer complete", self._ping()))
         m.set16(SUPPLY_DRONE + 6, m.u16(PLAYER_CARRIER + 6))
         self._supply_follow()
 
@@ -469,7 +469,7 @@ class EnemyMixin:
         next one can't start for 900 s."""
         m = self.mem
         m.set16(v, 0)
-        self.events.append(("message", "Supply drone has been destroyed"))
+        self.events.append(("message", "Supply drone has been destroyed", self._ping()))
         if m.u16(stunits.DOCKED_WALRUS) == 4:
             m.set16(stunits.DOCKED_WALRUS, 0xFFFF)
             self.dock_attach()
@@ -488,14 +488,14 @@ class EnemyMixin:
         returning ([$D44]), or nothing is queued."""
         m, c, a = self.mem, PLAYER_CARRIER, SUPPLY_DRONE
         if m.u8(S_ACTIVE):
-            self.events.append(("message", "Transfer already in progress"))
+            self.events.append(("message", "Transfer already in progress", self._ping()))
             return False
         buf = m.u32(c + 0x3C)
         if not buf or m.u8(buf + 1) != m.u16(stsim.STOCKPILE):
-            self.events.append(("message", "Not at stockpile island"))
+            self.events.append(("message", "Not at stockpile island", self._ping()))
             return False
         if m.u16(S_TIMER):
-            self.events.append(("message", "Supply drone not available"))
+            self.events.append(("message", "Supply drone not available", self._ping()))
             return False
         queued = 0
         for k in range(15):
@@ -503,7 +503,7 @@ class EnemyMixin:
         for q in (0xD6C, 0xD74, 0xD70):
             queued |= m.u32(q)
         if not queued:
-            self.events.append(("message", "Nothing to transfer"))
+            self.events.append(("message", "Nothing to transfer", self._ping()))
             return False
         self.init_world_object(a, 0x23)
         m.set16(stunits.NEW_INDEX, 0x10)
@@ -526,7 +526,7 @@ class EnemyMixin:
         m.set16(S_STATE, 0)
         m.set8(S_ACTIVE, 0xFF)
         m.set16(S_DONE, 0)
-        self.events.append(("message", "Resupply drone launched"))
+        self.events.append(("message", "Resupply drone launched", self._ping()))
         return True
 
 
@@ -782,4 +782,144 @@ def check_enemy_states(files: list, n: int = 3000) -> bool:
     return True
 
 
-CHECKS = [check_supply_command, check_supply_drone_hit, check_supply_step, check_enemy_states]
+def _victory_start(seed: int, rnd, kind: str) -> bytes:
+    """A strategy game from the title image (new_game is checked on its own), set up for the
+    enemy carrier's destruction:
+      "bombard": NEMESIS player-held and fortified, a weak enemy assaulting it (return fire
+                 is the only way the bombardment destroys it: elsewhere a weak enemy can't
+                 lose strength);
+      "hit":     island 1 player-held, the player carrier 150000 off it; the enemy is sent
+                 there at pass 100, engages (state 10, fighters out), and a player cruise
+                 missile is placed beside it later (see _victory_inject)."""
+    from stgfx import ROOT
+    import stunits_setup
+    ram = (ROOT / "emu" / "out" / "title" / "ram.bin").read_bytes()
+    r = stunits_setup.seeded(ram, True, 0x2468ACE1 + seed)
+    state = stunits.UnitState.from_ram(bytes(r))
+    state.new_game(True)
+    state.new_game_screen()
+    m = state.mem
+    i = stsim.NEMESIS if kind == "bombard" else 1
+    m.set8(stsim.OWNERS + i, 1)
+    slots = stsim.Island(m, i).slots[1:]
+    for s in slots:
+        if s.type in (stsim.T_COMMAND_CENTRE, stsim.T_COMMAND_CENTRE_CONSTRUCTION):
+            s.type = s.value = 0
+    free = [s for s in slots if s.type == 0]
+    free[0].type, free[0].value = stsim.T_COMMAND_CENTRE, 2560
+    if kind == "bombard":
+        for s in free[1:rnd.randrange(3, 9)]:
+            s.type, s.value = rnd.choice((0x25, 0x25, 0x26, 0x27, 0x28)), 4000
+            s.x, s.z = rnd.randrange(-3000, 3000), rnd.randrange(-3000, 3000)
+        m.set16(stsim.E_STATE, 3)
+        m.set16(stsim.E_ISLAND, i)
+        m.set16(stsim.E_STRENGTH, rnd.randrange(100, 3000))
+        m.set16(stsim.E_AIRCRAFT, rnd.randrange(9))
+        m.set16(stsim.E_RESERVE, rnd.randrange(13))
+        m.set16(stsim.B_POOL, rnd.randrange(5001))
+        m.set16(stsim.B_TIMER, rnd.randrange(1, 30))
+        a = stsim.ISLAND_TABLE + stsim.ISLAND_SIZE * i
+        m.set32(ENEMY_CARRIER + 0x0A, m.u32(a + 2))
+        m.set32(ENEMY_CARRIER + 0x12, m.u32(a + 6))
+        if rnd.random() < 0.5:
+            m.set16(stsim.STOCKPILE, i)
+    else:
+        m.set32(PLAYER_CARRIER + 0x0A, (-7224304 + rnd.randrange(-20000, 20000)) & 0xFFFFFFFF)
+        m.set32(PLAYER_CARRIER + 0x12, (-6116864 + rnd.randrange(-20000, 20000)) & 0xFFFFFFFF)
+    state.network_invalidate()
+    out = bytearray(r)
+    state.to_ram(out)
+    return bytes(out)
+
+
+def _victory_inject(ram: bytearray, rnd) -> None:
+    """A player cruise missile (type 19, as the carrier's SSM launches) 150-400 beyond the
+    engaged enemy carrier, heading for it, and the enemy's strength low enough for its blast."""
+    m = stsim.Mem(ram)
+    m.set16(stsim.E_STRENGTH, rnd.randrange(1, 200))
+    k = next(k for k in range(63, 23, -1) if not m.u8(stsim.OBJECTS + stsim.OBJECT_SIZE * k + 1) & 1)
+    o = stsim.OBJECTS + stsim.OBJECT_SIZE * k
+    ram[o:o + 0x40] = bytes(0x40)
+    m.set16(o, 0x9703 | 0x400)
+    m.set16(o + 2, 19)
+    for off, v in zip((0x30, 0x32, 0x34, 0x36), (150, 150, 3, 150)):
+        m.set16(o + off, v)
+    ex, ez = m.u32(ENEMY_CARRIER + 0x0A), m.u32(ENEMY_CARRIER + 0x12)
+    m.set32(o + 0x0A, ex + rnd.randrange(150, 400))
+    m.set32(o + 0x12, ez)
+    m.set32(o + 0x0E, 150)
+    m.set32(o + 0x3C, m.u32(ENEMY_CARRIER + 0x3C))
+    m.set16(o + 6, 0xC000)
+    m.set8(o + 0x1B, 255)
+    m.set32(o + 0x1E, ex)
+    m.set32(o + 0x22, ez)
+    for off in range(0xC0, 0x140, 2):
+        m.set16(o + off, m.u16(stunits.FRAME))
+
+
+def check_enemy_destroyed(files: list, after: int = 3000) -> bool:
+    """The enemy carrier destroyed, end to end: ui_frame + game_frame on the model against
+    the original's ui_frame and game_main loop, pass by pass, through the destruction (by
+    the bombardment's return fire at a player-held NEMESIS, $1B728, or by a hit, $1C0F4,
+    with its fighters airborne), the end timer, screen 35, YES (continue without the enemy,
+    `after` passes) or NO (result 4, game over)."""
+    import random
+    import stunits_controls as sc
+    ok, runs = True, []
+    for seed, kind, yes in ((1, "bombard", 1), (2, "bombard", 1), (3, "bombard", 0),
+                            (4, "hit", 1), (5, "hit", 1), (6, "hit", 0)):
+        rnd = random.Random(seed)
+        ram = _victory_start(seed, rnd, kind)
+        state = stunits.UnitState.from_ram(ram)
+        oracle = sc._switch_oracle(ram)
+        phase, p, cont_at, end, label = "fight", 0, None, None, f"enemy destroyed ({kind}, seed {seed})"
+        while not (phase == "after" and p >= end):
+            if kind == "hit" and p == 100:              # send the enemy to island 1
+                for a, v in ((stsim.E_STATE, 5), (stsim.E_TARGET, 1), (stsim.E_TIMER, 10)):
+                    state.mem.set16(a, v)
+                    oracle.uc.mem_write(a, v.to_bytes(2, "big"))
+            if kind == "hit" and p == 400:
+                if state.mem.u16(stsim.E_STATE) != 10:
+                    print(f"{label}: MISMATCH (setup: the enemy hasn't engaged)")
+                    return False
+                ref = bytearray(oracle.ram())
+                _victory_inject(ref, rnd)
+                oracle.uc.mem_write(0, bytes(ref))
+                state = stunits.UnitState.from_ram(bytes(ref))
+            if phase == "won" and p == cont_at:
+                res = state.cmd_continue(yes)
+                sc.SWITCH_COMMANDS["cmd_continue"][0](oracle, state, (yes,), res)
+                phase, end = "after", p + (after if yes else 50)
+            if p % 8 == 0:
+                oracle.uc.mem_write(0x8FD, b"\xff")
+                state.mem.set8(0x8FD, 0xFF)
+            try:
+                state.ui_frame()
+                if state.mem.u16(stunits.SCREEN) not in sc.SCREEN_INPUT:
+                    state._vec = None       # tools/export_sim_vectors.py: stop recording (the stub is check-only)
+                with sc._stub_inputs():
+                    state.game_frame()
+            except sc.STOP as e:
+                print(f"{label}: stopped at pass {p}: {e or type(e).__name__}")
+                return False
+            sc._call(oracle, sc.UI_FRAME)
+            sc.oracle_game_frame(oracle)
+            if not sc._compare(state, oracle, f"{label}, pass {p} ({phase})"):
+                return False
+            if phase == "fight" and any(e[0] == "game over" and e[1] == 35 for e in state.events):
+                phase, cont_at = "won", p + 5
+            state.events.clear()
+            p += 1
+            if phase == "fight" and p > 6000:
+                print(f"{label}: MISMATCH (setup: no destruction in 6000 passes)")
+                return False
+        m = state.mem
+        ok &= not m.u8(stsim.AI_ENABLED) and (m.u16(sc.RESULT) == 4) != bool(yes)
+        runs.append(p)
+    print(f"enemy destroyed: {'OK' if ok else 'MISMATCH'} ({len(runs)} games, {sum(runs)} passes: "
+          f"bombardment and hit, continue and quit)")
+    return ok
+
+
+CHECKS = [check_supply_command, check_supply_drone_hit, check_supply_step, check_enemy_states,
+          check_enemy_destroyed]

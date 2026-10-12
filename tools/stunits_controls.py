@@ -5,7 +5,7 @@ buttons $880-$883, keys $798 + 2*scancode, last character $1270) and runs panel 
 from ui_frame ($F636 -> hit test $B46E: d0/d1 = pointer x/y, d2 = [$45A] = 2 for a fresh press,
 1 for auto-repeat after 6 passes held, a3 = element). A browser UI calls the methods here
 instead; each writes exactly what its handler writes (redraws, palettes and sounds left out;
-messages become ["message", text] events). A command returns False when the original's hit test
+messages become ["message", text, ping] events). A command returns False when the original's hit test
 would not have reached the handler (panel not shown, element hidden or disabled, or the game
 paused: only PAUSE, flag bit 12, works then). The current screen is not checked: the UI decides
 which controls it offers (the original's screen for each is listed).
@@ -63,7 +63,7 @@ Game flow:
                                       $4194 keys, paused_frame $44EE or debug keys $46E8,
                                       screen_input $17094, sim_pass, the end timer $732 and the
                                       end request $463. Events ("game over", screen, [$466]).
-    screen_input()                    $17094 for screens 0, 1, 2/17/25, 16-19, 24-27 and the empty ones.
+    screen_input()                    $17094 for every screen (all input handlers are ported).
 Mantas and Walruses ("Fly and drive"; docs/units.md §10.4, §10.6):
     Manta control 27 (input $172BC: lock timer $116C, number keys, re-entry, auto button):
     cmd_manta_select(bay) $FE54, cmd_manta_weapon(w) $FEE2, cmd_manta_autopilot() $12A44,
@@ -95,6 +95,29 @@ Mantas and Walruses ("Fly and drive"; docs/units.md §10.4, §10.6):
     cmd_walrus_fit(slot, code), cmd_walrus_unfit(slot)
     drags: cmd_drag_release(px, py), then ui_frame drops ($F6EA, callbacks DROPS)
     read helper: vehicle_ui() (selections, controllable, list cursors, Harbingers, drag)
+Weapons, resources, messages, options, title ("War"; docs/units.md §10.4, §10.6):
+    bridge 0: cmd_bridge_zoom_in/out() $FCE8/$FCF8 (Insert / Clr-Home in bridge_input too)
+    laser turret 8 (input $1741A: held cursor keys, Insert / Clr-Home, right click):
+    cmd_turret_up/down/left/right() $FD3C/$FD44/$FD2C/$FD34, cmd_turret_fire() $FD60,
+    cmd_turret_zoom_in/out() $FC9C/$FCAC, cmd_turret_centre_heading/elevation() $12A34/$12A3C,
+    cmd_turret_steer_to(heading_rate, elevation_rate) (mouse-steer; cmd_vehicle_fire fires)
+    flares 9: cmd_flare_launch() $1338C; viewing drone 10 (input $1778E: a right click arms
+    the SSM $1160): cmd_recon_launch() $134C2, cmd_ssm_fire_at(px, py) $13598
+    defence drones 11: cmd_drones_launch() $10738, cmd_drones_recall() $1088C,
+    cmd_drone_stations_reset() $10602, cmd_drone_formation_next/prev() $106EC/$10706,
+    cmd_drone_formation_apply() $10714, cmd_drone_station_pick(k) $104C8 (drop $104E6),
+    cmd_drone_station_move(k, px, py), drone_station_pixel(k)
+    resources 3 (input $177DE; sub-panel $D14): cmd_resupply_abort() $1102E,
+    cmd_resources_transfer() $10E4A, cmd_item_picture(k) / _back() $1098A/$109BC,
+    stores priorities cmd_stores_priorities_open/reset/exit() $109E8/$10A66/$10A3C,
+    cmd_stores_scroll_up/down() $10AA6/$10A8A, cmd_stores_class(row, cls) $10ABC,
+    cmd_stores_target(row) $10B02 + cmd_keypad(key) $11196, fuel priorities
+    cmd_fuel_priorities_open/reset/exit() $10B72/$10BC6/$10BAC, cmd_fuel_class(k, cls) $10BDA,
+    queues cmd_stores_queue_open/back() $10C06/$10C62, cmd_stores_queue_scroll_up/down()
+    $10C7C/$10C6A, cmd_stores_unqueue/queue(row, held) $10C88/$10CCA,
+    cmd_fuel_queue_open/back() $10D52/$10D9C, cmd_fuel_unqueue/queue(k) $10DA4.../$10DC0...
+    messages 4: cmd_clear_message_log(logged) $12C2C; options 32: cmd_game_option(k, on)
+    $13778; title 33: cmd_title_new_game(strategy) $103B2/$103A0
 
 The mixin is combined into stunits.UnitState ahead of stunits.UnitCore, so methods defined
 here replace the core's stubs and hooks. Use only `import stsim` / `import stunits` at module
@@ -244,15 +267,17 @@ FORMATIONS = 0x1065C                  # 9 drone formations: 4 stations x (+$A, +
 T_STATION = 66                        # the drone radar's station markers, types 66-69
 SSM_VIEW = (32, 6, 32 + 0xFF, 6 + 0x7F)   # screen 10: the drone picture's element ($13598)
 OPTIONS = 0x1246                      # sea dots, message ping, background noise, sound effects
+ISLAND_NAMES = 0x4AD20                # word offsets from here to each island's name
 for _region in [
     ("resources panel $D0E", FUEL_WORK, 0xD3C - FUEL_WORK),  # fuel work, sub-panel, item, keypad entry, scrolls
     ("bridge zoom $8B2", 0x8B2, 4),                         # $8B2 view scale, $8B4 zoom (renderer)
     ("options $1246", OPTIONS, 4),
     ("drone formations $1065C", FORMATIONS, 0x90),          # in the code: read-only
+    ("island names $4AD20", ISLAND_NAMES, 0x295),           # 64 word offsets, then the names
 ]:
     if _region[0] not in {r[0] for r in stunits.UNIT_REGIONS}:
         stunits.UNIT_REGIONS.append(_region)
-stunits.UNIT_INPUT_REGIONS |= {"drone formations $1065C"}
+stunits.UNIT_INPUT_REGIONS |= {"drone formations $1065C", "island names $4AD20"}
 
 
 class ControlsMixin:
@@ -272,7 +297,7 @@ class ControlsMixin:
         return bool(m.u8(RUNNING) or f & 0x1000)
 
     def _message(self, text: str) -> None:
-        self.events.append(("message", text))
+        self.events.append(("message", text, self._ping()))
 
     def _bclr0(self, a: int) -> bool:
         """bclr.b #0: clears bit 0 and says whether it was set."""
@@ -1504,7 +1529,10 @@ class ControlsMixin:
     def leave_game_over(self) -> None:
         """$14438 (34): a tune if the carrier was destroyed ([$466] = 1), then the original
         waits for a key ($889); the UI does that before the next ui_frame. The left-button
-        press is consumed."""
+        press is consumed. The tune is the event ("sound", "game over") (`lea $4B72E,a0;
+        jsr $2019A`, ungated)."""
+        if self.mem.u16(RESULT) == 1:
+            self.events.append(("sound", "game over"))
         self._bclr0(0x881)
 
     def leave_destroyed(self) -> None:
@@ -3161,6 +3189,91 @@ class ControlsMixin:
         self.bridge_zoom(-1)
         return True
 
+    # ---- carrier map, islands panel ([$710] = 1): the stockpile island -------------------------
+    def island_name(self, i: int) -> str:
+        """The name of island i ($4AD20 + its word offset)."""
+        m = self.mem
+        a = (ISLAND_NAMES + s16(m.u16(ISLAND_NAMES + s16(w16(2 * i))))) & 0xFFFFFFFF
+        out = bytearray()
+        while m.u8(a + len(out)):
+            out.append(m.u8(a + len(out)))
+        return out.decode("latin-1")
+
+    def cmd_set_stockpile(self) -> bool:
+        """$137C2 (screen 2, islands panel, 13,178), fresh press: the island the map is
+        centred on ([$764]) becomes the stockpile island ($D4E = the old one, $D4A), and
+        the goods queued or held at the old one ship there ($21D46). Refused while routes
+        are being recomputed ($1235), without communications, with stocks in transit
+        ($D50, unless there was no stockpile), off an island, on the stockpile already, on a
+        non-player island, or one with no route from Vulcan."""
+        m = self.mem
+        if not self._clickable(T_BUTTON, (CARRIER_MAP_MODE, 1)):
+            return False
+        i = m.s16(MAP_ISLAND)
+        if m.u8(stsim.ROUTES_PENDING):
+            self._message("Re-routing")
+        elif not m.u8(0xB0A):
+            self._message("Communications Inoperative")
+        elif not m.u16(stsim.STOCKPILE) & 0x8000 and m.u8(stsim.IN_TRANSIT):
+            self._message("Stocks still in transit")
+        elif i < 0:
+            self._message("Not centred on an island")
+        elif i == m.s16(stsim.STOCKPILE):
+            self._message("Already the stockpile island")
+        elif m.u8(stsim.OWNERS + i) != 1:
+            self._message("Not a friendly island")
+        elif m.u16(stsim.ROUTES + 2 * i) & 0x8000:
+            self._message("Island is isolated from Base")
+        else:
+            m.set16(stsim.CARRIER_ISLAND, m.u16(stsim.STOCKPILE))
+            m.set16(stsim.STOCKPILE, i)
+            self._message(f"{self.island_name(i)} is now stockpile island")
+            self.stockpile_reship()
+        return True
+
+    def stockpile_reship(self) -> None:
+        """$21D46: the queued goods go back to the stockpile counts, then everything held
+        there ships from the old stockpile [$D4E] to the new one: carrier-pool entries
+        ($66A10, written from the first one on, unchecked) of up to 255 per item (kinds
+        0-14) and fuel / 4096 (kinds 15-17; low word only); the counts are cleared and
+        "in transit" $D50 is set."""
+        m = self.mem
+        for k in range(stsim.N_ITEMS):
+            a, q = stsim.STORES + 2 * k, stsim.STORES_PENDING + 2 * k
+            m.set16(a, m.u16(a) + m.u16(q))
+            m.set16(q, 0)
+        for k in range(3):
+            a, q = stsim.FUEL + 4 * k, stsim.FUEL_PENDING + 4 * k
+            m.set32(a, m.u32(a) + m.u32(q))
+            m.set32(q, 0)
+        e = stsim.CARRIER_POOL
+
+        def ship(kind: int, d0: int) -> None:
+            nonlocal e
+            while True:
+                d1 = 0xFF if d0 >= 0xFF else d0
+                d0 = w16(d0 - d1)
+                m.set16(e + 4, 0xFFFF)
+                m.set8(e + 2, kind)
+                m.set8(e + 3, d1)
+                m.set8(e, m.u16(stsim.CARRIER_ISLAND))
+                m.set8(e + 1, 1)
+                e += 6
+                if not d0:
+                    return
+        for k in range(stsim.N_ITEMS):
+            a = stsim.STORES + 2 * k
+            if m.u16(a):
+                ship(k, m.u16(a))
+            m.set16(a, 0)
+        for k in range(3):
+            a = stsim.FUEL + 4 * k
+            d0 = (m.u32(a) >> 12) & 0xFFFF
+            if m.u32(a) >> 12:
+                ship(0xF + k, d0)
+            m.set32(a, 0)
+        m.set8(stsim.IN_TRANSIT, 0xFF)
+
     # ---- laser turret, screen 8 (input $1741A; panel $421C0) ---------------------------------
     def _turret_aim(self, a: int, sign: int) -> None:
         """$FD2C-$FD44: heading $6CC or elevation $6CA moves by 300 >> zoom [$6D2] ($FD54),
@@ -3874,7 +3987,7 @@ class ControlsMixin:
         return True
 
     def cmd_game_option(self, k: int, on: int) -> bool:
-        """$13778 (the options panel, $708 = 7; rows at y 29 + 16k, OFF at x 243-251, ON at
+        """$13778 (the options panel, $708 = 7; rows at y 29 + 16k, OFF at x 217-242, ON at
         252-277): option k (0 sea dots, 1 message ping, 2 background noise, 3 sound effects)
         $1246 + k = on ($FF) or off. Quirk: the element reaches a fifth row (y 93-106), k = 4,
         which writes $124A, the strategy flag."""
@@ -5064,6 +5177,479 @@ def check_vehicle_runs(files) -> bool:
     return True
 
 
+# ---- milestone 3 "War" checks: weapons, resources, messages, options, title -------------------
+WAR_SCREENS = (3, 4, 8, 9, 10, 11, 12, 32)
+
+
+def _pointer_call(handler: int, point, a3: int = 0):
+    """An oracle action: the handler with d0/d1 = point(args), d2 = 2, a3."""
+    def act(oracle, state, args, result):
+        if result is False:
+            return
+        px, py = point(args)
+        _regs(oracle, d0=px, d1=py, d2=2, a3=a3(args) if callable(a3) else a3)
+        _call(oracle, handler)
+    return act
+
+
+def _keypad_point(args):
+    x0, y0, x1, y1 = KEYPAD_BOXES[args[0]]
+    return KEYPAD[0] + (x0 + x1) // 2, KEYPAD[1] + (y0 + y1) // 2
+
+
+def _fuel_call(handlers):
+    def act(oracle, state, args, result):
+        if result is not False:
+            _regs(oracle, d2=2)
+            _call(oracle, handlers[args[0]])
+    return act
+
+
+def _message_log(oracle, state, args, result) -> None:
+    if result is False:
+        return
+    oracle.uc.mem_write(0x1148, (0x65D10 if args[0] else 0).to_bytes(4, "big"))
+    _regs(oracle, d2=2)
+    _call(oracle, 0x12C2C)
+
+
+def _oracle_station_move(oracle, state, args, result) -> None:
+    """cmd_drone_station_move click by click on the original (decided from its own state)."""
+    k, px, py = args
+    probe = stunits.UnitState.from_ram(bytes(oracle.ram()))
+    if not (0 <= k <= 3 and probe._clickable(T_STATION + k)):
+        return
+    _regs(oracle, d2=2, a3=0x42A4E + 0x16 * k)
+    _call(oracle, 0x104C8)
+    if oracle.uc.mem_read(MODAL, 1)[0]:
+        _oracle_release(oracle, px, py)
+
+
+def _radar_point(r, m):
+    cx, cy = m.s16(0x4750), m.s16(0x4752)
+    return r.randrange(cx - 70, cx + 70), r.randrange(cy - 50, cy + 50)
+
+
+_row = lambda r, m: (r.choice((0, 1, 2, 0, 1, 2, 3, -1)),)
+_row_cls = lambda r, m: (r.choice((0, 1, 2, 0, 1, 2, 3)), r.choice((0, 1, 2, 0, 1, 2, 3)))
+_row_held = lambda r, m: (r.choice((0, 1, 2, 0, 1, 2, 3)), r.choice((0, 0, 1)))
+_fuel_k = lambda r, m: (r.choice((0, 1, 2, 0, 1, 2, 3)),)
+
+# name: (oracle action, argument generator(rnd, mem), model call or None)
+WCOMMANDS = {
+    # bridge (0)
+    "cmd_bridge_zoom_in": (_el(0xFCE8), None, None),
+    "cmd_bridge_zoom_out": (_el(0xFCF8), None, None),
+    # laser turret (8)
+    "cmd_turret_up": (_el(0xFD3C), None, None),
+    "cmd_turret_down": (_el(0xFD44), None, None),
+    "cmd_turret_left": (_el(0xFD2C), None, None),
+    "cmd_turret_right": (_el(0xFD34), None, None),
+    "cmd_turret_fire": (_el(0xFD60), None, None),
+    "cmd_turret_zoom_in": (_el(0xFC9C), None, None),
+    "cmd_turret_zoom_out": (_el(0xFCAC), None, None),
+    "cmd_turret_centre_heading": (_el(0x12A34), None, None),
+    "cmd_turret_centre_elevation": (_el(0x12A3C), None, None),
+    "cmd_turret_steer_to": (_copy_input, lambda r, m: (r.randrange(-300, 300), r.randrange(-300, 300)), None),
+    # flares (9), viewing drone (10), defence drones (11)
+    "cmd_flare_launch": (_el(0x1338C), None, None),
+    "cmd_recon_launch": (_el(0x134C2), None, None),
+    "cmd_ssm_fire_at": (_with_pointer(0x13598), lambda r, m: (r.randrange(20, 300), r.randrange(0, 150)), None),
+    "cmd_drones_launch": (_el(0x10738), None, None),
+    "cmd_drones_recall": (_el(0x1088C), None, None),
+    "cmd_drone_stations_reset": (_el(0x10602), None, None),
+    "cmd_drone_formation_next": (_el(0x106EC), None, None),
+    "cmd_drone_formation_prev": (_el(0x10706), None, None),
+    "cmd_drone_formation_apply": (_el(0x10714), None, None),
+    "cmd_drone_station_pick": (_el(0x104C8, 0x42A4E), lambda r, m: (r.choice((0, 1, 2, 3, 0, 1, 2, 3, -1, 4)),), None),
+    "cmd_drone_station_move": (_oracle_station_move,
+                               lambda r, m: (r.choice((0, 1, 2, 3, 0, 1, 2, 3, 4)),) + _radar_point(r, m), None),
+    # resources (3)
+    "cmd_resupply_abort": (_el(0x1102E), None, None),
+    "cmd_resources_transfer": (_el(0x10E4A), None, None),
+    "cmd_item_picture": (_el(0x1098A, 0x42D72), lambda r, m: (r.choice((0, 3, 7, 14, r.randrange(15), -1, 15)),), None),
+    "cmd_item_picture_back": (_el(0x109BC), None, None),
+    "cmd_stores_priorities_open": (_el(0x109E8), None, None),
+    "cmd_stores_priorities_reset": (_el(0x10A66), None, None),
+    "cmd_stores_priorities_exit": (_el(0x10A3C), None, None),
+    "cmd_stores_scroll_up": (_el(0x10AA6), None, None),
+    "cmd_stores_scroll_down": (_el(0x10A8A), None, None),
+    "cmd_stores_class": (_pointer_call(0x10ABC, lambda a: (90, 24 + 36 * a[0] + CLASS_Y[a[1]]), lambda a: 0x42F26 + 0x16 * a[0]),
+                         _row_cls, None),
+    "cmd_stores_target": (_el(0x10B02, 0x42F68), _row, None),
+    "cmd_keypad": (_pointer_call(0x11196, _keypad_point, 0x42FD6), lambda r, m: (r.randrange(-1, 14),), None),
+    "cmd_fuel_priorities_open": (_el(0x10B72), None, None),
+    "cmd_fuel_priorities_reset": (_el(0x10BC6), None, None),
+    "cmd_fuel_priorities_exit": (_el(0x10BAC), None, None),
+    "cmd_fuel_class": (_pointer_call(0x10BDA, lambda a: (146, 24 + 36 * a[0] + CLASS_Y[a[1]]), lambda a: 0x4302C + 0x16 * a[0]),
+                       _row_cls, None),
+    "cmd_stores_queue_open": (_el(0x10C06), None, None),
+    "cmd_fuel_queue_open": (_el(0x10D52), None, None),
+    "cmd_stores_queue_back": (_el(0x10C62), None, None),
+    "cmd_fuel_queue_back": (_el(0x10D9C), None, None),
+    "cmd_stores_queue_scroll_up": (_el(0x10C7C), None, None),
+    "cmd_stores_queue_scroll_down": (_el(0x10C6A), None, None),
+    "cmd_stores_unqueue": (_el(0x10C88, 0x430C4, 0x2C, d2=lambda a: a[1]), _row_held, None),
+    "cmd_stores_queue": (_el(0x10CCA, 0x430DA, 0x2C, d2=lambda a: a[1]), _row_held, None),
+    "cmd_fuel_unqueue": (_fuel_call((0x10DA4, 0x10E18, 0x10E30)), _fuel_k, None),
+    "cmd_fuel_queue": (_fuel_call((0x10DC0, 0x10E22, 0x10E3C)), _fuel_k, None),
+    # carrier map (2), islands panel
+    "cmd_set_stockpile": (_el(0x137C2), None, None),
+    # messages (4), options (32)
+    "cmd_clear_message_log": (_message_log, lambda r, m: (r.randrange(2),), None),
+    "cmd_game_option": (_pointer_call(0x13778, lambda a: (0xFC if a[1] else 0xE6, 29 + 16 * a[0] + 7)),
+                        lambda r, m: (r.choice((0, 1, 2, 3, 0, 1, 2, 3, 4, 5)), r.randrange(2)), None),
+}
+WDRAG_STARTS = ("cmd_drone_station_pick",)
+# The resources sub-panel each command's panel needs (the checks bias the state towards it).
+RES_MODE = {**{n: 0 for n in ("cmd_resupply_abort", "cmd_resources_transfer", "cmd_item_picture",
+                              "cmd_stores_priorities_open", "cmd_fuel_priorities_open", "cmd_stores_queue_open",
+                              "cmd_fuel_queue_open")},
+            "cmd_item_picture_back": 1,
+            **{n: 2 for n in ("cmd_stores_priorities_reset", "cmd_stores_priorities_exit", "cmd_stores_scroll_up",
+                              "cmd_stores_scroll_down", "cmd_stores_class", "cmd_stores_target", "cmd_keypad")},
+            **{n: 3 for n in ("cmd_fuel_priorities_reset", "cmd_fuel_priorities_exit", "cmd_fuel_class")},
+            **{n: 4 for n in ("cmd_stores_queue_back", "cmd_stores_queue_scroll_up", "cmd_stores_queue_scroll_down",
+                              "cmd_stores_unqueue", "cmd_stores_queue")},
+            **{n: 5 for n in ("cmd_fuel_queue_back", "cmd_fuel_unqueue", "cmd_fuel_queue")}}
+
+
+def apply_wcommand(state, oracle, name: str, rnd):
+    act, gen, call = WCOMMANDS[name]
+    args = gen(rnd, state.mem) if gen else ()
+    result = call(state, *args) if call else getattr(state, name)(*args)
+    act(oracle, state, args, result)
+    return args, result
+
+
+def _perturb_war(m, rnd) -> None:
+    """_perturb_screens plus the war screens' state: a screen 3, 4, 8-12 or 32, the button
+    flags, the turret (zoom, angles, rates, keys), the bridge zoom, the drones (object 15, the
+    stations, formation, recall), the weapon stocks and timers, the SSM, the resources panels
+    (sub-panel, keypad entry, scrolls, items, stocks and queues, fuel, comms, transfer state,
+    the stockpile), the game-status mode and the options."""
+    _perturb_screens(m, rnd)
+    screen = rnd.choice(WAR_SCREENS)
+    m.set16(stunits.SCREEN, screen)
+    m.set16(TAB, TAB_OF[screen])
+    m.set16(0x702, 0 if rnd.random() < 0.9 else 1)
+    odd = lambda v: rnd.choice((0x4000, 0x8000)) if rnd.random() < 0.04 else v
+    for t in (T_BUTTON, 66, 67, 68, 69):
+        m.set16(FLAG_TABLE + 2 * t, odd(rnd.choice((0, 0, 0x2000))))
+    m.set16(0x6D2, rnd.choice((0, 1, 2, 3, 3)) if rnd.random() < 0.95 else rnd.choice((4, 0xFFFF, 20)))
+    for a in (0x6CA, 0x6CC):
+        m.set16(a, rnd.randrange(0x10000))
+    for a in (0x6CE, 0x6D0):
+        m.set16(a, rnd.randrange(-255, 256))
+    m.set8(0x6D5, rnd.choice((0, 0x40, 0x80, 0xC0)))
+    m.set16(0x8B4, rnd.choice((0, 1, 2, 3, 4)) if rnd.random() < 0.95 else rnd.choice((5, 0xFFFF)))
+    m.set16(0x968, rnd.choice((0, 0, 2)))
+    for a in (0x828, 0x838, 0x82E, 0x832, 0x83D, 0x827, 0x883):
+        m.set8(a, 1 if rnd.random() < 0.15 else 0)
+    o15 = stunits.OBJECTS + stunits.OBJECT_SIZE * 15
+    if rnd.random() < 0.5:
+        m.set16(o15, 0x8403)
+        m.set32(o15 + 0x0E, rnd.choice((200, 1500, 3000)))
+        for off in (0x0A, 0x12):
+            m.set32(o15 + off, m.u32(stunits.CARRIER + off) + rnd.randrange(-4000, 4000))
+    else:
+        m.set8(o15 + 1, m.u8(o15 + 1) & 0xFE)
+    m.set8(0x1160, rnd.choice((0, 0, 0xFF)))
+    m.set16(0x4778, rnd.choice((0, 1, 2, 3)))
+    for a, v in ((0xC82, (0, 1, 5)), (0xC9C, (0, 1)), (0xBB2, (0, 3)), (0xC1A, (0, 2, 4))):
+        m.set16(a, rnd.choice(v))
+    for a in (0x1150, 0x115E):
+        m.set16(a, rnd.choice((0, 0, 7)))
+    for a in (0xB22, 0xB2A, 0xB12):
+        m.set8(a, rnd.choice((0xFF, 0xFF, 0)))
+    m.set16(0xB1A, rnd.choice((0x100, 0x100, 0x80, 0)))
+    m.set8(0x122F, rnd.choice((0, 0, 0, 0xFF)))
+    active = 0
+    for k in range(4):
+        rec = 0x65E + 14 * k
+        on = rnd.random() < 0.4
+        active += on
+        m.set16(rec, rnd.choice((1, 3, 5)) if on else rnd.choice((0, 2)))
+        for off in (2, 4, 0xA, 0xC):
+            m.set16(rec + off, rnd.choice((0, -1500, -1884, rnd.randrange(-3000, 3000))))
+    m.set16(0x65C, active)
+    m.set16(0x698, rnd.randrange(9))
+    m.set16(0x696, rnd.randrange(4))
+    # resources
+    m.set16(RESOURCES, rnd.randrange(6))
+    m.set8(0xB0A, rnd.choice((0xFF, 0xFF, 0xFF, 0)))
+    entry = rnd.random() < 0.4
+    m.set8(ENTRY, 0xFF if entry else 0)
+    m.set32(ENTRY_CALLBACK, ENTRY_DONE if entry or rnd.random() < 0.5 else 0)
+    n = rnd.randrange(4)
+    m.set16(ENTRY_COUNT, n)
+    m.set16(ENTRY_MAX, 3)
+    for i in range(4):
+        m.set8(ENTRY_DIGITS + i, 0x30 + rnd.randrange(10) if i < n else 0)
+    if n == 0:
+        m.set8(ENTRY_DIGITS, 0x30)
+    m.set16(ENTRY_OLD, rnd.randrange(1000))
+    m.set16(ITEM_EDITED, rnd.randrange(3))
+    m.set16(STORES_SCROLL, rnd.choice((0, 0, 5, 12, 12)))
+    m.set16(QUEUE_SCROLL, rnd.choice((0, 0, 5, 12, 12)))
+    m.set16(QUEUE_REPEAT, rnd.choice((0, 0, 1, 5)))
+    for k in range(stsim.N_ITEMS):
+        a = stsim.ITEMS + stsim.ITEM_SIZE * k
+        for off in (0x10, 0x14):
+            m.set16(a + off, rnd.randrange(3))
+        for off in (0x12, 0x16):
+            m.set16(a + off, rnd.choice((0, 5, 20, 999)))
+        if rnd.random() < 0.5:
+            m.set16(a + 0x18, rnd.choice((10, 50, 100)))
+            m.set16(a + 8, rnd.choice((0, 5, 10, 40, 100)))
+        m.set16(stsim.STORES + 2 * k, rnd.choice((0, 1, 7, 30, 200)))
+        m.set16(stsim.STORES_PENDING + 2 * k, rnd.choice((0, 0, 1, 9, 30)))
+    for k in range(3):
+        m.set32(stsim.FUEL + 4 * k, rnd.choice((0, 0x1000, 0x10000, 0x80000)))
+        m.set32(stsim.FUEL_PENDING + 4 * k, rnd.choice((0, 0x2000, 0x40000)))
+        m.set32(0xCFC + 4 * k, rnd.choice((0, 0x10000, 0xFFFE0 - m.u32(stsim.FUEL_PENDING + 4 * k), 0xF0000)))
+        m.set16(stsim.FUEL_CLASS + 2 * k, rnd.randrange(3))
+        m.set16(FUEL_WORK + 2 * k, rnd.randrange(3))
+    m.set8(0xD3E, rnd.choice((0, 0, 0xFF)))
+    m.set8(0xD40, rnd.choice((0, 0xFF)))
+    m.set16(0xD46, rnd.choice((0, 0, 1, 2)))
+    m.set16(0xDE6, rnd.choice((0, 4)))
+    buf = m.u32(stunits.CARRIER + 0x3C)
+    if buf and rnd.random() < 0.6:
+        m.set16(stsim.STOCKPILE, m.u8(buf + 1))
+    elif rnd.random() < 0.3:
+        m.set32(stunits.CARRIER + 0x3C, 0)
+    m.set16(GAME_STATUS, rnd.choice((0, 7, 7, rnd.randrange(8))))
+    for k in range(4):
+        m.set8(OPTIONS + k, rnd.choice((0, 0xFF)))
+    if rnd.random() < 0.3:
+        m.set8(MODAL, 0)
+    m.set32(DROP, rnd.choice((0x104E6, 0x104E6, rnd.choice(list(DROPS)))))
+    # the stockpile island: the map centred on a player island with a route, nothing in transit
+    m.set8(stsim.ROUTES_PENDING, rnd.choice((0, 0, 0, 0xFF)))
+    m.set8(stsim.IN_TRANSIT, rnd.choice((0, 0, 0xFF)))
+    if rnd.random() < 0.15:
+        m.set16(stsim.STOCKPILE, 0xFFFF)
+    mine = [i for i in range(stsim.ISLANDS) if m.u8(stsim.OWNERS + i) == 1]
+    if mine and rnd.random() < 0.6:
+        m.set16(MAP_ISLAND, rnd.choice(mine))
+        m.set16(CARRIER_MAP_MODE, 1 if rnd.random() < 0.8 else 0)
+    if rnd.random() < 0.7:                                 # mostly clickable
+        m.set8(MODAL, 0)
+        m.set8(RUNNING, 0xFF)
+        m.set16(0x702, 0)
+        m.set16(FLAG_TABLE + 2 * T_BUTTON, rnd.choice((0, 0x2000)))
+
+
+def _war_states(files) -> list:
+    return list(files[::6]) + _vehicle_states(files)[len(files[::6])::2]
+
+
+def check_war_commands(files) -> bool:
+    """Every command of the weapons, resources, messages and options screens (and the bridge
+    zoom) against its original click handler(s) (d0/d1 pointer, d2 = 2 or 1, a3 the real
+    panel element; the station drag released on the radar and dropped by ui_frame) on
+    perturbed captured states."""
+    import random
+    import check_sim
+    rnd = random.Random(67)
+    ok = True
+    states = _war_states(files)
+    for name in WCOMMANDS:
+        runs, stopped = 0, 0
+        for f in states:
+            for _ in range(8):
+                m = stsim.Mem(bytearray(f.read_bytes()))
+                _perturb_war(m, rnd)
+                if name in RES_MODE and rnd.random() < 0.6:
+                    m.set16(RESOURCES, RES_MODE[name])
+                ram = bytes(m.buf)
+                oracle = check_sim.Oracle(ram)
+                state = stunits.UnitState.from_ram(ram)
+                try:
+                    args, res = apply_wcommand(state, oracle, name, rnd)
+                    if name in WDRAG_STARTS and res and state.mem.u8(MODAL):
+                        px, py = _radar_point(rnd, state.mem)
+                        _release(state, px, py)
+                        _oracle_release(oracle, px, py)
+                except NotImplementedError:
+                    stopped += 1
+                    continue
+                runs += 1
+                if not _compare(state, oracle, f"{name}{args} from {f.name} (screen {m.u16(stunits.SCREEN)})"):
+                    ok = False
+                    break
+            else:
+                continue
+            break
+        else:
+            print(f"{name}: OK ({runs} states{f', {stopped} stopped at unported code' if stopped else ''})")
+    return ok
+
+
+def check_war_input(files) -> bool:
+    """screen_input ($17094) on screens 3, 8 and 10 (and the bridge's zoom keys) against the
+    original on perturbed states: the resources guards, the turret keys, zoom and right
+    click, the SSM toggle with and without the drone out."""
+    import random
+    from collections import Counter
+    import check_sim
+    rnd = random.Random(71)
+    seen = Counter()
+    for f in _war_states(files):
+        for _ in range(24):
+            m = stsim.Mem(bytearray(f.read_bytes()))
+            _perturb_war(m, rnd)
+            m.set16(stunits.SCREEN, rnd.choice((3, 3, 8, 8, 10, 10, 0)))
+            ram = bytes(m.buf)
+            state = stunits.UnitState.from_ram(ram)
+            state.screen_input()
+            oracle = check_sim.Oracle(ram)
+            _call(oracle, 0x17094)
+            seen[m.u16(stunits.SCREEN)] += 1
+            if not _compare(state, oracle, f"screen_input on {m.u16(stunits.SCREEN)} from {f.name}"):
+                return False
+    print(f"war screen input: OK ({dict(sorted(seen.items()))})")
+    return True
+
+
+def check_war_runs(files) -> bool:
+    """Play: from action and play captures, switch to a war screen by clicks, then 120
+    passes of ui_frame + game_frame on both with random commands of that screen (and
+    others), keys (arrows, Insert, Clr-Home), right clicks and mouse moves between passes,
+    the original running its own ui_frame and screen_input."""
+    import random
+    from collections import Counter
+    from stgfx import ROOT
+    rnd = random.Random(73)
+    play = sorted((ROOT / "emu" / "out" / "play").glob("pass_*_in.bin"))
+    states = play[::10] + list(files[::12])
+    names = list(WCOMMANDS)
+    stopped, passes, runs, reached = {}, 0, 0, Counter()
+    for i, f in enumerate(states):
+        m = stsim.Mem(bytearray(f.read_bytes()))
+        m.set8(RUNNING, 0xFF)
+        for a in (MENU, MODAL, 0x880, 0x881, 0x882, 0x883, SCREEN_REQUEST, 0x704, 0x706, 0x702):
+            m.set8(a, 0)
+        m.set16(0x702, 0)
+        m.set8(stunits.POINTER_MODE, 0xFF)
+        for s in range(29):
+            a = FLAG_TABLE + 2 * s
+            m.set8(a, (m.u8(a) & 0xDF) | (0x20 if s == m.u16(stunits.SCREEN) else 0))
+        for k in range(5):
+            a = FLAG_TABLE + 2 * (T_TAB + k)
+            m.set8(a, (m.u8(a) & 0xDF) | (0x20 if k == m.u16(TAB) else 0))
+        # stocks to work with: flares, recon drones, missiles, defence drones; comms on
+        for a, v in ((0xC82, 5), (0xC9C, 2), (0xBB2, 4), (0xC1A, 4)):
+            m.set16(a, v)
+        m.set8(0xB0A, 0xFF)
+        if i % 3 == 0:
+            buf = m.u32(stunits.CARRIER + 0x3C)
+            if buf:
+                m.set16(stsim.STOCKPILE, m.u8(buf + 1))
+        ram = bytes(m.buf)
+        state, oracle = stunits.UnitState.from_ram(ram), _switch_oracle(ram)
+        target = (3, 8, 10, 11, 9, 4, 12, 0)[i % 8]
+        state.cmd_switch_screen(target)
+        _oracle_switch(oracle, target)
+        if not _compare(state, oracle, f"switch to {target} from {f.name}"):
+            return False
+        reached[state.mem.u16(stunits.SCREEN)] += 1
+        runs += 1
+        for p in range(120):
+            try:
+                r = rnd.random()
+                mm = state.mem
+                if mm.u8(MODAL):
+                    if r < 0.5:
+                        px, py = _radar_point(rnd, mm)
+                        state.cmd_drag_release(px, py)
+                        oracle.uc.mem_write(0x474, (px & 0xFFFF).to_bytes(2, "big") + (py & 0xFFFF).to_bytes(2, "big"))
+                        oracle.uc.mem_write(0x880, b"\x00")
+                elif r < 0.4:
+                    apply_wcommand(state, oracle, rnd.choice(names), rnd)
+                elif r < 0.5:
+                    sc, down = rnd.choice((0x48, 0x50, 0x4B, 0x4D, 0x52, 0x47)), rnd.choice((0, 1))
+                    state.input_key(sc, down)
+                    _copy_input(oracle, state, (), None)
+                elif r < 0.55:
+                    state.cmd_toggle_mouse_steer()
+                    _copy_input(oracle, state, (), None)
+                elif r < 0.62 and not mm.u8(stunits.POINTER_MODE):
+                    apply_wcommand(state, oracle, "cmd_turret_steer_to", rnd)
+                elif r < 0.65 and not mm.u8(stunits.POINTER_MODE):
+                    state.cmd_vehicle_fire()
+                    _copy_input(oracle, state, (), None)
+                if p % 8 == 0:
+                    oracle.uc.mem_write(0x8FD, b"\xff")
+                    state.mem.set8(0x8FD, 0xFF)
+                if state.mem.u8(stunits.POINTER_MODE):
+                    state.mem.set8(0x881, 0)
+                    oracle.uc.mem_write(0x881, b"\x00")
+                state.ui_frame()
+                state.game_frame()
+            except STOP as e:
+                stopped[str(e) or type(e).__name__] = stopped.get(str(e) or type(e).__name__, 0) + 1
+                break
+            _call(oracle, UI_FRAME)
+            oracle_game_frame(oracle)
+            passes += 1
+            if not _compare(state, oracle, f"run from {f.name} on {target}, pass {p}"):
+                return False
+    print(f"war runs: OK ({runs} runs on screens {dict(sorted(reached.items()))}, {passes} passes)")
+    for k, v in sorted(stopped.items(), key=lambda kv: -kv[1]):
+        print(f"  stopped at unported code {v}x: {k}")
+    return True
+
+
+def check_title_new_game(files) -> bool:
+    """cmd_title_new_game against the title menu's handlers $103B2 / $103A0 from the title
+    image (the menu shown or the load panel up, the button hidden), then ui_frame."""
+    import random
+    import check_sim
+    import check_units
+    import stunits_setup as su
+    ram = su.title_ram()
+    if ram is None:
+        print("title new game: SKIPPED (no emu/out/title/ram.bin)")
+        return True
+    rnd = random.Random(79)
+    n = started = 0
+    for i in range(8):
+        strategy = i % 2
+        r = su.seeded(ram, not strategy, rnd.randrange(1 << 32))
+        r[GAME_STATUS:GAME_STATUS + 2] = bytes((0, rnd.choice((0, 0, 0, 1))))
+        if rnd.random() < 0.15:
+            r[FLAG_TABLE + 2 * T_BUTTON] = 0x40
+        state = stunits.UnitState.from_ram(bytes(r))
+        res = state.cmd_title_new_game(strategy)
+        o = check_sim.Oracle(bytes(r))
+        if res:
+            o.uc.mem_write(su.FRAME_FLIP_WAIT, (0x6000 | (su.FRAME_FLIP_AFTER - su.FRAME_FLIP_WAIT - 2)).to_bytes(2, "big"))
+            stack = check_sim.STACK
+            check_sim.STACK = 0x58600
+            try:
+                _regs(o, d2=2)
+                o.call(0x103B2 if strategy else 0x103A0)
+                o.call(UI_FRAME)
+            finally:
+                check_sim.STACK = stack
+            state.ui_frame()
+        ref = o.ram()
+        mine = bytearray(ref)
+        state.to_ram(mine)
+        lines = check_units.diff(mine, ref)
+        if lines:
+            print(f"title new game: MISMATCH (run {i}, {'strategy' if strategy else 'action'})")
+            for line in lines:
+                print("  " + line)
+            return False
+        n += 1
+        started += state.mem.u16(stunits.SCREEN) == 0
+    print(f"title new game: OK ({n} clicks, {started} new games)")
+    return True
+
+
 SCENARIOS = []
 CHECKS = [check_commands, check_game_frame, check_screen_switch, check_vehicle_commands, check_vehicle_input,
-          check_vehicle_runs]
+          check_vehicle_runs, check_war_commands, check_war_input, check_war_runs, check_title_new_game]

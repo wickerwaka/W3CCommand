@@ -5,7 +5,7 @@
  * TypeScript port of tools/stunits_controls.py (the verified reference; its docstring lists
  * every command with its original handler). A browser UI calls these instead of the original's
  * mouse/keyboard handlers; each writes exactly what its handler writes (redraws, palettes and
- * sounds left out; messages become ["message", text] events). A cmd_ method returns false when
+ * sounds left out; messages become ["message", text, ping] events). A cmd_ method returns false when
  * the original's hit test ($B46E) would not have reached the handler (panel not shown, element
  * hidden or disabled, or the game paused: only PAUSE works then). The current screen is not
  * checked: the UI decides which controls it offers.
@@ -32,7 +32,7 @@
  *                    cmd_game_status_back() $1021C, cmd_surrender() $101D8, cmd_continue(yes)
  *                    $13990/$1399C; enter $139D4 / leave $14318 handlers (docs/units.md §10.5)
  *   game flow        cmd_pause() $FD66, game_frame() ($408A loop without ui_frame/rendering),
- *                    screen_input() $17094 (screens 0, 1, 2/17/25, 16-19, 24-27 and the empty handlers)
+ *                    screen_input() $17094 (every screen)
  *   Mantas (27/26/25/24) cmd_manta_select/weapon/autopilot/centre_rudder/centre_pitch/instruments/
  *                    throttle(y)/sight/rear_view/runway_take_off, cmd_manta_steer_to, cmd_vehicle_fire,
  *                    cmd_manta_deck_select, cmd_manta_abort_landing, cmd_manta_map_select,
@@ -41,10 +41,25 @@
  *                    loadout_next/prev/pick_loadout/pick_slot/fit/unfit
  *   Walruses (18/19/17/16) the same set (turret_mode, missile_steer_to, abort_docking,
  *                    loadout_plus/minus), cmd_drag_release(px, py) + ui_frame drop, vehicle_ui()
+ *   War (3/4/8-11/32/33) cmd_bridge_zoom_in/out, turret_input $1741A, cmd_turret_up/down/left/right/
+ *                    fire/zoom_in/zoom_out/centre_heading/centre_elevation, cmd_turret_steer_to,
+ *                    cmd_flare_launch, drone_view_input $1778E, cmd_recon_launch, cmd_ssm_fire_at(px, py),
+ *                    cmd_drones_launch/recall, cmd_drone_stations_reset, cmd_drone_formation_next/prev/
+ *                    apply, cmd_drone_station_pick(k) (drop $104E6), cmd_drone_station_move(k, px, py),
+ *                    resources_input $177DE, cmd_resupply_abort, cmd_resources_transfer,
+ *                    cmd_item_picture(k)/_back, cmd_stores_priorities_open/reset/exit,
+ *                    cmd_stores_scroll_up/down, cmd_stores_class(row, cls), cmd_stores_target(row),
+ *                    cmd_keypad(key), cmd_fuel_priorities_open/reset/exit, cmd_fuel_class(k, cls),
+ *                    cmd_stores_queue_open/back/scroll_up/scroll_down, cmd_stores_unqueue/queue(row, held),
+ *                    cmd_fuel_queue_open/back, cmd_fuel_unqueue/queue(k), cmd_clear_message_log(logged),
+ *                    cmd_game_option(k, on), cmd_title_new_game(strategy) (python docstring: addresses)
  */
 import { NotPorted, divu, pyDiv, s8, s16, s32, u32, w16 } from "./mem.ts";
 import type { Region } from "./mem.ts";
-import { ISLAND_TABLE, ISLAND_SIZE, SYSTEMS } from "./world.ts";
+import {
+  CARRIER_ISLAND, CARRIER_POOL, FUEL, FUEL_CLASS, FUEL_PENDING, IN_TRANSIT, ISLAND_TABLE, ISLAND_SIZE, ITEMS, ITEM_SIZE,
+  N_ITEMS, OWNERS, ROUTES, ROUTES_PENDING, STOCKPILE, STORES, STORES_PENDING, SYSTEMS,
+} from "./world.ts";
 import {
   CARRIER, C_CRUISE, C_DEPTH, C_FLAGS, C_RUDDER, C_SUBSTATE, C_TARGET, C_WAYPOINT_X, C_WAYPOINT_Z, KEY_SPEED_DOWN,
   KEY_SPEED_UP, MOUSE_DX, OBJECTS, OBJECT_SIZE, POINTER_MODE, SCREEN, UNIT_INPUT_REGIONS, UNIT_REGIONS, VIEWED,
@@ -170,6 +185,41 @@ for (const n of ["current tab $714", "panel overlay $702", "key characters $1280
   UNIT_INPUT_REGIONS.add(n);
 }
 
+// Milestone 3 ("War"): the weapons screens 8-11, resources 3, messages 4, options and title.
+export const RESOURCES = 0xd14; // resources sub-panel: 0 main, 1 item picture, 2 stores priorities,
+//                                 3 fuel priorities, 4 stores queue, 5 fuel queue
+export const FUEL_WORK = 0xd0e; // fuel classes being edited (EXIT copies them to $D08)
+export const ENTRY = 0xd1a, ENTRY_DIGITS = 0xd1b, ENTRY_COUNT = 0xd2a, ENTRY_MAX = 0xd2c; // keypad number entry ($11142)
+export const ENTRY_OLD = 0xd32, ENTRY_CALLBACK = 0xd34, ENTRY_DONE = 0x10b5a;
+export const STORES_SCROLL = 0xd38, QUEUE_SCROLL = 0xd3a, QUEUE_REPEAT = 0xd3c;
+export const ITEM_PANEL = 0xd16, ITEM_EDITED = 0xd18;
+// $111D0: the keypad's key boxes relative to its element (216, 44): 0-9, 10 ENTER, 11 CANCEL, 12 DELETE.
+export const KEYPAD: [number, number] = [216, 44];
+export const KEYPAD_BOXES: [number, number, number, number][] = [
+  [0, 0x30, 0xe, 0x3e], [0, 0x20, 0xe, 0x2e], [0x10, 0x20, 0x1e, 0x2e], [0x20, 0x20, 0x2e, 0x2e],
+  [0, 0x10, 0xe, 0x1e], [0x10, 0x10, 0x1e, 0x1e], [0x20, 0x10, 0x2e, 0x1e], [0, 0, 0xe, 0xe],
+  [0x10, 0, 0x1e, 0xe], [0x20, 0, 0x2e, 0xe], [0x30, 0, 0x3e, 0x1e], [0x30, 0x20, 0x3e, 0x3e],
+  [0x10, 0x30, 0x2e, 0x3e],
+];
+export const TARGET_ENTRY: [number, number][] = [[120, 31], [120, 67], [120, 103]]; // $E026: the target fields of the stores priority rows
+export const CLASS_Y = [26, 16, 5]; // $10AE6: a pointer offset in a class field for class 0, 1, 2
+export const FORMATIONS = 0x1065c; // 9 drone formations: 4 stations x (+$A, +$C)
+export const T_STATION = 66; // the drone radar's station markers, types 66-69
+export const SSM_VIEW: [number, number, number, number] = [32, 6, 32 + 0xff, 6 + 0x7f]; // screen 10: the drone picture's element ($13598)
+export const OPTIONS = 0x1246; // sea dots, message ping, background noise, sound effects
+export const ISLAND_NAMES = 0x4ad20; // word offsets from here to each island's name
+for (const _region of [
+  ["resources panel $D0E", FUEL_WORK, 0xd3c - FUEL_WORK], // fuel work, sub-panel, item, keypad entry, scrolls
+  ["bridge zoom $8B2", 0x8b2, 4], // $8B2 view scale, $8B4 zoom (renderer)
+  ["options $1246", OPTIONS, 4],
+  ["drone formations $1065C", FORMATIONS, 0x90], // in the code: read-only
+  ["island names $4AD20", ISLAND_NAMES, 0x295], // 64 word offsets, then the names
+] as Region[]) {
+  if (!UNIT_REGIONS.some((r) => r[0] === _region[0])) UNIT_REGIONS.push(_region);
+}
+UNIT_INPUT_REGIONS.add("drone formations $1065C");
+UNIT_INPUT_REGIONS.add("island names $4AD20");
+
 // $170D4, the per-screen input handlers (screen: address; the rest are $170D2, rts).
 export const INPUT_TABLE: Record<number, number> = {
   0: 0x17164, 1: 0x1747a, 2: 0x17244, 3: 0x177de, 8: 0x1741a, 10: 0x1778e, 16: 0x17748,
@@ -178,6 +228,7 @@ export const INPUT_TABLE: Record<number, number> = {
 // Screens whose input handler is ported ("" = $170D2, rts).
 export const SCREEN_INPUT: Record<number, string> = {
   0: "bridge_input", 1: "damage_input", 2: "map_input", 17: "map_input", 25: "map_input",
+  3: "resources_input", 8: "turret_input", 10: "drone_view_input",
   16: "walrus_arming_input", 18: "walrus_control_input", 19: "walrus_dock_input",
   24: "manta_arming_input", 26: "manta_deck_input", 27: "manta_control_input",
 };
@@ -204,6 +255,7 @@ export const SCREEN_LEAVE: Record<number, string> = {
 export const DROPS: Record<number, string> = {
   0x113a4: "_manta_drop_loadout", 0x11500: "_manta_drop_return",
   0x11ace: "_walrus_drop_loadout", 0x11c4e: "_walrus_drop_return",
+  0x104e6: "_drone_station_drop",
 };
 
 export abstract class ControlsUnits extends SetupUnits {
@@ -221,7 +273,7 @@ export abstract class ControlsUnits extends SetupUnits {
   }
 
   _message(text: string): void {
-    this.events.push(["message", text]);
+    this.events.push(["message", text, this._ping()]);
   }
 
   /** bclr.b #0: clears bit 0 and says whether it was set. */
@@ -1503,8 +1555,10 @@ export abstract class ControlsUnits extends SetupUnits {
 
   /** $14438 (34): a tune if the carrier was destroyed ([$466] = 1), then the original
    * waits for a key ($889); the UI does that before the next ui_frame. The left-button
-   * press is consumed. */
+   * press is consumed. The tune is the event ["sound", "game over"] (`lea $4B72E,a0;
+   * jsr $2019A`, ungated). */
   leave_game_over(): void {
+    if (this.mem.u16(RESULT) === 1) this.events.push(["sound", "game over"]);
     this._bclr0(0x881);
   }
 
@@ -1687,8 +1741,8 @@ export abstract class ControlsUnits extends SetupUnits {
     } else if (!selected) {
       this._sync_auto_button();
     }
-    this._bclr0(0x83d); // zoom $8B4/$8B2: rendering only
-    this._bclr0(0x827);
+    if (this._bclr0(0x83d)) this.bridge_zoom(1); // zoom $8B4/$8B2 (renderer)
+    if (this._bclr0(0x827)) this.bridge_zoom(-1);
     if (this._bclr0(0x7f7) && this._bclr0(0x7d3)) this._message("Atari Bundle Version    16/02/90");
   }
 
@@ -3205,5 +3259,872 @@ export abstract class ControlsUnits extends SetupUnits {
       manta_status: [0, 1, 2, 3].map((k) => m.u8(MANTA_RECS + REC * k + 1)),
       walrus_status: [0, 1, 2, 3].map((k) => m.u8(WALRUS_RECS + REC * k + 1)),
     };
+  }
+
+  // ---- milestone 3 "War": bridge view zoom (screen 0, panel $42672) -----------------------
+  abstract cmd_launch_flare(): void;
+  abstract cmd_launch_recon_drone(): void;
+  abstract cmd_fire_ssm(): void;
+  abstract cmd_launch_defence_drone(): void;
+  abstract cmd_recall_defence_drones(): void;
+  abstract _drone_station_clash(rec: number, x: number, z: number): boolean;
+  abstract cmd_supply_transfer(): boolean;
+
+  /** $FCE8 / $FCF8: the bridge view's zoom $8B4 + d (0-4), scale $8B2 = $2E8 asr zoom
+   * (read by the renderer only). */
+  bridge_zoom(d: number): void {
+    const m = this.mem;
+    let z = s16(w16(m.u16(0x8b4) + d));
+    z = z > 4 ? 4 : z < 0 ? 0 : z;
+    m.set16(0x8b4, z);
+    m.set16(0x8b2, 0x2e8 >> z);
+  }
+
+  /** $FCE8 (56,155; Insert): zoom + 1. */
+  cmd_bridge_zoom_in(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.bridge_zoom(1);
+    return true;
+  }
+
+  /** $FCF8 (56,178; Clr-Home): zoom - 1. */
+  cmd_bridge_zoom_out(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.bridge_zoom(-1);
+    return true;
+  }
+
+  // ---- carrier map, islands panel ([$710] = 1): the stockpile island -------------------------
+  /** The name of island i ($4AD20 + its word offset). */
+  island_name(i: number): string {
+    const m = this.mem;
+    const a = u32(ISLAND_NAMES + s16(m.u16(ISLAND_NAMES + s16(w16(2 * i)))));
+    let out = "";
+    for (let k = 0; m.u8(a + k); k++) out += String.fromCharCode(m.u8(a + k));
+    return out;
+  }
+
+  /** $137C2 (screen 2, islands panel, 13,178), fresh press: the island the map is
+   * centred on ([$764]) becomes the stockpile island ($D4E = the old one, $D4A), and
+   * the goods queued or held at the old one ship there ($21D46). Refused while routes
+   * are being recomputed ($1235), without communications, with stocks in transit
+   * ($D50, unless there was no stockpile), off an island, on the stockpile already, on a
+   * non-player island, or one with no route from Vulcan. */
+  cmd_set_stockpile(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON, [CARRIER_MAP_MODE, 1])) return false;
+    const i = m.s16(MAP_ISLAND);
+    if (m.u8(ROUTES_PENDING)) this._message("Re-routing");
+    else if (!m.u8(0xb0a)) this._message("Communications Inoperative");
+    else if (!(m.u16(STOCKPILE) & 0x8000) && m.u8(IN_TRANSIT)) this._message("Stocks still in transit");
+    else if (i < 0) this._message("Not centred on an island");
+    else if (i === m.s16(STOCKPILE)) this._message("Already the stockpile island");
+    else if (m.u8(OWNERS + i) !== 1) this._message("Not a friendly island");
+    else if (m.u16(ROUTES + 2 * i) & 0x8000) this._message("Island is isolated from Base");
+    else {
+      m.set16(CARRIER_ISLAND, m.u16(STOCKPILE));
+      m.set16(STOCKPILE, i);
+      this._message(`${this.island_name(i)} is now stockpile island`);
+      this.stockpile_reship();
+    }
+    return true;
+  }
+
+  /** $21D46: the queued goods go back to the stockpile counts, then everything held
+   * there ships from the old stockpile [$D4E] to the new one: carrier-pool entries
+   * ($66A10, written from the first one on, unchecked) of up to 255 per item (kinds
+   * 0-14) and fuel / 4096 (kinds 15-17; low word only); the counts are cleared and
+   * "in transit" $D50 is set. */
+  stockpile_reship(): void {
+    const m = this.mem;
+    for (let k = 0; k < N_ITEMS; k++) {
+      const a = STORES + 2 * k;
+      const q = STORES_PENDING + 2 * k;
+      m.set16(a, m.u16(a) + m.u16(q));
+      m.set16(q, 0);
+    }
+    for (let k = 0; k < 3; k++) {
+      const a = FUEL + 4 * k;
+      const q = FUEL_PENDING + 4 * k;
+      m.set32(a, m.u32(a) + m.u32(q));
+      m.set32(q, 0);
+    }
+    let e = CARRIER_POOL;
+    const ship = (kind: number, d0: number): void => {
+      for (;;) {
+        const d1 = d0 >= 0xff ? 0xff : d0;
+        d0 = w16(d0 - d1);
+        m.set16(e + 4, 0xffff);
+        m.set8(e + 2, kind);
+        m.set8(e + 3, d1);
+        m.set8(e, m.u16(CARRIER_ISLAND));
+        m.set8(e + 1, 1);
+        e += 6;
+        if (!d0) return;
+      }
+    };
+    for (let k = 0; k < N_ITEMS; k++) {
+      const a = STORES + 2 * k;
+      if (m.u16(a)) ship(k, m.u16(a));
+      m.set16(a, 0);
+    }
+    for (let k = 0; k < 3; k++) {
+      const a = FUEL + 4 * k;
+      const f = Math.floor(m.u32(a) / 0x1000);
+      if (f) ship(0xf + k, f & 0xffff);
+      m.set32(a, 0);
+    }
+    m.set8(IN_TRANSIT, 0xff);
+  }
+
+  // ---- laser turret, screen 8 (input $1741A; panel $421C0) ---------------------------------
+  /** $FD2C-$FD44: heading $6CC or elevation $6CA moves by 300 >> zoom [$6D2] ($FD54),
+   * and both aim rates ($6CE, $6D0) stop. */
+  _turret_aim(a: number, sign: number): void {
+    const m = this.mem;
+    const n = m.u16(0x6d2) & 63;
+    const step = n >= 16 ? 0 : 0x12c >> n;
+    m.set16(a, m.u16(a) + sign * step);
+    m.set16(0x6ce, 0);
+    m.set16(0x6d0, 0);
+  }
+
+  /** $FD3C: elevation $6CA - step (cursor up). */
+  turret_aim_up(): void {
+    this._turret_aim(0x6ca, -1);
+  }
+
+  /** $FD44: elevation + step. */
+  turret_aim_down(): void {
+    this._turret_aim(0x6ca, 1);
+  }
+
+  /** $FD2C: heading $6CC - step. */
+  turret_aim_left(): void {
+    this._turret_aim(0x6cc, -1);
+  }
+
+  /** $FD34: heading + step. */
+  turret_aim_right(): void {
+    this._turret_aim(0x6cc, 1);
+  }
+
+  /** $FD3C (100,155), works while held. */
+  cmd_turret_up(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.turret_aim_up();
+    return true;
+  }
+
+  /** $FD44 (122,178), works while held. */
+  cmd_turret_down(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.turret_aim_down();
+    return true;
+  }
+
+  /** $FD2C (100,178), works while held. */
+  cmd_turret_left(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.turret_aim_left();
+    return true;
+  }
+
+  /** $FD34 (122,155), works while held. */
+  cmd_turret_right(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.turret_aim_right();
+    return true;
+  }
+
+  /** $FD60 (117,170, between the arrows; works while held): the fire key $88C; the
+   * turret (carrier_laser_turret_step) fires on its next step unless it is cooling down. */
+  cmd_turret_fire(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.mem.set8(0x88c, 0xff);
+    return true;
+  }
+
+  /** $FC9C / $FCAC: the turret zoom $6D2 + d (0-3; a higher zoom aims in finer steps)
+   * and the view offsets $A94/$A98 ($FCD4). */
+  turret_zoom(d: number): void {
+    const m = this.mem;
+    let z = s16(w16(m.u16(0x6d2) + d));
+    z = z > 3 ? 3 : z < 0 ? 0 : z;
+    m.set16(0x6d2, z);
+    this.turret_zoom_view(z);
+  }
+
+  /** $FC9C (144,155; Insert), fresh press. */
+  cmd_turret_zoom_in(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.turret_zoom(1);
+    return true;
+  }
+
+  /** $FCAC (144,178; Clr-Home), fresh press. */
+  cmd_turret_zoom_out(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.turret_zoom(-1);
+    return true;
+  }
+
+  /** $12A34 (166,155): $6D5 bit 7, the heading rate $6CE self-centres to 0. */
+  cmd_turret_centre_heading(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.mem.set8(0x6d5, this.mem.u8(0x6d5) | 0x80);
+    return true;
+  }
+
+  /** $12A3C (166,178): $6D5 bit 6, the elevation rate $6D0 self-centres. */
+  cmd_turret_centre_elevation(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.mem.set8(0x6d5, this.mem.u8(0x6d5) | 0x40);
+    return true;
+  }
+
+  /** Mouse-steer deltas that make the next turret step set the aim rates $6CE (heading)
+   * and $6D0 (elevation) to these values (clamped to +-255): only on screen 8 in
+   * mouse-steer mode ($457 clear) with the observation turret working; a left click
+   * (cmd_vehicle_fire) fires. */
+  cmd_turret_steer_to(heading_rate: number, elevation_rate: number): void {
+    const m = this.mem;
+    m.set16(MOUSE_DX, w16(Math.max(-255, Math.min(255, heading_rate)) - m.s16(0x6ce)));
+    m.set16(MOUSE_DX + 2, w16(Math.max(-255, Math.min(255, elevation_rate)) - m.s16(0x6d0)));
+  }
+
+  /** $1741A (screen 8): the gauge timer $968 (redraw); held cursor keys aim, Insert /
+   * Clr-Home zoom, a right click toggles mouse-steer mode $457. */
+  turret_input(): void {
+    const m = this.mem;
+    if (m.u16(0x968)) m.set16(0x968, m.u16(0x968) - 1);
+    const keys: [number, () => void][] = [
+      [0x828, () => this.turret_aim_up()], [0x838, () => this.turret_aim_down()],
+      [0x82e, () => this.turret_aim_left()], [0x832, () => this.turret_aim_right()],
+    ];
+    for (const [key, f] of keys) if (m.u8(key)) f();
+    if (this._bclr0(0x83d)) this.turret_zoom(1);
+    if (this._bclr0(0x827)) this.turret_zoom(-1);
+    if (this._bclr0(0x883)) m.set8(POINTER_MODE, ~m.u8(POINTER_MODE));
+  }
+
+  // ---- flares 9, viewing drone 10 (input $1778E), defence drones 11 -----------------------
+  /** $1338C (screen 9, 166,155), fresh press: cmd_launch_flare. */
+  cmd_flare_launch(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.cmd_launch_flare();
+    return true;
+  }
+
+  /** $134C2 (screen 10, 210,155), fresh press: cmd_launch_recon_drone. */
+  cmd_recon_launch(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.cmd_launch_recon_drone();
+    return true;
+  }
+
+  /** $13598 (screen 10, the drone picture at 32,6, 256 x 128), fresh press: the pointer
+   * moves to (px, py) and, with the SSM armed ($1160, a right click), cmd_fire_ssm aims a
+   * cruise missile at the point under it. While armed the original clips the pointer to
+   * the picture. */
+  cmd_ssm_fire_at(px: number, py: number): boolean {
+    const [x0, y0, x1, y1] = SSM_VIEW;
+    if (!(x0 <= px && px <= x1 && y0 <= py && py <= y1 && this._clickable(T_BUTTON))) return false;
+    this._set_pointer(px, py);
+    this.cmd_fire_ssm();
+    return true;
+  }
+
+  /** $F712: modal mode $460 off (the pointer sprite and its clip are UI). */
+  pointer_free(): void {
+    this.mem.set8(MODAL, 0);
+  }
+
+  /** $1778E (screen 10): without the viewing drone (object 15) out the SSM is disarmed;
+   * otherwise a right click toggles SSM armed $1160 (arming points the pointer at the
+   * picture, disarming frees it, $F712). */
+  drone_view_input(): void {
+    const m = this.mem;
+    if (!(m.u8(this.obj(15) + 1) & 1)) {
+      if (m.u8(0x1160)) {
+        m.set8(0x1160, 0);
+        this.pointer_free();
+      }
+      return;
+    }
+    if (!this._bclr0(0x883)) return;
+    if (m.u8(0x1160)) {
+      m.set8(0x1160, 0);
+      this.pointer_free();
+      return;
+    }
+    m.set8(0x1160, 0xff);
+  }
+
+  /** $10738 (screen 11, 166,155; repeats while held): cmd_launch_defence_drone. */
+  cmd_drones_launch(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.cmd_launch_defence_drone();
+    return true;
+  }
+
+  /** $1088C (screen 11, 166,178), fresh press: cmd_recall_defence_drones. */
+  cmd_drones_recall(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this.cmd_recall_defence_drones();
+    return true;
+  }
+
+  /** $10552: during a drone recall ($122F) the stations can't change. */
+  _no_override(): boolean {
+    if (this.mem.u8(0x122f)) {
+      this._message("Cannot override docking sequence");
+      return true;
+    }
+    return false;
+  }
+
+  /** $10614: each station's state (a0) &= 1 and its offsets +$A/+$C from src. */
+  _set_stations(src: number): void {
+    const m = this.mem;
+    for (let k = 0; k < 4; k++) {
+      const a = 0x65e + 14 * k;
+      m.set16(a, m.u16(a) & 1);
+      m.set16(a + 0xa, m.u16(src + 4 * k));
+      m.set16(a + 0xc, m.u16(src + 4 * k + 2));
+    }
+  }
+
+  /** $10602 (12,155), fresh press: the stations as they were when the screen was
+   * entered ($141DE); not during a recall ("Cannot cancel docking sequence"). */
+  cmd_drone_stations_reset(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (this.mem.u8(0x122f)) this._message("Cannot cancel docking sequence");
+    else this._set_stations(STATION_SNAPSHOT);
+    return true;
+  }
+
+  _formation(d: number): void {
+    const m = this.mem;
+    let k = s16(w16(m.u16(0x698) + d));
+    if (d > 0 && k === 9) k = 0;
+    else if (d < 0 && k < 0) k = 8;
+    m.set16(0x698, k);
+    m.set16(0x95a, 2);
+  }
+
+  /** $106EC (298,155; repeats): formation $698 + 1 (wraps 9 to 0). */
+  cmd_drone_formation_next(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this._formation(1);
+    return true;
+  }
+
+  /** $10706 (298,178; repeats): formation - 1 (below 0: 8). */
+  cmd_drone_formation_prev(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    this._formation(-1);
+    return true;
+  }
+
+  /** $10714 (188,155), fresh press: the stations of formation [$698] (table $1065C). */
+  cmd_drone_formation_apply(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    if (this._no_override()) return true;
+    const k = m.u16(0x698);
+    if (k > 8) throw new NotPorted(`drone formation ${k} beyond the table $1065C`);
+    this._set_stations(FORMATIONS + 16 * k);
+    return true;
+  }
+
+  /** $104C8 (the radar marker of station k, types 66-69): start dragging it ($696 = k,
+   * drop $104E6); not during a recall. */
+  cmd_drone_station_pick(k: number): boolean {
+    if (!(0 <= k && k <= 3 && this._clickable(T_STATION + k))) return false;
+    if (this._no_override()) return true;
+    this.mem.set16(0x696, k);
+    this._start_drag(0x104e6);
+    return true;
+  }
+
+  /** $104E6: the station [$696] to the radar point: +$A = (py - cy + 1) * 60, +$C =
+   * (px - cx - 4) * 60 (centre $4750/$4752); refused inside the red box (+-900 x
+   * +-1500) or within about 384 of another active station; its state &= 1. */
+  _drone_station_drop(px: number, py: number): void {
+    const m = this.mem;
+    const a0 = u32(0x65e + s16(w16(m.u16(0x696) * 14)));
+    const d0 = s32(s16(w16(px - m.u16(0x4750) - 4)) * 60);
+    const d1 = s32(s16(w16(py - m.u16(0x4752) + 1)) * 60);
+    const lo0 = s16(w16(d0));
+    const lo1 = s16(w16(d1));
+    if (-900 <= lo1 && lo1 <= 900 && -1500 <= lo0 && lo0 <= 1500) {
+      this._message("Drone must be outside red boundary");
+      return;
+    }
+    if (this._drone_station_clash(a0, w16(d1), w16(d0))) {
+      this._message("Cannot put drones on top of each other");
+      return;
+    }
+    m.set16(a0 + 0xa, d1);
+    m.set16(a0 + 0xc, d0);
+    m.set16(a0, m.u16(a0) & 1);
+  }
+
+  /** The radar point of station k's offsets (the drop's inverse, for the UI). */
+  drone_station_pixel(k: number): [number, number] {
+    const m = this.mem;
+    const a = 0x65e + 14 * k;
+    return [m.s16(0x4750) + 4 + pyDiv(m.s16(a + 0xc) + 30, 60), m.s16(0x4752) - 1 + pyDiv(m.s16(a + 0xa) + 30, 60)];
+  }
+
+  /** Drag station k's marker to the radar point (px, py): pick it up, release there,
+   * ui_frame drops it. False if the pick-up wasn't possible. */
+  cmd_drone_station_move(k: number, px: number, py: number): boolean {
+    if (!this.cmd_drone_station_pick(k) || !this.mem.u8(MODAL)) return false;
+    this.cmd_drag_release(px, py);
+    this.ui_frame();
+    return true;
+  }
+
+  // ---- resources, screen 3 (input $177DE; panels $42CC8-$4314A by sub-panel [$D14]) ------
+  /** The carrier's island buffer ([$5E996], carrier +$3C) is the stockpile island's. */
+  _at_stockpile(): boolean {
+    const m = this.mem;
+    const buf = m.u32(CARRIER + 0x3c);
+    return buf !== 0 && m.u8(buf + 1) === m.u16(STOCKPILE);
+  }
+
+  /** $17812: the message, back to the main panel, the tab re-entered ($1227/$1228). */
+  _resources_refused(text: string): void {
+    const m = this.mem;
+    this._message(text);
+    m.set16(RESOURCES, 0);
+    m.set16(REQUEST_TAB, m.u16(TAB));
+    m.set8(SCREEN_REQUEST, 0xff);
+  }
+
+  /** $177DE (screen 3): the priority panels (2, 3) need communications ($B0A), the
+   * queue panels (4, 5) also no transfer running ($D3E) and the carrier at the stockpile
+   * island; otherwise back to the main panel. */
+  resources_input(): void {
+    const m = this.mem;
+    const mode = m.u16(RESOURCES);
+    if (mode < 2) return;
+    if (!m.u8(0xb0a)) return this._resources_refused("Communications are out");
+    if (mode < 4) return;
+    if (m.u8(0xd3e)) return this._resources_refused("Resupply operation in progress");
+    if (!this._at_stockpile()) return this._resources_refused("Stockpile island out of range");
+  }
+
+  _res(mode: number): boolean {
+    return this._clickable(T_BUTTON, [RESOURCES, mode]);
+  }
+
+  /** Class and target of the 15 store items (+$10/+$12 committed, +$14/+$16 edited). */
+  _items_copy(src: number, dst: number): void {
+    const m = this.mem;
+    for (let k = 0; k < N_ITEMS; k++) {
+      const a = ITEMS + ITEM_SIZE * k;
+      m.set16(a + dst, m.u16(a + src));
+      m.set16(a + dst + 2, m.u16(a + src + 2));
+    }
+  }
+
+  /** $1102E (12,155), fresh press: recall the supply drone ($D42 = $D46 = 2, $D40 = 0)
+   * unless no transfer runs, it has completed or been aborted, or it is docking
+   * ($D40 with $DE6 = 4). */
+  cmd_resupply_abort(): boolean {
+    const m = this.mem;
+    if (!this._res(0)) return false;
+    if (!m.u8(0xd3e)) this._message("No resupply operation is in progress");
+    else if (m.u16(0xd46) === 1) this._message("Resupply already completed");
+    else if (m.u16(0xd46) === 2) this._message("Resupply operation has been aborted");
+    else if (m.u8(0xd40) && m.u16(0xde6) === 4) this._message("Too late to abort resupply");
+    else {
+      m.set16(0xd42, 2);
+      m.set16(0xd46, 2);
+      m.set8(0xd40, 0);
+      this._message("Resupply aborted - drone recalled");
+    }
+    return true;
+  }
+
+  /** $10E4A (34,155), fresh press: cmd_supply_transfer (stunits_enemy). */
+  cmd_resources_transfer(): boolean {
+    if (!this._res(0)) return false;
+    this.cmd_supply_transfer();
+    return true;
+  }
+
+  /** $1098A (the 15 item pictures, 44..244 x 8..92): sub-panel 1 showing item k ($D16). */
+  cmd_item_picture(k: number): boolean {
+    if (!(0 <= k && k < N_ITEMS && this._res(0))) return false;
+    this.mem.set16(ITEM_PANEL, k);
+    this.mem.set16(RESOURCES, 1);
+    return true;
+  }
+
+  /** $109BC (142,115): back to the main panel. */
+  cmd_item_picture_back(): boolean {
+    if (!this._res(1)) return false;
+    this.mem.set16(RESOURCES, 0);
+    return true;
+  }
+
+  /** $109E8 (56,155): needs communications; sub-panel 2, scroll $D38 = 0, no entry,
+   * the items' classes and targets copied to their edit fields (+$14/+$16). */
+  cmd_stores_priorities_open(): boolean {
+    const m = this.mem;
+    if (!this._res(0)) return false;
+    if (!m.u8(0xb0a)) {
+      this._message("Communications are out");
+      return true;
+    }
+    m.set16(RESOURCES, 2);
+    m.set16(STORES_SCROLL, 0);
+    m.set8(ENTRY, 0);
+    this._items_copy(0x10, 0x14);
+    return true;
+  }
+
+  /** $10A66 (228,22): the edit fields back to the committed values (not while a
+   * number is being typed). */
+  cmd_stores_priorities_reset(): boolean {
+    if (!this._res(2)) return false;
+    if (!this.mem.u8(ENTRY)) this._items_copy(0x10, 0x14);
+    return true;
+  }
+
+  /** $10A3C (228,114): commit the edit fields (+$14/+$16 -> +$10/+$12), main panel. */
+  cmd_stores_priorities_exit(): boolean {
+    if (!this._res(2)) return false;
+    if (!this.mem.u8(ENTRY)) {
+      this.mem.set16(RESOURCES, 0);
+      this._items_copy(0x14, 0x10);
+    }
+    return true;
+  }
+
+  /** $10AA6 (176,44): the three rows show items $D38.. ; $D38 - 1 (>= 0). */
+  cmd_stores_scroll_up(): boolean {
+    const m = this.mem;
+    if (!this._res(2)) return false;
+    if (!m.u8(ENTRY) && m.u16(STORES_SCROLL)) m.set16(STORES_SCROLL, m.u16(STORES_SCROLL) - 1);
+    return true;
+  }
+
+  /** $10A8A (176,76): $D38 + 1 (up to 12). */
+  cmd_stores_scroll_down(): boolean {
+    const m = this.mem;
+    if (!this._res(2)) return false;
+    if (!m.u8(ENTRY) && m.u16(STORES_SCROLL) !== 12) m.set16(STORES_SCROLL, m.u16(STORES_SCROLL) + 1);
+    return true;
+  }
+
+  /** The item record of a row: $B76 + (row + scroll) * $1A (mulu.w, index .w). */
+  _item(row: number, scroll: number): number {
+    const m = this.mem;
+    return u32(ITEMS + s16(w16(w16(row + m.u16(scroll)) * ITEM_SIZE)));
+  }
+
+  /** $10ABC (80, 24/60/96), fresh press: the class field of row 0-2 (item $D38 + row):
+   * edit class +$14 = cls (0-2, by where the pointer is in the field, $10AE6). */
+  cmd_stores_class(row: number, cls: number): boolean {
+    if (!(0 <= row && row <= 2 && 0 <= cls && cls <= 2 && this._res(2))) return false;
+    if (!this.mem.u8(ENTRY)) this.mem.set16(this._item(row, STORES_SCROLL) + 0x14, cls);
+    return true;
+  }
+
+  /** $11142: start typing a number on the keypad (layout $D22-$D30 for the panel
+   * drawing, the old value $D32, the callback $D34, no digits yet: "0"). */
+  _entry_start(x: number, y: number, old: number, digits: number, d4: number, d5: number, callback: number): void {
+    const m = this.mem;
+    m.set8(ENTRY, 0xff);
+    m.set32(ENTRY_CALLBACK, callback);
+    m.set16(0xd22, x);
+    m.set16(0xd24, y);
+    m.set16(ENTRY_OLD, old);
+    m.set16(ENTRY_MAX, digits);
+    m.set16(0xd2e, d4);
+    m.set16(0xd30, d5);
+    m.set16(0xd26, x + 6 * digits - 1);
+    m.set16(0xd28, y + 5);
+    m.set16(ENTRY_COUNT, 0);
+    m.set8(ENTRY_DIGITS, 0x30);
+    m.set8(ENTRY_DIGITS + 1, 0);
+  }
+
+  /** $10B02 (120, 31/67/103), fresh press: type a new target for row 0-2's item on the
+   * keypad (cmd_keypad), $D18 = row. */
+  cmd_stores_target(row: number): boolean {
+    const m = this.mem;
+    if (!(0 <= row && row <= 2 && this._res(2))) return false;
+    if (m.u8(ENTRY)) return true;
+    m.set16(ITEM_EDITED, row);
+    const [x, y] = TARGET_ENTRY[row];
+    this._entry_start(x + 0xe, y + 0xa, m.u16(this._item(row, STORES_SCROLL) + 0x16), 3, 10, 8, ENTRY_DONE);
+    return true;
+  }
+
+  /** jmp [$D34]: only $10B5A: the edited row's item target +$16 = v. */
+  _entry_done(v: number): void {
+    const m = this.mem;
+    const cb = m.u32(ENTRY_CALLBACK);
+    if (cb !== ENTRY_DONE) {
+      throw new NotPorted(`keypad entry callback $${cb.toString(16).toUpperCase()} ($11142 has only the caller $10B02)`);
+    }
+    m.set16(this._item(m.u16(ITEM_EDITED), STORES_SCROLL) + 0x16, v);
+  }
+
+  /** $11196 (the keypad at 216,44 in the stores priorities), fresh press, while a
+   * number is being typed ($D1A): key 0-9 a digit (at most [$D2C], no leading 0), 10
+   * ENTER (the number to the callback), 11 CANCEL (the old value), 12 DELETE. */
+  cmd_keypad(key: number): boolean {
+    const m = this.mem;
+    if (!(0 <= key && key <= 12 && this._res(2))) return false;
+    if (!m.u8(ENTRY)) return true;
+    if (key === 10) {
+      m.set8(ENTRY, 0);
+      let v = 0;
+      let d1 = 0;
+      const n = m.u16(ENTRY_COUNT);
+      for (let i = 0; i < n; i++) {
+        // move.b into d1, subi.w #'0': its high byte stays
+        d1 = w16((d1 & 0xff00) + m.u8(ENTRY_DIGITS + i) - 0x30);
+        v = w16(v * 10 + d1);
+      }
+      this._entry_done(v);
+    } else if (key === 11) {
+      m.set8(ENTRY, 0);
+      this._entry_done(m.u16(ENTRY_OLD));
+    } else if (key === 12) {
+      let n = m.u16(ENTRY_COUNT);
+      if (n) {
+        n -= 1;
+        m.set16(ENTRY_COUNT, n);
+        if (n) m.set8(ENTRY_DIGITS + s16(n), 0);
+        else m.set8(ENTRY_DIGITS, 0x30);
+      }
+    } else {
+      const n = m.u16(ENTRY_COUNT);
+      if ((n || key) && n !== m.u16(ENTRY_MAX)) {
+        const a = u32(ENTRY_DIGITS + s16(n));
+        m.set8(a, key + 0x30);
+        m.set8(a + 1, 0);
+        m.set16(ENTRY_COUNT, n + 1);
+      }
+    }
+    return true;
+  }
+
+  /** $10B72 (122,155): needs communications; sub-panel 3, the fuel classes $D08-$D0C
+   * copied to the edit fields $D0E-$D12. */
+  cmd_fuel_priorities_open(): boolean {
+    const m = this.mem;
+    if (!this._res(0)) return false;
+    if (!m.u8(0xb0a)) {
+      this._message("Communications are out");
+      return true;
+    }
+    m.set16(RESOURCES, 3);
+    m.buf.copyWithin(FUEL_WORK, FUEL_CLASS, FUEL_CLASS + 6);
+    return true;
+  }
+
+  /** $10BC6 (228,22): the edit fields back to $D08-$D0C. */
+  cmd_fuel_priorities_reset(): boolean {
+    if (!this._res(3)) return false;
+    this.mem.buf.copyWithin(FUEL_WORK, FUEL_CLASS, FUEL_CLASS + 6);
+    return true;
+  }
+
+  /** $10BAC (228,114): commit $D0E-$D12 to the fuel classes, main panel. */
+  cmd_fuel_priorities_exit(): boolean {
+    const m = this.mem;
+    if (!this._res(3)) return false;
+    m.set16(RESOURCES, 0);
+    m.buf.copyWithin(FUEL_CLASS, FUEL_WORK, FUEL_WORK + 6);
+    return true;
+  }
+
+  /** $10BDA (136, 24/60/96), fresh press: fuel k's (0-2) edit class $D0E + 2k = cls. */
+  cmd_fuel_class(k: number, cls: number): boolean {
+    if (!(0 <= k && k <= 2 && 0 <= cls && cls <= 2 && this._res(3))) return false;
+    this.mem.set16(FUEL_WORK + 2 * k, cls);
+    return true;
+  }
+
+  /** $10C06 / $10D52: needs communications, no transfer running and the carrier at
+   * the stockpile island. */
+  _queue_open(mode: number): boolean {
+    const m = this.mem;
+    if (!this._res(0)) return false;
+    if (!m.u8(0xb0a)) this._message("Communications are out");
+    else if (m.u8(0xd3e)) this._message("Resupply operation in progress");
+    else if (!this._at_stockpile()) this._message("Stockpile island out of range");
+    else m.set16(RESOURCES, mode);
+    return true;
+  }
+
+  /** $10C06 (188,155): sub-panel 4, the stores to ship from the stockpile. */
+  cmd_stores_queue_open(): boolean {
+    return this._queue_open(4);
+  }
+
+  /** $10D52 (254,155): sub-panel 5, the fuel to ship. */
+  cmd_fuel_queue_open(): boolean {
+    return this._queue_open(5);
+  }
+
+  /** $10C62 (244,116): main panel. */
+  cmd_stores_queue_back(): boolean {
+    if (!this._res(4)) return false;
+    this.mem.set16(RESOURCES, 0);
+    return true;
+  }
+
+  /** $10D9C (140,116): main panel. */
+  cmd_fuel_queue_back(): boolean {
+    if (!this._res(5)) return false;
+    this.mem.set16(RESOURCES, 0);
+    return true;
+  }
+
+  /** $10C7C (251,47): the rows show items $D3A..; $D3A - 1 (>= 0). */
+  cmd_stores_queue_scroll_up(): boolean {
+    const m = this.mem;
+    if (!this._res(4)) return false;
+    if (m.u16(QUEUE_SCROLL)) m.set16(QUEUE_SCROLL, m.u16(QUEUE_SCROLL) - 1);
+    return true;
+  }
+
+  /** $10C6A (251,79): $D3A + 1 (up to 12). */
+  cmd_stores_queue_scroll_down(): boolean {
+    const m = this.mem;
+    if (!this._res(4)) return false;
+    if (m.u16(QUEUE_SCROLL) !== 12) m.set16(QUEUE_SCROLL, m.u16(QUEUE_SCROLL) + 1);
+    return true;
+  }
+
+  /** 1 on a press ($D3C = 5); held: 1 for 5 more passes, then 10 a pass. */
+  _queue_step(held: number): number {
+    const m = this.mem;
+    if (!held) {
+      m.set16(QUEUE_REPEAT, 5);
+      return 1;
+    }
+    if (m.u16(QUEUE_REPEAT)) {
+      m.set16(QUEUE_REPEAT, m.u16(QUEUE_REPEAT) - 1);
+      return 1;
+    }
+    return 10;
+  }
+
+  /** $10C88 (134, 35/69/103; repeats): move row 0-2's item (item $D3A + row) from the
+   * queue $D96 back to the stockpile $D78, 1 at a time, 10 once held a while. */
+  cmd_stores_unqueue(row: number, held = 0): boolean {
+    const m = this.mem;
+    if (!(0 <= row && row <= 2 && this._res(4))) return false;
+    let d1 = this._queue_step(held);
+    const i = s16(w16(2 * w16(row + m.u16(QUEUE_SCROLL))));
+    const q = u32(STORES_PENDING + i);
+    const s = u32(STORES + i);
+    if (m.s16(q) < d1) d1 = m.s16(q);
+    m.set16(q, m.u16(q) - d1);
+    m.set16(s, m.u16(s) + d1);
+    return true;
+  }
+
+  /** $10CCA (163, 35/69/103; repeats): move row 0-2's item from the stockpile to the
+   * queue, up to the carrier's room (capacity +$18 - on board +8 - queued): "Limit of
+   * ACC stores reached". */
+  cmd_stores_queue(row: number, held = 0): boolean {
+    const m = this.mem;
+    if (!(0 <= row && row <= 2 && this._res(4))) return false;
+    let d1 = this._queue_step(held);
+    const idx = w16(row + m.u16(QUEUE_SCROLL));
+    const i = s16(w16(2 * idx));
+    const q = u32(STORES_PENDING + i);
+    const s = u32(STORES + i);
+    const a2 = u32(ITEMS + s16(w16(idx * ITEM_SIZE)));
+    if (m.s16(s) < d1) d1 = m.s16(s);
+    const room = s16(w16(m.u16(a2 + 0x18) - m.u16(a2 + 8) - m.u16(q)));
+    if (room === 0) {
+      this._message("Limit of ACC stores reached");
+      return true;
+    }
+    if (d1 > room) d1 = room;
+    m.set16(s, m.u16(s) - d1);
+    m.set16(q, m.u16(q) + d1);
+    return true;
+  }
+
+  /** $10DA4 / $10E18 / $10E30 (134, 36/61/86; repeats): fuel k's queue ($D6C + 4k)
+   * back to the stockpile ($D60 + 4k), $4000 a pass. */
+  cmd_fuel_unqueue(k: number): boolean {
+    const m = this.mem;
+    if (!(0 <= k && k <= 2 && this._res(5))) return false;
+    const s = FUEL + 4 * k;
+    const q = FUEL_PENDING + 4 * k;
+    const d1 = Math.min(0x4000, s32(m.u32(q)));
+    m.set32(q, m.u32(q) - d1);
+    m.set32(s, m.u32(s) + d1);
+    return true;
+  }
+
+  /** $10DC0 / $10E22 / $10E3C (163, 36/61/86; repeats): stockpile fuel k to the queue,
+   * $4000 a pass, up to the room in the carrier's tank ($FFFE0 - queued - tank $CFC +
+   * 4k): "Limit of ACC tanks reached". */
+  cmd_fuel_queue(k: number): boolean {
+    const m = this.mem;
+    if (!(0 <= k && k <= 2 && this._res(5))) return false;
+    const s = FUEL + 4 * k;
+    const q = FUEL_PENDING + 4 * k;
+    const tank = 0xcfc + 4 * k;
+    let d1 = Math.min(0x4000, s32(m.u32(s)));
+    const room = s32(0xfffe0 - m.u32(q) - m.u32(tank));
+    if (room === 0) {
+      this._message("Limit of ACC tanks reached");
+      return true;
+    }
+    if (room < d1) d1 = room;
+    m.set32(s, m.u32(s) - d1);
+    m.set32(q, m.u32(q) + d1);
+    return true;
+  }
+
+  // ---- messages 4, game status 32, title 33 ----------------------------------------------------
+  /** $12C2C (screen 4, 144,155), fresh press. The message log ($1148, $65D10: the
+   * messages $A128 records) is the app's, not the model's: `logged` says whether it has
+   * entries. Then it is cleared ($A1E8, the app's), $966 = 2 and "Message log
+   * cleared"; else "Message log is already clear". */
+  cmd_clear_message_log(logged: number): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (logged) {
+      this.mem.set16(0x966, 2);
+      this._message("Message log cleared");
+    } else {
+      this._message("Message log is already clear");
+    }
+    return true;
+  }
+
+  /** $13778 (the options panel, $708 = 7; rows at y 29 + 16k, OFF at x 217-242, ON at
+   * 252-277): option k (0 sea dots, 1 message ping, 2 background noise, 3 sound effects)
+   * $1246 + k = on ($FF) or off. Quirk: the element reaches a fifth row (y 93-106), k = 4,
+   * which writes $124A, the strategy flag. */
+  cmd_game_option(k: number, on: number): boolean {
+    if (!(0 <= k && k <= 4 && this._clickable(T_BUTTON, [GAME_STATUS, 7]))) return false;
+    this.mem.set8(OPTIONS + k, on ? 0xff : 0);
+    return true;
+  }
+
+  /** $103B2 / $103A0 (title menu, $708 = 0): a strategy / action game ($124A), new_game
+   * ($42A8); the next ui_frame enters the bridge. */
+  cmd_title_new_game(strategy: number): boolean {
+    if (!this._clickable(T_BUTTON, [GAME_STATUS, 0])) return false;
+    this.new_game(Boolean(strategy));
+    return true;
   }
 }

@@ -13,7 +13,8 @@ export const TABS: Tab[] = [
       { id: 0, label: "Bridge", ready: true },
       { id: 2, label: "Map", ready: true },
       { id: 1, label: "Damage", ready: true },
-      { id: 3, label: "Resources", ready: false },
+      { id: 3, label: "Resources", ready: true },
+      { id: 4, label: "Messages", ready: true },
     ],
   },
   {
@@ -21,7 +22,8 @@ export const TABS: Tab[] = [
       { id: 8, label: "Laser turret", ready: true },
       { id: 9, label: "Flares", ready: true },
       { id: 10, label: "Viewing drone", ready: true },
-      { id: 11, label: "Defence radar", ready: false },
+      { id: 11, label: "Defence radar", ready: true },
+      { id: 12, label: "Weapons status", ready: true },
     ],
   },
   {
@@ -30,6 +32,7 @@ export const TABS: Tab[] = [
       { id: 16, label: "Arming", ready: true },
       { id: 18, label: "Control", ready: true },
       { id: 17, label: "Map", ready: true },
+      { id: 20, label: "Status", ready: true },
     ],
   },
   {
@@ -38,6 +41,7 @@ export const TABS: Tab[] = [
       { id: 24, label: "Arming", ready: true },
       { id: 27, label: "Control", ready: true },
       { id: 25, label: "Map", ready: true },
+      { id: 28, label: "Status", ready: true },
     ],
   },
 ];

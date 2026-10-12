@@ -115,7 +115,7 @@ class VehicleMixin:
         self.bays_step(0x942, WALRUS_OBJ, WALRUS_RECS, "Walrus")
 
     def _msg(self, text: str) -> None:
-        self.events.append(("message", text))
+        self.events.append(("message", text, self._ping()))
 
     def _max_abs(self, dx: int, dz: int) -> int:
         """|dx|, |dz| by neg.l, the larger by a signed compare."""
@@ -770,6 +770,7 @@ class VehicleMixin:
         for o, v in zip((0x20, 0x22, 0x24), self.velocity_from_angles(a4, 0x96 if speed > 0x96 else speed)):
             m.set16(b + o, v)
         self._msg("Bomb dropped")
+        self._sfx(7)
 
     def _manta_laser(self, a1: int, a4: int) -> None:
         """$1FA9C: a type-16 bolt from 50 below the nose, cooldown 4."""
@@ -786,6 +787,7 @@ class VehicleMixin:
         self._copy_angles(a4, b)
         m.set16(b + 0x34, 2)
         m.set8(b + 0x1B, 0x14)
+        self._sfx(2)
 
     def _manta_missile(self, a1: int, a4: int) -> None:
         """$1FFEA: the first press locks on (manta_lock_scan); the second fires at the locked
@@ -803,6 +805,7 @@ class VehicleMixin:
         self._copy_angles(a4, b)
         m.set16(b + 8, 0)
         m.set32(b + 0x1E, m.u32(LOCK_TARGET))
+        self._sfx(5)
         m.set16(0x940, 4 if m.s16(a1 + 6) < 0x78 else 0x0A)
         m.set16(a1 + 0x0C, m.u16(a1 + 0x0C) - 1)
         m.set16(a1 + 0x12, m.u16(a1 + 0x12) - 0x37)
@@ -827,6 +830,7 @@ class VehicleMixin:
         if m.s16(0x1166) > 0x18 or m.u32(LOCK_TARGET) & 0x80000000:
             return
         m.set16(LOCK_TIMER, 0x19)
+        self._sfx(9)
 
     def _lock_candidate(self, z: int, x: int, y: int, obj: int) -> None:
         """$200F6, for one depth-tree node (camera-space Z, X, Y of the object at obj): a
@@ -1382,6 +1386,7 @@ class VehicleMixin:
         self._place(b, a4, x, 0x64, z)
         self._copy_angles(a4, b)
         m.set8(b + 0x1B, 0x14)
+        self._sfx(3)
         m.set16(a1 + 0x0A, m.u16(a1 + 0x0A) - 1)
 
     def _walrus_missile(self, a1: int, a4: int) -> None:
@@ -1408,6 +1413,7 @@ class VehicleMixin:
         m.set8(b + 0x1C, 0x78)
         m.set16(b + 0x1A, m.u16(a4 + 0x1A) + 4)
         m.set32(a4 + 0x20, b)
+        self._sfx(6)
         m.set16(a1 + 0x0C, m.u16(a1 + 0x0C) - 1)
         m.set16(a1 + 0x12, m.u16(a1 + 0x12) - 0x96)
         m.set16(a1, m.u16(a1) & 0x3F)                   # andi.w: clears the whole flag byte
@@ -1427,6 +1433,7 @@ class VehicleMixin:
         m.set32(b + 0x0E, m.u32(b + 0x0E) + 0x28)
         m.set16(b + 0x20, m.u16(a4 + 6) + m.u16(a4 + 0x26))
         m.set16(b + 0x1E, 0x32)
+        self._sfx(8)
 
     def _walrus_accb(self, a1: int, a4: int) -> None:
         """$1FC10: an automatic command-centre builder: on a neutral island, 2000 inside its
@@ -2620,7 +2627,7 @@ def check_accb_capture(files) -> bool:
                 for line in lines:
                     print("  " + line)
                 return False
-            if ("message", "ACCB dropped successfully") in state.events[n:]:
+            if any(e[:2] == ("message", "ACCB dropped successfully") for e in state.events[n:]):
                 dropped = p
             if done is None and state.mem.u8(stsim.OWNERS + i):
                 done = p

@@ -71,7 +71,7 @@ UNIT_REGIONS = [
     ("view pointers", 0x9FA, 0xC),              # camera $9FA, viewed $9FE, controlled $A02
     ("island buffer 0", ISLAND_BUFFERS[0], ISLAND_BUFFER_SIZE),
     ("island buffer 1", ISLAND_BUFFERS[1], ISLAND_BUFFER_SIZE),
-    ("game over $463", 0x463, 4),
+    ("game over $463", 0x463, 5),     # $463-$466, $466 a word (result)
     ("object scratch $6EE", 0x6EE, 4),
     ("turret $6C8", 0x6C8, 0x10),
     ("vehicle bays", 0x496, 0x640 - 0x496),
@@ -260,7 +260,7 @@ class UnitCore(WorldState):
         m.set16(C_TARGET, cruise)
         if d < 1000:
             if m.u8(C_FLAGS) & 4:
-                self.events.append(("message", "carrier reached waypoint"))
+                self.events.append(("message", "carrier reached waypoint", self._ping()))
             m.set8(C_FLAGS, m.u8(C_FLAGS) & 0xFC)
             return self.carrier_stop()
         err = s16(self.atan2(dx, dz) - m.u16(o + 6))
@@ -319,7 +319,8 @@ class UnitCore(WorldState):
         v = m.u16(SUPERSTRUCTURE) - 1000
         m.set16(SUPERSTRUCTURE, 0 if v < 0 else v)
         m.set16(0x952, 2)
-        self.events.append(("message", "Carrier has grounded"))
+        self.events.append(("message", "Carrier has grounded", self._ping(True)))
+        self._sfx(1)
         m.set8(C_FLAGS, m.u8(C_FLAGS) | 0x81)
         m.set8(C_SUBSTATE, 0)
         m.set16(C_RECOIL, 50)
@@ -1836,7 +1837,8 @@ class UnitCore(WorldState):
             m.set8(a + 0x1A, 1)
             m.set8(a + 0x1B, 1)
             if not m.u8(a + 0x1C):
-                self.events.append(("message", "Missile heading for Carrier!"))
+                self.events.append(("message", "Missile heading for Carrier!", self._ping(True, True)))
+                self._sfx(12)
             return self._missile_turn(a)
         left = (m.u8(a + 0x1B) - 1) & 0xFF
         m.set8(a + 0x1B, left)
@@ -1987,6 +1989,7 @@ class UnitCore(WorldState):
             if bx >= 0 or bz >= 0:
                 return
         m.set16(a, 0)
+        self._explosion(1, a)
 
     def cruise_missile(self, a: int) -> None:
         """$1A8F6: flies to the point (+$1E, +$22) at 1000, dropping to 140 within 3000;
@@ -2031,6 +2034,7 @@ class UnitCore(WorldState):
                     return self.explode_blast(a)
                 m.set16(a + 0x22, vy - (s16(vy) >> 2))
                 self.spawn_debris_world(a)
+                self._explosion(1, a)
             elif s32(m.u32(a + 0x0E)) < 0x14:
                 m.set32(a + 0x0E, 0)
                 return self.explode_blast(a)
@@ -2269,8 +2273,10 @@ class UnitCore(WorldState):
 
     # ---- debris spawning --------------------------------------------------------------------
     def explode_world(self, a: int, sound: int) -> None:
-        """$1C2BA and friends: remove a world object and throw its debris."""
+        """$1C2BA and friends: remove a world object (an explosion of level `sound`) and
+        throw its debris."""
         self.mem.set16(a, 0)
+        self._explosion(sound, a)
         self.spawn_debris_world(a)
 
     def spawn_debris_world(self, a: int) -> None:
@@ -2322,8 +2328,10 @@ class UnitCore(WorldState):
         return w16(n - q * d)
 
     def _spawn_debris(self, a: int, x: int, y: int, z: int) -> None:
-        """$1CA9C: a burst of shards from the object type's recipe ($1C726, 18 bytes)."""
+        """$1CA9C: a burst of shards from the object type's recipe ($1C726, 18 bytes).
+        debris_a1 = what the routine leaves in A1: the burst used, or the object if none."""
         m = self.mem
+        self.debris_a1 = a
         self._set_pair(0xA68, m.u16(a + 4))
         self._set_pair(0xA6C, m.u16(a + 6))
         self._set_pair(0xA70, m.u16(a + 8))
@@ -2338,6 +2346,7 @@ class UnitCore(WorldState):
         if burst is None:
             burst = self._oldest_burst()
             self.free_burst(burst)
+        self.debris_a1 = burst
         m.set8(burst + 1, 0)
         m.set32(burst + 2, x)
         m.set32(burst + 6, y)
@@ -2445,6 +2454,24 @@ class UnitCore(WorldState):
             raise NotImplementedError(f"hit handler ${h:05X} (type {m.u16(victim + 2)})")
         fn(self, hitter, victim, cls)
 
+    # ---- sound events (docs/units.md §17) ---------------------------------------------------
+    def _sfx(self, n: int) -> None:
+        """`tst.b $1249; bne; jsr $20B90; dc.w n`: effect n, unless sound effects are off."""
+        if not self.mem.u8(0x1249):
+            self.events.append(("sound", n))
+
+    def _explosion(self, level: int, a: int) -> None:
+        """`move.w #level,d0; jsr $20C30` with A1 = world object a (position +$A/+$E/+$12).
+        The routine itself is gated by $1249 and graded by the distance to [$A02]."""
+        self.events.append(("explosion", level, a))
+
+    def _explosion_entry(self, level: int, e: int) -> None:
+        """`jsr $20C08` with A1 = island entry e: its words +$A/+$C/+$E plus the island
+        origin [$A4A/$A4E/$A52] (ext.l, add.l)."""
+        m = self.mem
+        x, y, z = (s32(m.s16(e + 0x0A + 2 * k) + m.u32(0xA4A + 4 * k)) for k in range(3))
+        self.events.append(("explosion", level, x, y, z))
+
     def score(self, points: int) -> None:
         """$A3EE: add to the decimal score digits $918-$923."""
         m = self.mem
@@ -2497,7 +2524,7 @@ class UnitCore(WorldState):
             return
         m.set16(0x952, 2)
         if m.u16(C_DAMAGE_MSG) == 0:
-            self.events.append(("message", "Carrier has been damaged!"))
+            self.events.append(("message", "Carrier has been damaged!", self._ping()))
         m.set16(C_DAMAGE_MSG, 0x1F4)
         dmg = m.u16(0x756)
         d = dmg >> 4
@@ -2538,10 +2565,11 @@ class UnitCore(WorldState):
             return
         m.set8(stsim.AI_ENABLED, 0)
         m.set16(v, 0)
+        self._explosion(2, v)
         self.spawn_debris_world(v)
         for _ in range(4):
             self.score(25000)
-        self.events.append(("message", "Enemy carrier destroyed"))
+        self.events.append(("message", "Enemy carrier destroyed", self._ping()))
         m.set16(stsim.GAME_END_TIMER, 100)
 
     def _vehicle_damage(self, rec: int, d: int, kind: str, v: int) -> bool:
@@ -2552,6 +2580,7 @@ class UnitCore(WorldState):
             m.set16(rec + 0x14, h)
             return True
         m.set16(rec + 0x14, 0)
+        self._explosion(1, v)
         self.spawn_debris_world(v)
         self.vehicle_destroyed(kind, v)
         return False
@@ -2579,7 +2608,8 @@ class UnitCore(WorldState):
             vx, vz = self.yaw_vector(v, speed)
             m.set32(v + 0x0A, m.u32(v + 0x0A) - vx)
             m.set32(v + 0x12, m.u32(v + 0x12) - vz)
-            self.events.append(("message", f"Walrus {bay + 1} motion blocked by object"))
+            self.events.append(("message", f"Walrus {bay + 1} motion blocked by object", self._ping(True, True)))
+            self._sfx(0)
             self._vehicle_damage(rec, 2000 if 1 <= t < 4 else 1000, "Walrus", v)
             return
         if m.u8(0x118A):
@@ -2588,7 +2618,7 @@ class UnitCore(WorldState):
             hold = m.u16(rec + 0x30)
             m.set16(rec + 0x30, 0x1F4)
             if hold == 0:
-                self.events.append(("message", f"Walrus {bay + 1} has been damaged!"))
+                self.events.append(("message", f"Walrus {bay + 1} has been damaged!", self._ping()))
 
     def hit_manta(self, hitter, v, cls) -> None:
         """$1BF84."""
@@ -2601,41 +2631,48 @@ class UnitCore(WorldState):
             hold = m.u16(rec + 0x30)
             m.set16(rec + 0x30, 0x1F4)
             if hold == 0:
-                self.events.append(("message", f"Manta {bay + 1} has been damaged!"))
+                self.events.append(("message", f"Manta {bay + 1} has been damaged!", self._ping()))
 
     def hit_laser(self, hitter, v, cls) -> None:
         """$1BFFA: a laser bolt is removed (unless hit by another bolt)."""
         if self.mem.u16(hitter + 2) != 0x10:
             self.mem.set16(v, 0)
+            self._explosion(0, v)
 
     def hit_deck_drone(self, hitter, v, cls) -> None:
         """$1C010: a carrier defence drone is destroyed by anything but another drone."""
         m = self.mem
         if 0x0A <= m.s16(hitter + 2) <= 0x0D:
             return
-        self.events.append(("message", "Defence drone destroyed"))
+        self.events.append(("message", "Defence drone destroyed", self._ping()))
         m.set8(DOCKED_WALRUS, 0xFF if m.u8(v) & 4 else 0)
         m.set16(DOOR_STATE, 3)
         self.dock_attach()
         m.set16(0x65E + 14 * m.u16(v + 0x1A), 0)
+        self._explosion(0, v)
         m.set16(v, 0)
         self.spawn_debris_world(v)
 
     def hit_world_simple(self, hitter, v, cls) -> None:
-        """$1C06E/$1C080/$1C312: removed, debris."""
-        self.mem.set16(v, 0)
+        """$1C06E/$1C080/$1C312: removed, debris. The explosion is level 1 from the guided
+        missile's handler $1C080, else 0."""
+        m = self.mem
+        self._explosion(1 if m.u32(HIT_HANDLERS + 4 * m.u16(v + 2)) == 0x1C080 else 0, v)
+        m.set16(v, 0)
         self.spawn_debris_world(v)
 
     def hit_flare(self, hitter, v, cls) -> None:
         """$1C2A4."""
         m = self.mem
         m.set16(v, 0)
+        self._explosion(0, v)
         m.set16(0x1152, m.u16(0x1152) - 1)
         self.spawn_debris_world(v)
 
     def hit_antiship(self, hitter, v, cls) -> None:
         """$1C2D2: destroyed; 250 points on an enemy island."""
         self.mem.set16(v, 0)
+        self._explosion(1, v)
         self.spawn_debris_world(v)
         self.score_if_enemy(250)
 
@@ -2652,11 +2689,13 @@ class UnitCore(WorldState):
         self.score_if_enemy(750)
         isl = stsim.ISLAND_TABLE + stsim.ISLAND_SIZE * m.u8(m.u32(0xA9C) + 1)
         m.set16(isl + 0x10, m.u16(isl + 0x10) - 1)
+        self._explosion_entry(1, v)
         self.spawn_debris_entry(v)
 
     def hit_sam(self, hitter, v, cls) -> None:
         """$1C292."""
         self.mem.set16(v, 0)
+        self._explosion_entry(0, v)
         self.spawn_debris_entry(v)
 
     def hit_rock(self, hitter, v, cls) -> None:
@@ -2664,12 +2703,14 @@ class UnitCore(WorldState):
         if self.mem.u16(hitter + 2) == 7:
             return
         self.mem.set16(v, 0)
+        self._explosion_entry(0, v)
         self.spawn_debris_entry(v)
         self.score(10)
 
     def hit_tree(self, hitter, v, cls) -> None:
         """$1C272."""
         self.mem.set16(v, 0)
+        self._explosion_entry(1, v)
         self.spawn_debris_entry(v)
         self.remove_entry(v)
         self.score(1)
@@ -2685,6 +2726,7 @@ class UnitCore(WorldState):
             return
         m.set16(v, 0)
         self.spawn_debris_world(v)
+        self._explosion(2, self.debris_a1)          # quirk: A1 is what $1CA8E left there
         m.set16(0x11CE, m.u16(0x11CE) - 1)
 
     BUILDING_REWARDS = {0x1C3D6: (0x400, 2500), 0x1C3E6: (0, 1000), 0x1C3F4: (0, 1000),
@@ -2703,6 +2745,7 @@ class UnitCore(WorldState):
         if h > 0:
             m.set16(v + 0x38, h)
             return self.entry_to_slot(v)
+        self._explosion_entry(2 if diff else 1, v)
         left = self.spawn_debris_entry(v)
         self.remove_entry(v)
         if self.buffer_island_owner() == 2:
@@ -2739,6 +2782,7 @@ class UnitCore(WorldState):
             m.set8(stsim.STOCKPILE, 0xFF)
             self.stores_clear()
         self.events.append(("neutral", i))
+        self._explosion_entry(2, v)
         self.spawn_debris_entry(v)
         self.remove_entry(v)
         self.network_invalidate()
@@ -2746,6 +2790,7 @@ class UnitCore(WorldState):
     def hit_construction(self, hitter, v, cls) -> None:
         """$1C4B6: progress -= the damage class; 15 points per hit on enemy islands."""
         m = self.mem
+        self._explosion_entry(0, v)
         h = s16(m.u16(v + 0x38) - m.u16(0x754))
         if h <= 0:
             return self.remove_entry(v)
@@ -2761,7 +2806,7 @@ class UnitCore(WorldState):
             if self.absw(a - m.u16(hitter + 6)) <= 10000:
                 i = m.u8(m.u32(0xA9C) + 1)
                 if self.owner(i) == 1:
-                    self.events.append(("message", "Friendly control centre bombed!"))
+                    self.events.append(("message", "Friendly control centre bombed!", self._ping()))
                 else:
                     m.set8(stsim.OWNERS + i, 1)
                     m.set16(0xD52, m.u16(0xD52) + 1)
@@ -2773,16 +2818,20 @@ class UnitCore(WorldState):
                     self.spawn_debris_world(v)
                     self.network_invalidate()
                     self.score(10000)
+                    self._sfx(11)
                     return
+                self._explosion(0, v)
                 m.set16(v, 0)
                 self.spawn_debris_world(v)
                 return
+        self._explosion(0, v)
         m.set16(v, 0)
         self.spawn_debris_world(v)
 
     def hit_blast(self, hitter, v, cls) -> None:
         """$1C5EE explode_blast: debris, then a type 23 blast volume where it was."""
         m = self.mem
+        self._explosion(2, v)
         self.spawn_debris_world(v)
         pos = [m.u32(v + o) for o in (0x0A, 0x0E, 0x12)]
         m.set16(v, 0)
@@ -2810,6 +2859,7 @@ class UnitCore(WorldState):
             m.set16(v + 0x38, h)
             return
         self.supply_drone_destroyed(v)
+        self._explosion(1, v)
 
     def supply_drone_destroyed(self, v: int) -> None:
         """Hook: the rest of $1C0CA ($1925C), ported in stunits_enemy."""
@@ -2855,9 +2905,10 @@ from stunits_enemy import EnemyMixin            # noqa: E402  enemy close-range 
 from stunits_carrier import CarrierMixin        # noqa: E402  carrier turret, SSM, flares, drones
 from stunits_controls import ControlsMixin      # noqa: E402  player commands, screen input, game flow
 from stunits_setup import SetupMixin            # noqa: E402  new game
+from stunits_render import RenderMixin          # noqa: E402  state the screens' renders write
 
 
-class UnitState(VehicleMixin, EnemyMixin, CarrierMixin, ControlsMixin, SetupMixin, UnitCore):
+class UnitState(VehicleMixin, EnemyMixin, CarrierMixin, ControlsMixin, SetupMixin, RenderMixin, UnitCore):
     """The whole unit layer: UnitCore plus the mixins."""
 
 

@@ -18,6 +18,7 @@ export const SCREENS = {
 
 /** VBLs per simulation pass on each screen, measured in Hatari (docs/units.md §1): the
  * original runs as fast as the screen draws. Unmeasured screens use 4. */
+export const vblsPerPass = (screen: number) => VBLS_PER_PASS[screen] ?? 4;
 const VBLS_PER_PASS: Record<number, number> = {
   0: 6, 1: 4, 2: 4, 3: 3, 4: 3, 8: 7, 9: 7, 10: 3, 11: 3, 12: 5,
   17: 4, 18: 3, 19: 6, 20: 3, 25: 4, 26: 6, 27: 3, 28: 3,

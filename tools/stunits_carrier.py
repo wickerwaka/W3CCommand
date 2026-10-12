@@ -88,7 +88,7 @@ class CarrierMixin:
         m = self.mem
         m.set8(0x88C, 0)
         if m.u16(0xB1A) == 0:
-            self.events.append(("message", "No laser"))
+            self.events.append(("message", "No laser", self._ping()))
             return
         a = self.find_free_object()
         if a is None:
@@ -120,6 +120,7 @@ class CarrierMixin:
         m.set32(a + 0x12, m.u32(c + 0x12) + z)
         m.set32(a + 0x0E, 0x14A)
         m.set8(a + 0x1B, 0x4B)
+        self._sfx(4)
 
     # ---- commands ---------------------------------------------------------------------------
     def cmd_launch_flare(self) -> None:
@@ -127,16 +128,16 @@ class CarrierMixin:
         $1150 at 0 and the flare launcher working)."""
         m = self.mem
         if not m.u16(STOCK_FLARES):
-            return self.events.append(("message", "No decoy flares"))
+            return self.events.append(("message", "No decoy flares", self._ping()))
         if m.u16(0x1150):
-            return self.events.append(("message", "Flare launcher busy"))
+            return self.events.append(("message", "Flare launcher busy", self._ping()))
         if not m.u8(0xB22):
-            return self.events.append(("message", "Flare launcher too damaged"))
+            return self.events.append(("message", "Flare launcher too damaged", self._ping()))
         a, k = self.obj(OBJ_FLARES[0]), OBJ_FLARES[0]
         if m.u8(a + 1) & 1:
             a, k = self.obj(OBJ_FLARES[1]), OBJ_FLARES[1]
             if m.u8(a + 1) & 1:
-                return self.events.append(("message", "Flare launcher busy"))
+                return self.events.append(("message", "Flare launcher busy", self._ping()))
         m.set16(stunits.NEW_INDEX, k)
         self.init_world_object(a, 0x1E)
         self.reset_pair_schedules()
@@ -148,7 +149,8 @@ class CarrierMixin:
         m.set16(a + 0x20, 0xC8)
         m.set16(a + 6, self.rand())
         m.set32(0x1154, a)
-        self.events.append(("message", "Decoy flare launched"))
+        self.events.append(("message", "Decoy flare launched", self._ping(True, True)))
+        self._sfx(10)
         m.set16(STOCK_FLARES, m.u16(STOCK_FLARES) - 1)
         m.set16(0x1152, m.u16(0x1152) + 1)
         m.set16(0x1150, 0x32)
@@ -157,10 +159,10 @@ class CarrierMixin:
         """$134C2: the viewing drone (object 15), launched astern."""
         m = self.mem
         if not m.u16(STOCK_RECON):
-            return self.events.append(("message", "No Recon drone available"))
+            return self.events.append(("message", "No Recon drone available", self._ping()))
         a = self.obj(OBJ_RECON)
         if m.u8(a + 1) & 1:
-            return self.events.append(("message", "Flare launcher busy"))
+            return self.events.append(("message", "Flare launcher busy", self._ping()))
         m.set16(stunits.NEW_INDEX, OBJ_RECON)
         self.init_world_object(a, 0x20)
         self.reset_pair_schedules()
@@ -173,7 +175,8 @@ class CarrierMixin:
         m.set16(a + 0x22, 0xFA)
         m.set16(a + 0x24, 0xC8)
         m.set16(a + 0x20, 0x12C)
-        self.events.append(("message", "Recon drone launched"))
+        self.events.append(("message", "Recon drone launched", self._ping(True, True)))
+        self._sfx(10)
         m.set16(STOCK_RECON, m.u16(STOCK_RECON) - 1)
 
     def cmd_fire_ssm(self) -> None:
@@ -184,11 +187,11 @@ class CarrierMixin:
         if not m.u8(0x1160):
             return
         if not m.u16(STOCK_SSM):
-            return self.events.append(("message", "No missiles"))
+            return self.events.append(("message", "No missiles", self._ping()))
         if m.u16(0x115E):
-            return self.events.append(("message", "Flare launcher busy"))
+            return self.events.append(("message", "Flare launcher busy", self._ping()))
         if not m.u8(0xB2A):
-            return self.events.append(("message", "Missile system too damaged"))
+            return self.events.append(("message", "Missile system too damaged", self._ping()))
         d = self.obj(OBJ_RECON)
         if not m.u8(d + 1) & 1:
             return
@@ -203,7 +206,7 @@ class CarrierMixin:
         tz = s32(tz + m.u32(d + 0x12))
         c = stunits.CARRIER
         if not abs(s32(tx - m.u32(c + 0x0A))) > 0x7D0 and abs(s32(tz - m.u32(c + 0x12))) < 0x7D0:
-            return self.events.append(("message", "Target too close"))
+            return self.events.append(("message", "Target too close", self._ping()))
         m.set32(0xA80, tx)
         m.set32(0xA84, tz)
         a = self.find_free_object()
@@ -225,7 +228,8 @@ class CarrierMixin:
         m.set8(c + 0x1B, 0xFF)
         m.set16(STOCK_SSM, m.u16(STOCK_SSM) - 1)
         m.set16(0x115E, 0x32)
-        self.events.append(("message", "Missile launched"))
+        self.events.append(("message", "Missile launched", self._ping(True, True)))
+        self._sfx(5)
 
     def _drone_station_clash(self, rec: int, x: int, z: int) -> bool:
         """$1055C: another active station's target within sqrt($24000) (about 384)."""
@@ -245,16 +249,16 @@ class CarrierMixin:
         until it's clear of the other stations."""
         m = self.mem
         if m.u8(0x122F):
-            return self.events.append(("message", "Drone recall in progress"))
+            return self.events.append(("message", "Drone recall in progress", self._ping()))
         if m.u8(0x1233):
-            return self.events.append(("message", "Dock busy"))
+            return self.events.append(("message", "Dock busy", self._ping()))
         if m.u8(0xD40):
-            return self.events.append(("message", "Dock busy"))
+            return self.events.append(("message", "Dock busy", self._ping()))
         if not m.u16(STOCK_DRONES):
-            return self.events.append(("message", "No drones"))
+            return self.events.append(("message", "No drones", self._ping()))
         k = next((j for j in range(4) if not m.u8(0x65E + 14 * j + 1) & 1), None)
         if k is None:
-            return self.events.append(("message", "All drones launched"))
+            return self.events.append(("message", "All drones launched", self._ping()))
         rec = 0x65E + 14 * k
         m.set16(rec, 1)
         m.set16(rec + 2, 0)
@@ -267,7 +271,7 @@ class CarrierMixin:
                 if not self._drone_station_clash(rec, 0, z):
                     break
                 z = w16(z - 0x180)
-            self.events.append(("message", "Drone station moved"))
+            self.events.append(("message", "Drone station moved", self._ping()))
         m.set16(STOCK_DRONES, m.u16(STOCK_DRONES) - 1)
         m.set16(stunits.NEW_INDEX, 11 + k)
         a = self.obj(11 + k)
@@ -279,13 +283,13 @@ class CarrierMixin:
         """$1088C: start the sequence ($122F) that brings the drones back to the deck."""
         m = self.mem
         if not m.u16(0x65C):
-            return self.events.append(("message", "No drones launched"))
+            return self.events.append(("message", "No drones launched", self._ping()))
         if m.u8(0x122F):
-            return self.events.append(("message", "Drone recall in progress"))
+            return self.events.append(("message", "Drone recall in progress", self._ping()))
         if m.u8(0x1233):
-            return self.events.append(("message", "Dock busy"))
+            return self.events.append(("message", "Dock busy", self._ping()))
         if m.u8(0xD40):
-            return self.events.append(("message", "Dock busy"))
+            return self.events.append(("message", "Dock busy", self._ping()))
         m.set8(0x122F, 0xFF)
         m.set16(0x69A, 0)
         z = 0xFA24
@@ -295,7 +299,7 @@ class CarrierMixin:
             m.set16(rec + 0x0C, z)
             m.set16(rec, m.u16(rec) & 1)
             z = w16(z - 0x180)
-        self.events.append(("message", "Recalling drones"))
+        self.events.append(("message", "Recalling drones", self._ping()))
 
 
 ROUTINES = {}

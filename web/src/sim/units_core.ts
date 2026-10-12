@@ -121,7 +121,7 @@ export const UNIT_REGIONS: Region[] = [
   ["view pointers", 0x9fa, 0xc], // camera $9FA, viewed $9FE, controlled $A02
   ["island buffer 0", ISLAND_BUFFERS[0], ISLAND_BUFFER_SIZE],
   ["island buffer 1", ISLAND_BUFFERS[1], ISLAND_BUFFER_SIZE],
-  ["game over $463", 0x463, 4],
+  ["game over $463", 0x463, 5], // $463-$466, $466 a word (result)
   ["object scratch $6EE", 0x6ee, 4],
   ["turret $6C8", 0x6c8, 0x10],
   ["vehicle bays", 0x496, 0x640 - 0x496],
@@ -347,7 +347,7 @@ export abstract class UnitCore extends WorldState {
     if (d <= 2000 && cruise > 0x20) cruise = 0x20;
     m.set16(C_TARGET, cruise);
     if (d < 1000) {
-      if (m.u8(C_FLAGS) & 4) this.events.push(["message", "carrier reached waypoint"]);
+      if (m.u8(C_FLAGS) & 4) this.events.push(["message", "carrier reached waypoint", this._ping()]);
       m.set8(C_FLAGS, m.u8(C_FLAGS) & 0xfc);
       return this.carrier_stop();
     }
@@ -414,7 +414,8 @@ export abstract class UnitCore extends WorldState {
     const v = m.u16(SUPERSTRUCTURE) - 1000;
     m.set16(SUPERSTRUCTURE, v < 0 ? 0 : v);
     m.set16(0x952, 2);
-    this.events.push(["message", "Carrier has grounded"]);
+    this.events.push(["message", "Carrier has grounded", this._ping(true)]);
+    this._sfx(1);
     m.set8(C_FLAGS, m.u8(C_FLAGS) | 0x81);
     m.set8(C_SUBSTATE, 0);
     m.set16(C_RECOIL, 50);
@@ -2100,7 +2101,10 @@ export abstract class UnitCore extends WorldState {
       if (dx < 0 && dz < 0) return this._missile_fly(a);
       m.set8(a + 0x1a, 1);
       m.set8(a + 0x1b, 1);
-      if (!m.u8(a + 0x1c)) this.events.push(["message", "Missile heading for Carrier!"]);
+      if (!m.u8(a + 0x1c)) {
+        this.events.push(["message", "Missile heading for Carrier!", this._ping(true, true)]);
+        this._sfx(12);
+      }
       return this._missile_turn(a);
     }
     const left = (m.u8(a + 0x1b) - 1) & 0xff;
@@ -2271,6 +2275,7 @@ export abstract class UnitCore extends WorldState {
       if (bx >= 0 || bz >= 0) return;
     }
     m.set16(a, 0);
+    this._explosion(1, a);
   }
 
   /** $1A8F6: flies to the point (+$1E, +$22) at 1000, dropping to 140 within 3000;
@@ -2315,6 +2320,7 @@ export abstract class UnitCore extends WorldState {
         if (s16(vy) < 0x1e) return this.explode_blast(a);
         m.set16(a + 0x22, vy - (s16(vy) >> 2));
         this.spawn_debris_world(a);
+        this._explosion(1, a);
       } else if (s32(m.u32(a + 0x0e)) < 0x14) {
         m.set32(a + 0x0e, 0);
         return this.explode_blast(a);
@@ -2573,10 +2579,11 @@ export abstract class UnitCore extends WorldState {
   };
 
   // ---- debris spawning --------------------------------------------------------------------
-  /** $1C2BA and friends: remove a world object and throw its debris. */
+  /** $1C2BA and friends: remove a world object (an explosion of level `sound`) and
+   * throw its debris. */
   explode_world(a: number, sound: number): void {
-    void sound;
     this.mem.set16(a, 0);
+    this._explosion(sound, a);
     this.spawn_debris_world(a);
   }
 
@@ -2640,9 +2647,14 @@ export abstract class UnitCore extends WorldState {
     return UnitCore._divs_rem(r, d);
   }
 
-  /** $1CA9C: a burst of shards from the object type's recipe ($1C726, 18 bytes). */
+  /** What $1CA8E leaves in A1: the burst used, or the object if none (set by _spawn_debris). */
+  debris_a1 = 0;
+
+  /** $1CA9C: a burst of shards from the object type's recipe ($1C726, 18 bytes).
+   * debris_a1 = what the routine leaves in A1: the burst used, or the object if none. */
   _spawn_debris(a: number, x: number, y: number, z: number): number | null {
     const m = this.mem;
+    this.debris_a1 = a;
     this._set_pair(0xa68, m.u16(a + 4));
     this._set_pair(0xa6c, m.u16(a + 6));
     this._set_pair(0xa70, m.u16(a + 8));
@@ -2662,6 +2674,7 @@ export abstract class UnitCore extends WorldState {
       burst = this._oldest_burst();
       this.free_burst(burst);
     }
+    this.debris_a1 = burst;
     m.set8(burst + 1, 0);
     m.set32(burst + 2, x);
     m.set32(burst + 6, y);
@@ -2777,6 +2790,26 @@ export abstract class UnitCore extends WorldState {
     (this as any)[fn](hitter, victim, cls);
   }
 
+  // ---- sound events (docs/units.md §17) ---------------------------------------------------
+  /** `tst.b $1249; bne; jsr $20B90; dc.w n`: effect n, unless sound effects are off. */
+  _sfx(n: number): void {
+    if (!this.mem.u8(0x1249)) this.events.push(["sound", n]);
+  }
+
+  /** `move.w #level,d0; jsr $20C30` with A1 = world object a (position +$A/+$E/+$12).
+   * The routine itself is gated by $1249 and graded by the distance to [$A02]. */
+  _explosion(level: number, a: number): void {
+    this.events.push(["explosion", level, a]);
+  }
+
+  /** `jsr $20C08` with A1 = island entry e: its words +$A/+$C/+$E plus the island
+   * origin [$A4A/$A4E/$A52] (ext.l, add.l). */
+  _explosion_entry(level: number, e: number): void {
+    const m = this.mem;
+    const [x, y, z] = [0, 1, 2].map((k) => s32(m.s16(e + 0x0a + 2 * k) + m.u32(0xa4a + 4 * k)));
+    this.events.push(["explosion", level, x, y, z]);
+  }
+
   /** $A3EE: add to the decimal score digits $918-$923. */
   score(points: number): void {
     const m = this.mem;
@@ -2835,7 +2868,7 @@ export abstract class UnitCore extends WorldState {
     const m = this.mem;
     if (cls === 0) return;
     m.set16(0x952, 2);
-    if (m.u16(C_DAMAGE_MSG) === 0) this.events.push(["message", "Carrier has been damaged!"]);
+    if (m.u16(C_DAMAGE_MSG) === 0) this.events.push(["message", "Carrier has been damaged!", this._ping()]);
     m.set16(C_DAMAGE_MSG, 0x1f4);
     const dmg = m.u16(0x756);
     const d = dmg >> 4;
@@ -2879,9 +2912,10 @@ export abstract class UnitCore extends WorldState {
     }
     m.set8(AI_ENABLED, 0);
     m.set16(v, 0);
+    this._explosion(2, v);
     this.spawn_debris_world(v);
     for (let i = 0; i < 4; i++) this.score(25000);
-    this.events.push(["message", "Enemy carrier destroyed"]);
+    this.events.push(["message", "Enemy carrier destroyed", this._ping()]);
     m.set16(GAME_END_TIMER, 100);
   }
 
@@ -2894,6 +2928,7 @@ export abstract class UnitCore extends WorldState {
       return true;
     }
     m.set16(rec + 0x14, 0);
+    this._explosion(1, v);
     this.spawn_debris_world(v);
     this.vehicle_destroyed(kind, v);
     return false;
@@ -2922,7 +2957,8 @@ export abstract class UnitCore extends WorldState {
       const [vx, vz] = this.yaw_vector(v, speed);
       m.set32(v + 0x0a, m.u32(v + 0x0a) - vx);
       m.set32(v + 0x12, m.u32(v + 0x12) - vz);
-      this.events.push(["message", `Walrus ${bay + 1} motion blocked by object`]);
+      this.events.push(["message", `Walrus ${bay + 1} motion blocked by object`, this._ping(true, true)]);
+      this._sfx(0);
       this._vehicle_damage(rec, 1 <= t && t < 4 ? 2000 : 1000, "Walrus", v);
       return;
     }
@@ -2930,7 +2966,7 @@ export abstract class UnitCore extends WorldState {
     if (this._vehicle_damage(rec, m.u16(0x756), "Walrus", v)) {
       const hold = m.u16(rec + 0x30);
       m.set16(rec + 0x30, 0x1f4);
-      if (hold === 0) this.events.push(["message", `Walrus ${bay + 1} has been damaged!`]);
+      if (hold === 0) this.events.push(["message", `Walrus ${bay + 1} has been damaged!`, this._ping()]);
     }
   }
 
@@ -2944,14 +2980,17 @@ export abstract class UnitCore extends WorldState {
     if (this._vehicle_damage(rec, m.u16(0x756), "Manta", v)) {
       const hold = m.u16(rec + 0x30);
       m.set16(rec + 0x30, 0x1f4);
-      if (hold === 0) this.events.push(["message", `Manta ${bay + 1} has been damaged!`]);
+      if (hold === 0) this.events.push(["message", `Manta ${bay + 1} has been damaged!`, this._ping()]);
     }
   }
 
   /** $1BFFA: a laser bolt is removed (unless hit by another bolt). */
   hit_laser(hitter: number, v: number, cls: number): void {
     void cls;
-    if (this.mem.u16(hitter + 2) !== 0x10) this.mem.set16(v, 0);
+    if (this.mem.u16(hitter + 2) !== 0x10) {
+      this.mem.set16(v, 0);
+      this._explosion(0, v);
+    }
   }
 
   /** $1C010: a carrier defence drone is destroyed by anything but another drone. */
@@ -2960,20 +2999,24 @@ export abstract class UnitCore extends WorldState {
     const m = this.mem;
     const ht = m.s16(hitter + 2);
     if (0x0a <= ht && ht <= 0x0d) return;
-    this.events.push(["message", "Defence drone destroyed"]);
+    this.events.push(["message", "Defence drone destroyed", this._ping()]);
     m.set8(DOCKED_WALRUS, m.u8(v) & 4 ? 0xff : 0);
     m.set16(DOOR_STATE, 3);
     this.dock_attach();
     m.set16(0x65e + 14 * m.u16(v + 0x1a), 0);
+    this._explosion(0, v);
     m.set16(v, 0);
     this.spawn_debris_world(v);
   }
 
-  /** $1C06E/$1C080/$1C312: removed, debris. */
+  /** $1C06E/$1C080/$1C312: removed, debris. The explosion is level 1 from the guided
+   * missile's handler $1C080, else 0. */
   hit_world_simple(hitter: number, v: number, cls: number): void {
     void hitter;
     void cls;
-    this.mem.set16(v, 0);
+    const m = this.mem;
+    this._explosion(m.u32(HIT_HANDLERS + 4 * m.u16(v + 2)) === 0x1c080 ? 1 : 0, v);
+    m.set16(v, 0);
     this.spawn_debris_world(v);
   }
 
@@ -2983,6 +3026,7 @@ export abstract class UnitCore extends WorldState {
     void cls;
     const m = this.mem;
     m.set16(v, 0);
+    this._explosion(0, v);
     m.set16(0x1152, m.u16(0x1152) - 1);
     this.spawn_debris_world(v);
   }
@@ -2992,6 +3036,7 @@ export abstract class UnitCore extends WorldState {
     void hitter;
     void cls;
     this.mem.set16(v, 0);
+    this._explosion(1, v);
     this.spawn_debris_world(v);
     this.score_if_enemy(250);
   }
@@ -3010,6 +3055,7 @@ export abstract class UnitCore extends WorldState {
     this.score_if_enemy(750);
     const isl = ISLAND_TABLE + ISLAND_SIZE * m.u8(m.u32(0xa9c) + 1);
     m.set16(isl + 0x10, m.u16(isl + 0x10) - 1);
+    this._explosion_entry(1, v);
     this.spawn_debris_entry(v);
   }
 
@@ -3018,6 +3064,7 @@ export abstract class UnitCore extends WorldState {
     void hitter;
     void cls;
     this.mem.set16(v, 0);
+    this._explosion_entry(0, v);
     this.spawn_debris_entry(v);
   }
 
@@ -3026,6 +3073,7 @@ export abstract class UnitCore extends WorldState {
     void cls;
     if (this.mem.u16(hitter + 2) === 7) return;
     this.mem.set16(v, 0);
+    this._explosion_entry(0, v);
     this.spawn_debris_entry(v);
     this.score(10);
   }
@@ -3035,6 +3083,7 @@ export abstract class UnitCore extends WorldState {
     void hitter;
     void cls;
     this.mem.set16(v, 0);
+    this._explosion_entry(1, v);
     this.spawn_debris_entry(v);
     this.remove_entry(v);
     this.score(1);
@@ -3052,6 +3101,7 @@ export abstract class UnitCore extends WorldState {
     }
     m.set16(v, 0);
     this.spawn_debris_world(v);
+    this._explosion(2, this.debris_a1); // quirk: A1 is what $1CA8E left there
     m.set16(0x11ce, m.u16(0x11ce) - 1);
   }
 
@@ -3078,6 +3128,7 @@ export abstract class UnitCore extends WorldState {
       m.set16(v + 0x38, h);
       return this.entry_to_slot(v);
     }
+    this._explosion_entry(diff ? 2 : 1, v);
     const left = this.spawn_debris_entry(v);
     this.remove_entry(v);
     if (this.buffer_island_owner() === 2) {
@@ -3117,6 +3168,7 @@ export abstract class UnitCore extends WorldState {
       this.stores_clear();
     }
     this.events.push(["neutral", i]);
+    this._explosion_entry(2, v);
     this.spawn_debris_entry(v);
     this.remove_entry(v);
     this.network_invalidate();
@@ -3127,6 +3179,7 @@ export abstract class UnitCore extends WorldState {
     void hitter;
     void cls;
     const m = this.mem;
+    this._explosion_entry(0, v);
     const h = s16(m.u16(v + 0x38) - m.u16(0x754));
     if (h <= 0) return this.remove_entry(v);
     m.set16(v + 0x38, h);
@@ -3143,7 +3196,7 @@ export abstract class UnitCore extends WorldState {
       if (this.absw(a - m.u16(hitter + 6)) <= 10000) {
         const i = m.u8(m.u32(0xa9c) + 1);
         if (this.owner(i) === 1) {
-          this.events.push(["message", "Friendly control centre bombed!"]);
+          this.events.push(["message", "Friendly control centre bombed!", this._ping()]);
         } else {
           m.set8(OWNERS + i, 1);
           m.set16(0xd52, m.u16(0xd52) + 1);
@@ -3156,13 +3209,16 @@ export abstract class UnitCore extends WorldState {
           this.spawn_debris_world(v);
           this.network_invalidate();
           this.score(10000);
+          this._sfx(11);
           return;
         }
+        this._explosion(0, v);
         m.set16(v, 0);
         this.spawn_debris_world(v);
         return;
       }
     }
+    this._explosion(0, v);
     m.set16(v, 0);
     this.spawn_debris_world(v);
   }
@@ -3172,6 +3228,7 @@ export abstract class UnitCore extends WorldState {
     void hitter;
     void cls;
     const m = this.mem;
+    this._explosion(2, v);
     this.spawn_debris_world(v);
     const pos = [0x0a, 0x0e, 0x12].map((o) => m.u32(v + o));
     m.set16(v, 0);
@@ -3199,6 +3256,7 @@ export abstract class UnitCore extends WorldState {
       return;
     }
     this.supply_drone_destroyed(v);
+    this._explosion(1, v);
   }
 
   /** Hook: the rest of $1C0CA ($1925C), ported in stunits_enemy. */

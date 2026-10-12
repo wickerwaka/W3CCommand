@@ -380,7 +380,7 @@ export abstract class EnemyUnits extends CarrierUnits {
     const db = m.u32(a + 0x3c);
     if (!cb) {
       m.set16(S_STATE, 2);
-      this.events.push(["message", "Too far from island - drone returning"]);
+      this.events.push(["message", "Too far from island - drone returning", this._ping()]);
       return;
     }
     if (!(EnemyUnits._box_side(m, c, db) & EnemyUnits._box_side(m, a, db))) {
@@ -541,7 +541,7 @@ export abstract class EnemyUnits extends CarrierUnits {
     if (z >= -1000) {
       this._bump();
       m.set16(S_TIMER, 0);
-      this.events.push(["message", "Drone docked - transferring stores"]);
+      this.events.push(["message", "Drone docked - transferring stores", this._ping()]);
     }
     this._supply_follow();
   }
@@ -602,7 +602,7 @@ export abstract class EnemyUnits extends CarrierUnits {
         this._bump();
         m.set16(S_TIMER, 0);
         m.set16(S_DONE, 1);
-        this.events.push(["message", "Transfer complete"]);
+        this.events.push(["message", "Transfer complete", this._ping()]);
       }
     }
     m.set16(SUPPLY_DRONE + 6, m.u16(PLAYER_CARRIER + 6));
@@ -641,7 +641,7 @@ export abstract class EnemyUnits extends CarrierUnits {
   supply_drone_destroyed(v: number): void {
     const m = this.mem;
     m.set16(v, 0);
-    this.events.push(["message", "Supply drone has been destroyed"]);
+    this.events.push(["message", "Supply drone has been destroyed", this._ping()]);
     if (m.u16(DOCKED_WALRUS) === 4) {
       m.set16(DOCKED_WALRUS, 0xffff);
       this.dock_attach();
@@ -665,16 +665,16 @@ export abstract class EnemyUnits extends CarrierUnits {
     const c = PLAYER_CARRIER;
     const a = SUPPLY_DRONE;
     if (m.u8(S_ACTIVE)) {
-      this.events.push(["message", "Transfer already in progress"]);
+      this.events.push(["message", "Transfer already in progress", this._ping()]);
       return false;
     }
     const buf = m.u32(c + 0x3c);
     if (!buf || m.u8(buf + 1) !== m.u16(STOCKPILE)) {
-      this.events.push(["message", "Not at stockpile island"]);
+      this.events.push(["message", "Not at stockpile island", this._ping()]);
       return false;
     }
     if (m.u16(S_TIMER)) {
-      this.events.push(["message", "Supply drone not available"]);
+      this.events.push(["message", "Supply drone not available", this._ping()]);
       return false;
     }
     let queued = 0;
@@ -685,7 +685,7 @@ export abstract class EnemyUnits extends CarrierUnits {
       queued = queued || m.u32(q);
     }
     if (!queued) {
-      this.events.push(["message", "Nothing to transfer"]);
+      this.events.push(["message", "Nothing to transfer", this._ping()]);
       return false;
     }
     this.init_world_object(a, 0x23);
@@ -712,7 +712,7 @@ export abstract class EnemyUnits extends CarrierUnits {
     m.set16(S_STATE, 0);
     m.set8(S_ACTIVE, 0xff);
     m.set16(S_DONE, 0);
-    this.events.push(["message", "Resupply drone launched"]);
+    this.events.push(["message", "Resupply drone launched", this._ping()]);
     return true;
   }
 }

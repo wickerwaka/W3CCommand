@@ -6,6 +6,7 @@ A line-by-line port of the verified Python reference model:
 |---|---|---|
 | `world.ts` | `tools/stsim.py` | `WorldState` (strategic layer) |
 | `units_core.ts` | `tools/stunits.py` | `UnitCore extends WorldState` |
+| `units_render.ts` | `tools/stunits_render.py` | `RenderUnits extends UnitCore` (state the renders write) |
 | `units_carrier.ts` | `tools/stunits_carrier.py` | `CarrierUnits extends UnitCore` |
 | `units_enemy.ts` | `tools/stunits_enemy.py` | `EnemyUnits extends CarrierUnits` |
 | `units_vehicles.ts` | `tools/stunits_vehicles.py` | `UnitState extends EnemyUnits` (the whole model) |

@@ -91,7 +91,7 @@ export abstract class CarrierUnits extends ControlsUnits {
     const m = this.mem;
     m.set8(0x88c, 0);
     if (m.u16(0xb1a) === 0) {
-      this.events.push(["message", "No laser"]);
+      this.events.push(["message", "No laser", this._ping()]);
       return;
     }
     const a = this.find_free_object();
@@ -120,6 +120,7 @@ export abstract class CarrierUnits extends ControlsUnits {
     m.set32(a + 0x12, m.u32(c + 0x12) + z);
     m.set32(a + 0x0e, 0x14a);
     m.set8(a + 0x1b, 0x4b);
+    this._sfx(4);
   }
 
   // ---- commands ---------------------------------------------------------------------------
@@ -128,15 +129,15 @@ export abstract class CarrierUnits extends ControlsUnits {
   cmd_launch_flare(): void {
     const m = this.mem;
     if (!m.u16(STOCK_FLARES)) {
-      this.events.push(["message", "No decoy flares"]);
+      this.events.push(["message", "No decoy flares", this._ping()]);
       return;
     }
     if (m.u16(0x1150)) {
-      this.events.push(["message", "Flare launcher busy"]);
+      this.events.push(["message", "Flare launcher busy", this._ping()]);
       return;
     }
     if (!m.u8(0xb22)) {
-      this.events.push(["message", "Flare launcher too damaged"]);
+      this.events.push(["message", "Flare launcher too damaged", this._ping()]);
       return;
     }
     let a = this.obj(OBJ_FLARES[0]);
@@ -145,7 +146,7 @@ export abstract class CarrierUnits extends ControlsUnits {
       a = this.obj(OBJ_FLARES[1]);
       k = OBJ_FLARES[1];
       if (m.u8(a + 1) & 1) {
-        this.events.push(["message", "Flare launcher busy"]);
+        this.events.push(["message", "Flare launcher busy", this._ping()]);
         return;
       }
     }
@@ -160,7 +161,8 @@ export abstract class CarrierUnits extends ControlsUnits {
     m.set16(a + 0x20, 0xc8);
     m.set16(a + 6, this.rand());
     m.set32(0x1154, a);
-    this.events.push(["message", "Decoy flare launched"]);
+    this.events.push(["message", "Decoy flare launched", this._ping(true, true)]);
+    this._sfx(10);
     m.set16(STOCK_FLARES, m.u16(STOCK_FLARES) - 1);
     m.set16(0x1152, m.u16(0x1152) + 1);
     m.set16(0x1150, 0x32);
@@ -170,12 +172,12 @@ export abstract class CarrierUnits extends ControlsUnits {
   cmd_launch_recon_drone(): void {
     const m = this.mem;
     if (!m.u16(STOCK_RECON)) {
-      this.events.push(["message", "No Recon drone available"]);
+      this.events.push(["message", "No Recon drone available", this._ping()]);
       return;
     }
     const a = this.obj(OBJ_RECON);
     if (m.u8(a + 1) & 1) {
-      this.events.push(["message", "Flare launcher busy"]);
+      this.events.push(["message", "Flare launcher busy", this._ping()]);
       return;
     }
     m.set16(NEW_INDEX, OBJ_RECON);
@@ -190,7 +192,8 @@ export abstract class CarrierUnits extends ControlsUnits {
     m.set16(a + 0x22, 0xfa);
     m.set16(a + 0x24, 0xc8);
     m.set16(a + 0x20, 0x12c);
-    this.events.push(["message", "Recon drone launched"]);
+    this.events.push(["message", "Recon drone launched", this._ping(true, true)]);
+    this._sfx(10);
     m.set16(STOCK_RECON, m.u16(STOCK_RECON) - 1);
   }
 
@@ -201,15 +204,15 @@ export abstract class CarrierUnits extends ControlsUnits {
     const m = this.mem;
     if (!m.u8(0x1160)) return;
     if (!m.u16(STOCK_SSM)) {
-      this.events.push(["message", "No missiles"]);
+      this.events.push(["message", "No missiles", this._ping()]);
       return;
     }
     if (m.u16(0x115e)) {
-      this.events.push(["message", "Flare launcher busy"]);
+      this.events.push(["message", "Flare launcher busy", this._ping()]);
       return;
     }
     if (!m.u8(0xb2a)) {
-      this.events.push(["message", "Missile system too damaged"]);
+      this.events.push(["message", "Missile system too damaged", this._ping()]);
       return;
     }
     const d = this.obj(OBJ_RECON);
@@ -226,7 +229,7 @@ export abstract class CarrierUnits extends ControlsUnits {
     const c = CARRIER;
     // Python: `not abs(...) > 0x7D0 and abs(...) < 0x7D0`
     if (!(Math.abs(s32(tx - m.u32(c + 0x0a))) > 0x7d0) && Math.abs(s32(tz - m.u32(c + 0x12))) < 0x7d0) {
-      this.events.push(["message", "Target too close"]);
+      this.events.push(["message", "Target too close", this._ping()]);
       return;
     }
     m.set32(0xa80, tx);
@@ -249,7 +252,8 @@ export abstract class CarrierUnits extends ControlsUnits {
     m.set8(c + 0x1b, 0xff);
     m.set16(STOCK_SSM, m.u16(STOCK_SSM) - 1);
     m.set16(0x115e, 0x32);
-    this.events.push(["message", "Missile launched"]);
+    this.events.push(["message", "Missile launched", this._ping(true, true)]);
+    this._sfx(5);
   }
 
   /** $1055C: another active station's target within sqrt($24000) (about 384). */
@@ -270,19 +274,19 @@ export abstract class CarrierUnits extends ControlsUnits {
   cmd_launch_defence_drone(): void {
     const m = this.mem;
     if (m.u8(0x122f)) {
-      this.events.push(["message", "Drone recall in progress"]);
+      this.events.push(["message", "Drone recall in progress", this._ping()]);
       return;
     }
     if (m.u8(0x1233)) {
-      this.events.push(["message", "Dock busy"]);
+      this.events.push(["message", "Dock busy", this._ping()]);
       return;
     }
     if (m.u8(0xd40)) {
-      this.events.push(["message", "Dock busy"]);
+      this.events.push(["message", "Dock busy", this._ping()]);
       return;
     }
     if (!m.u16(STOCK_DRONES)) {
-      this.events.push(["message", "No drones"]);
+      this.events.push(["message", "No drones", this._ping()]);
       return;
     }
     let k: number | null = null;
@@ -293,7 +297,7 @@ export abstract class CarrierUnits extends ControlsUnits {
       }
     }
     if (k === null) {
-      this.events.push(["message", "All drones launched"]);
+      this.events.push(["message", "All drones launched", this._ping()]);
       return;
     }
     const rec = 0x65e + 14 * k;
@@ -307,7 +311,7 @@ export abstract class CarrierUnits extends ControlsUnits {
         if (!this._drone_station_clash(rec, 0, z)) break;
         z = w16(z - 0x180);
       }
-      this.events.push(["message", "Drone station moved"]);
+      this.events.push(["message", "Drone station moved", this._ping()]);
     }
     m.set16(STOCK_DRONES, m.u16(STOCK_DRONES) - 1);
     m.set16(NEW_INDEX, 11 + k);
@@ -321,19 +325,19 @@ export abstract class CarrierUnits extends ControlsUnits {
   cmd_recall_defence_drones(): void {
     const m = this.mem;
     if (!m.u16(0x65c)) {
-      this.events.push(["message", "No drones launched"]);
+      this.events.push(["message", "No drones launched", this._ping()]);
       return;
     }
     if (m.u8(0x122f)) {
-      this.events.push(["message", "Drone recall in progress"]);
+      this.events.push(["message", "Drone recall in progress", this._ping()]);
       return;
     }
     if (m.u8(0x1233)) {
-      this.events.push(["message", "Dock busy"]);
+      this.events.push(["message", "Dock busy", this._ping()]);
       return;
     }
     if (m.u8(0xd40)) {
-      this.events.push(["message", "Dock busy"]);
+      this.events.push(["message", "Dock busy", this._ping()]);
       return;
     }
     m.set8(0x122f, 0xff);
@@ -346,7 +350,7 @@ export abstract class CarrierUnits extends ControlsUnits {
       m.set16(rec, m.u16(rec) & 1);
       z = w16(z - 0x180);
     }
-    this.events.push(["message", "Recalling drones"]);
+    this.events.push(["message", "Recalling drones", this._ping()]);
   }
 }
 

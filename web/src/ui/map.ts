@@ -8,6 +8,8 @@ const OWNER_COLOURS = ["#9a9a8a", "#3fa9f5", "#e5533d"];   // neutral, player, e
 export interface MapOptions {
   /** Called with a world position when the player picks a waypoint. */
   onWaypoint: (x: number, z: number) => void;
+  /** Right click / long press on an island (carrier map): make it the stockpile. */
+  onIsland?: (island: number) => void;
   /** Show the enemy carrier (the original only shows what radar sees; debug aid). */
   showEnemy: () => boolean;
 }
@@ -72,10 +74,27 @@ export class MapView {
       this.pinch = 0;
     };
     this.el.addEventListener("pointerup", up);
+    this.el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const i = this.islandAt(e.offsetX, e.offsetY);
+      if (i !== null) this.opts.onIsland?.(i);
+    });
     this.el.addEventListener("pointercancel", (e) => {
       this.pointers.delete(e.pointerId);
       this.drag = null;
     });
+  }
+
+  private lastIslands: IslandInfo[] = [];
+
+  /** The island under a canvas point (with a few pixels' slack), or null. */
+  private islandAt(px: number, py: number): number | null {
+    for (const i of this.lastIslands) {
+      const [x, y] = this.toScreen(i.x, i.z);
+      const hw = Math.max(6, i.halfX * this.scale), hh = Math.max(6, i.halfZ * this.scale);
+      if (Math.abs(px - x) <= hw && Math.abs(py - y) <= hh) return i.index;
+    }
+    return null;
   }
 
   private pinchDistance(): number {
@@ -128,6 +147,7 @@ export class MapView {
       this.el.height = Math.round(h * dpr);
     }
     const isl = islands(ram, this.names);
+    this.lastIslands = isl;
     if (!this.scale) this.fit(isl);
     const c = this.ctx;
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -157,6 +177,17 @@ export class MapView {
       }
     }
 
+    // the stockpile island ([$D4A]) gets a ring
+    const stock = (ram[0xd4a] << 8) | ram[0xd4b];
+    if (stock < 64) {
+      const [sx, sy] = this.toScreen(isl[stock].x, isl[stock].z);
+      c.strokeStyle = "#7dffb0";
+      c.lineWidth = 2;
+      c.beginPath();
+      c.arc(sx, sy, Math.max(9, Math.max(isl[stock].halfX, isl[stock].halfZ) * this.scale + 5), 0, 2 * Math.PI);
+      c.stroke();
+      c.lineWidth = 1;
+    }
     const car = carrier(ram);
     // the course shown: the carrier's, or the selected vehicle's ([$48C] Manta, [$566] Walrus;
     // waypoint longs Manta +$1E/+$26, Walrus +$1C/+$20)

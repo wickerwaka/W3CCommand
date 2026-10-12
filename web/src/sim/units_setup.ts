@@ -11,6 +11,7 @@
  */
 import { NotPorted, shr } from "./mem.ts";
 import type { Region } from "./mem.ts";
+import { RenderUnits } from "./units_render.ts";
 import {
   AI_ENABLED,
   ECONOMY,
@@ -55,7 +56,6 @@ import {
   SHARDS,
   UNIT_INPUT_REGIONS,
   UNIT_REGIONS,
-  UnitCore,
   VIEWED,
 } from "./units_core.ts";
 
@@ -83,7 +83,7 @@ for (const _region of [
 }
 for (const n of ["globals snapshot $4BCCA", "island records $4AFB6", "start lists $19078"]) UNIT_INPUT_REGIONS.add(n);
 
-export abstract class SetupUnits extends UnitCore {
+export abstract class SetupUnits extends RenderUnits {
   /** $42A8 (with [$124A] set by the title menu: $103B2 strategy, $103A0 action). */
   new_game(strategy: boolean): void {
     const m = this.mem;

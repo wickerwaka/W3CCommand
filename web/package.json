@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "check-sim": "node scripts/check-sim.ts",
     "check-models": "node scripts/check-models.ts",
-    "soak": "node scripts/soak.ts"
+    "soak": "node scripts/soak.ts",
+    "check-sound": "node scripts/check-sound.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

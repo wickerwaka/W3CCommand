@@ -132,8 +132,8 @@ def oracle_frame(oracle: Oracle, new_second: bool) -> None:
 
 def long_run(name: str, ram: bytes, seconds: int, fps: int = FPS) -> bool:
     """Model and original side by side, frame by frame, compared after every frame. Stops
-    early (not a failure) when the enemy enters close-range combat or is destroyed: what
-    follows belongs to the unit layer."""
+    early (not a failure) when the enemy enters close-range combat: what follows belongs to
+    the unit layer. The enemy's destruction runs on (the AI is then off)."""
     oracle = Oracle(ram, stub_units=True)
     state = stsim.WorldState.from_ram(ram)
     events = []
@@ -148,7 +148,7 @@ def long_run(name: str, ram: bytes, seconds: int, fps: int = FPS) -> bool:
         ref = oracle.ram()
         mine = bytearray(ref)
         state.to_ram(mine)
-        lines = diff(mine, ref) if stop != "EnemyDestroyed" else []
+        lines = diff(mine, ref)
         if lines:
             return report(f"long {name}: frame {n} ({n // fps} s, island {state.island_index}, "
                           f"enemy state {state.mem.u16(stsim.E_STATE)})", lines)
@@ -162,7 +162,8 @@ def long_run(name: str, ram: bytes, seconds: int, fps: int = FPS) -> bool:
 def summary(events: list) -> str:
     kinds = {}
     for e in events:
-        kinds[e[1]] = kinds.get(e[1], 0) + 1
+        k = e[2] if e[1] == "message" else e[1]
+        kinds[k] = kinds.get(k, 0) + 1
     return f" ({', '.join(f'{v} {k}' for k, v in sorted(kinds.items()))})" if kinds else ""
 
 
@@ -215,7 +216,8 @@ def perturb(ram: bytes, seed: int) -> bytes:
     for j in range(3):
         m.set16(stsim.FUEL_CLASS + 2 * j, rnd.randrange(3))
         m.set32(stsim.FUEL + 4 * j, rnd.randrange(stsim.FUEL_MAX + 1))
-    m.set16(stsim.STOCKPILE, rnd.choice((0, 0, 0, rnd.randrange(64))))
+    # the stockpile lost to the enemy is $FFxx (st.b on the high byte)
+    m.set16(stsim.STOCKPILE, rnd.choice((0, 0, 0, rnd.randrange(64), 0xFF00 | rnd.randrange(64))))
     m.set8(stsim.IN_TRANSIT, rnd.choice((0, 0xFF)))
     m.set16(0x718, rnd.choice((0, 1)))                                   # repair screen open
     player = [i for i in range(64) if m.u8(stsim.OWNERS + i) == 1] or [0]
@@ -311,16 +313,17 @@ def main() -> int:
             ok &= long_run(f"{name} fuzz {seed}", perturb(fout.read_bytes(), seed), args.steps // 2)
     if caps and args.enemy:
         base = [fout for name, _, fout, _, _ in caps if name.startswith("step")][-1].read_bytes()
-        stops = 0
+        stops = destroyed = 0
         for seed in range(100, 100 + args.enemy):
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 good = long_run(f"enemy {seed}", perturb(base, seed), 240)
             ok &= good
             stops += "stopped" in out.getvalue()
+            destroyed += "Enemy carrier destroyed" in out.getvalue()
             if not good:
                 print(out.getvalue(), end="")
-        print(f"enemy scenarios: {args.enemy} runs of 240 s, {stops} reached close-range combat or "
-              f"destruction{'' if ok else ' (with mismatches above)'}")
+        print(f"enemy scenarios: {args.enemy} runs of 240 s, {stops} reached close-range combat, "
+              f"{destroyed} destroyed the enemy carrier and ran on{'' if ok else ' (with mismatches above)'}")
     return 0 if ok else 1
 
 

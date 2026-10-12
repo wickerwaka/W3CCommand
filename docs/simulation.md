@@ -124,7 +124,7 @@ Islands therefore grow towards a fixed per-class template of buildings. Supply l
   - `$216C6` resets it and sets `[$1235]` = recompute pending. This happens whenever ownership changes.
   - `$2173A`, called from `game_main` while `[$1235]` is set, relaxes 8 rows per call: `M[i][k] = min(M[i][k], w + M[n][k])` over i's enabled links (unsigned compare, skipping unreachable `M[n][k]`), updating in place. The cursor is `$DEC` (row), `$DF0` (network record) and `$DF4` (8 slices). After the 8th slice, a pass with no change (`[$1234]` still set) clears `[$1235]`; otherwise a new pass starts.
   - Row 0 is VULCAN (the player base), so `M[0][i] >= 0` means island i is connected to the base. The island screen shows this as "DISTANCE TO BASE" / "ISOLATED".
-- **Next hop** (`$21A30`): from island c towards d, the enabled neighbour n with `M[n][d] < M[c][d]` (strictly closer) that minimises `w + M[n][d]`. All compares are unsigned, so unreachable (−1) neighbours never qualify. A shipment moves to n and waits w seconds there.
+- **Next hop** (`$21A30`): from island c towards d, the enabled neighbour n with `M[n][d] < M[c][d]` (strictly closer) that minimises `w + M[n][d]`. All compares are unsigned, so unreachable (−1) neighbours never qualify. A shipment moves to n and waits w seconds there. The column offset is the word 2·d, used signed: when the enemy takes the stockpile island, `[$D4A]` becomes `$FFxx` and shipments to the stockpile read the matrix 512 bytes before their rows (rows c − 4, or the end of the economy records for c < 4), so they wander or are dropped. The model reproduces this.
 
 ## Logistics (`$F7A0`, called once per second from `game_main`)
 
@@ -237,7 +237,7 @@ The enemy carrier is **object 19** of the object list (`$5F49A`: x at `+$0A` = `
 3. **Hits** = ((rand × attack) >> 16) / `$600`, and **return fire** = the same with defence. These use `divu`; on overflow the 68000 leaves the register unchanged, and the model copies that.
 4. Each hit strikes a random target, uniformly among those left. It does `$400` damage to buildings and 4 to constructions; when health falls to 0 or below (unsigned), the structure is removed. Hits stop when no targets are left.
 5. Each return fire, unless the enemy is weak (strength < 2400 and not at NEMESIS):
-   - 25%: −`$400` strength. If that goes negative, the enemy is **destroyed**: the AI stops (`[$464]` = 0), the game-end timer `[$732]` = 100, and a message shows.
+   - 25%: −`$400` strength. If that goes negative, the enemy is **destroyed** (`$1B728`): the AI stops (`[$464]` = 0), the game-end timer `[$732]` = 100, and "Enemy Carrier destroyed!!!!" shows (`$A128`). The routine returns at once: the remaining return fire and the command-centre check are skipped. `$A128` always leaves d0.w = 0 (its last byte copied is the message's terminator, and the sound call `$20B90` restores d0), so the island never "falls" here; state 3 then sees strength ≤ 2400 and calls the attack repulsed (state 1, message) unless the island is NEMESIS. From the next pass on the AI is off.
    - otherwise, if the enemy has aircraft: the attack pool takes the hit.
 
    When weak, the pool always takes it. The pool (`$950`) loses `$400`. When it goes negative, an aircraft is lost and, if any are left, the pool refills to 5000.
@@ -258,7 +258,7 @@ Not modelled:
 - the unit layer: objects, vehicles, the tactical enemy states 10/11, the tick's `$1B8AE`/`$1761C`/`$176AC`, and the per-object island caches at object `+$40`;
 - the 3D buffers of the island loaded around the camera.
 
-The model raises `TacticalMode` when the enemy engages and `EnemyDestroyed` when it's destroyed. After destruction the original's next step depends on a register value left by the message routine.
+The model raises `TacticalMode` when the enemy engages (the unit layer, `tools/stunits.py`, continues from there). The enemy's destruction is modelled; `EnemyDestroyed` is no longer raised.
 
 Tools:
 - `tools/capture_sim.py` runs the original in Hatari and starts a strategy game by poking the menu mouse (`$474/$476`) and left button (`$880`). It saves RAM around `world_warmup`, single `world_sim_step` calls, 8 consecutive logistics ticks and 8 enemy-AI calls at chosen frames.
@@ -266,7 +266,7 @@ Tools:
   - the Hatari *out* captures;
   - the game's own code under Unicorn from the same *in* captures;
   - Unicorn, frame by frame (8 passes per game second), over long runs from each capture and from randomly perturbed copies. The perturbations cover ownership, damage, stocks, builds, production targets, shipments, full pools, and the enemy part way through assaults, trips and refits;
-  - 40 short enemy scenarios: assaults on fortified islands, last stands at NEMESIS, a player unit nearby.
+  - 40 short enemy scenarios: assaults on fortified islands, last stands at NEMESIS, a player unit nearby. Some destroy the enemy carrier and run on with the AI off.
 
   The unit routines are stubbed out in the reference for these runs.
 
