@@ -39,6 +39,11 @@ ROUTINES = {          # name: (original address, model method)
     "carrier_systems_status": (0x17578, U.carrier_systems_status),
     "sim_pass": (None, U.sim_pass),
 }
+import stunits_carrier, stunits_enemy, stunits_vehicles  # noqa: E402
+PARTS = (stunits_vehicles, stunits_enemy, stunits_carrier)
+for _part in PARTS:
+    for _name, (_addr, _method) in _part.ROUTINES.items():
+        ROUTINES[_name] = (_addr, getattr(U, _method))
 PASS, PASS_END = 0x40B0, 0x413E
 RECORD = dict(check_sim.RECORD, **{f"object {k}": 16 for k in range(64)})
 
@@ -623,6 +628,10 @@ def long_run(files: list, passes: int) -> bool:
     return True
 
 
+def all_scenarios() -> list:
+    return SCENARIOS + [sc for part in PARTS for sc in part.SCENARIOS]
+
+
 def run_scenarios(files: list, runs: int, passes: int = 800) -> bool:
     """Perturbed captures run pass by pass against the original (screen input stubbed).
     Reaching code that isn't ported yet ends a run without failing it."""
@@ -630,7 +639,7 @@ def run_scenarios(files: list, runs: int, passes: int = 800) -> bool:
     rnd = random.Random(11)
     ok, frontier = True, {}
     for n in range(runs):
-        scen = SCENARIOS[n % len(SCENARIOS)]
+        scen = all_scenarios()[n % len(all_scenarios())]
         m = stsim.Mem(bytearray(rnd.choice(files).read_bytes()))
         scen(m, rnd)
         oracle = check_sim.Oracle(bytes(m.buf))
@@ -676,6 +685,9 @@ def main() -> int:
     for name in args.routine or ROUTINES:
         ok &= check_routine(name, files, args.fuzz)
     if not args.routine:
+        for part in PARTS:
+            for check in part.CHECKS:
+                ok &= check(files)
         ok &= check_hatari(files)
         ok &= long_run(files, 4000)
         ok &= run_scenarios(files, args.scenarios)

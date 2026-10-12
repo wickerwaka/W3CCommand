@@ -1080,7 +1080,7 @@ class WorldState:
         elif state == 5:
             self.enemy_travel()
         elif state in (10, 11):
-            raise TacticalMode(state)
+            self.enemy_tactical(state)
         elif state > 11:
             raise NotImplementedError(f"enemy state {state}")
 
@@ -1284,7 +1284,16 @@ class WorldState:
         m.buf[o + 1] |= 1
         m.set16(0x11CE, 0)
         m.set8(0x11D0, 0)
+        self.enemy_engaged()
+
+    def enemy_engaged(self) -> None:
+        """Hook: the enemy has just engaged (state 10). The unit layer continues; here it
+        stops the run."""
         raise TacticalMode(10)
+
+    def enemy_tactical(self, state: int) -> None:
+        """Hook: close-range combat states 10 ($1B2D2) and 11 ($1B49E), unit layer."""
+        raise TacticalMode(state)
 
     def enemy_choose_target(self) -> None:
         """$22C20: NEMESIS first if it isn't enemy-held; when strong, the best-scoring

@@ -106,7 +106,7 @@ UNIT_INPUT_REGIONS = {"sine table", "atan table", "key table", "view pointers", 
                       "slot entry table", "island handler table", "ai handler table", "drone tables"}
 
 
-class UnitState(WorldState):
+class UnitCore(WorldState):
     @classmethod
     def from_ram(cls, ram: bytes) -> "UnitState":
         state = super().from_ram(ram)
@@ -2536,6 +2536,11 @@ class UnitState(WorldState):
             return True
         m.set16(rec + 0x14, 0)
         self.spawn_debris_world(v)
+        self.vehicle_destroyed(kind, v)
+        return False
+
+    def vehicle_destroyed(self, kind: str, v: int) -> None:
+        """Hook: $19188 (Manta) / $191F2 (Walrus), ported in stunits_vehicles."""
         raise NotImplementedError(f"{kind} destroyed")
 
     def hit_walrus(self, hitter, v, cls) -> None:
@@ -2787,6 +2792,10 @@ class UnitState(WorldState):
         if h > 0:
             m.set16(v + 0x38, h)
             return
+        self.supply_drone_destroyed(v)
+
+    def supply_drone_destroyed(self, v: int) -> None:
+        """Hook: the rest of $1C0CA ($1925C), ported in stunits_enemy."""
         raise NotImplementedError("supply drone destroyed")
 
     HIT_HANDLERS = {}
@@ -2820,6 +2829,17 @@ class UnitState(WorldState):
         m.set16(0x44E, cc)
         m.set16(0x18D74, cc + 0x800)
         m.set16(0x18DCC, cc + 0x800)
+
+
+# The unit layer is split across modules: UnitCore (this file) and three mixins that
+# override its hooks and stubs. Mixins come first in the MRO, so their methods win.
+from stunits_vehicles import VehicleMixin      # noqa: E402  Mantas and Walruses out of the hangar
+from stunits_enemy import EnemyMixin            # noqa: E402  enemy close-range combat, supply transfers
+from stunits_carrier import CarrierMixin        # noqa: E402  carrier turret, SSM, flares, drones
+
+
+class UnitState(VehicleMixin, EnemyMixin, CarrierMixin, UnitCore):
+    """The whole unit layer: UnitCore plus the mixins."""
 
 
 UnitState.ISLAND_BEHAVIOURS = {
