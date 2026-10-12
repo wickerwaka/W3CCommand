@@ -21,6 +21,12 @@ npm run dev      # then open the printed URL
 `npm run build` writes a static site to `dist/`, which includes your `public/data/`. It's for
 personal use only; don't publish it.
 
+The public site is built by `.github/workflows/pages.yml` on every push to `main` and deployed
+to GitHub Pages (enable Pages with source "GitHub Actions" in the repository settings). It's
+built from a clean checkout, so it has no game data, and the workflow fails if any turns up in
+`dist/`. Without the title image there's no new game: players load their own state exported
+from Hatari (Esc → load).
+
 ## Playing
 
 Esc opens the menu: new strategy or action game, four save slots, the autosave (every 30 s),

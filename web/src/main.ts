@@ -182,7 +182,7 @@ function start(g: Game): void {
 
 function newGame(strategy: boolean): void {
   if (!title) {
-    setNotice("No title-screen image: run `npm run data` (needs Hatari) to create public/data/title.bin");
+    setNotice("No title-screen image: load a state exported from Hatari from the menu, or run `npm run data` (needs Hatari) to create public/data/title.bin");
     return;
   }
   try {
