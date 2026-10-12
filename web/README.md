@@ -59,6 +59,20 @@ The tabs follow the original's four screen groups: **Carrier**, **Weapons**, **W
 
 `npm run playthrough` plays exactly this with the model's own commands, and checks every step.
 
+### Continue a browser game in Hatari
+
+Export the state from the menu. This saves a 512 KB RAM image, `carrier_<clock>.bin`. Then run
+this from the repository root:
+
+```
+uv run python tools/hatari_import.py play ~/Downloads/carrier_<clock>.bin
+```
+
+Hatari boots the original and starts a game in fast-forward. At the top of its main loop it
+loads your image, then carries on at normal speed with sound. The original continues the game
+exactly where the browser left it. `tools/hatari_import.py verify` checks this against the
+model, pass by pass.
+
 ## How this port differs from the original
 
 - **Screens:** the screens are new. They show what the original shows (`src/app/readout_screens.ts`,

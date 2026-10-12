@@ -64,6 +64,7 @@ Hatari 2.6.1 is installed with `brew install hatari`, and its bundled EmuTOS boo
   - Always run with stdin from `/dev/null`.
   - `VBL` is Hatari's frame counter, and expressions in quotes are evaluated at definition time (`b VBL="VBL+100"`).
 - Verified live: at `game_main` the RAM from `$400` is byte-identical to `extracted/carrier_payload.bin`.
+- `uv run python tools/hatari_import.py play <state.bin>` continues a state exported by the web app (or any 512 KB RAM image) in the original. It starts an action game, then at the game_main loop top `$408A` it `loadbin`s the image's `$400–$7FFFF` (keeping the emulator's vectors, registers and static-noise texture `$5C2DA`), and re-enters the current screen so the panels get drawn. `capture` does the same headless and saves pass captures. `verify` imports web-style exports (a play capture advanced by the model, new games from the title image) and checks that Hatari and the model continue identically (1500 loops). Only the VBL second flags and the 3D render's unported writes are taken from Hatari.
 
 ## Ghidra project
 

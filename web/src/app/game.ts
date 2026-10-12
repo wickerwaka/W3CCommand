@@ -52,9 +52,15 @@ export class Game {
     // (ui_frame picks up the tab request; the bridge's enter handler sets the camera). The first
     // pass follows in the runner. docs/units.md §16.
     const state = game.runner.state;
+    const before = state.mem.buf.slice();
     state.new_game(strategy);
     state.new_game_screen();
     game.runner.state.to_ram(game.runner.ram);
+    // the setup also writes memory outside the state regions (the static-noise texture
+    // $5C2DA, globals restored from the boot snapshot, gauge flags): keep those too, so the
+    // image (and an export of it) is what the original holds after $42A8
+    const after = state.mem.buf, image = game.runner.ram;
+    for (let i = 0; i < after.length; i++) if (after[i] !== before[i]) image[i] = after[i];
     game.runner.restart();
     game.runner.vblsPerPass = VBLS_PER_PASS[game.screen] ?? 4;
     return game;
