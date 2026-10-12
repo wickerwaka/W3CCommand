@@ -2,3 +2,5 @@ node_modules/
 dist/
 # Generated from the game binary by tools/export_web.py (npm run data)
 public/data/
+# Failing states dumped by npm run check-sim (game memory)
+.sim-fail/
