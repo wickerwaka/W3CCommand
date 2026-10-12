@@ -12,7 +12,7 @@ import { readStateFile, writeStateFile } from "./app/state_file.ts";
 import { loadState, saveState, type Slot } from "./app/store.ts";
 import { FreeCamera, GameCamera, type ViewCamera } from "./render/cameras.ts";
 import { WorldView } from "./render/world_view.ts";
-import { ModelListView } from "./render/diagram.ts";
+import { ModelListView, titleStep } from "./render/diagram.ts";
 import { ditherCell } from "./render/meshes.ts";
 import { Sound } from "./audio/sound.ts";
 import { MapView } from "./ui/map.ts";
@@ -426,6 +426,18 @@ function renderInset(g: Game, v: WorldView): void {
   camera.updateProjectionMatrix();
 }
 
+/** No game yet: the title screen's turning carrier ($15DA2) across the top, behind the menu,
+ * on a copy of the title image advanced a title pass at a time (about 12 a second). */
+let titleImage: Uint8Array | null = null;
+let titleTime = 0;
+function showTitle(dt: number): void {
+  if (!title) return;
+  titleImage ??= title.slice();
+  for (titleTime += dt; titleTime >= 0.08; titleTime -= 0.08) titleStep(titleImage);
+  const w = innerWidth, h = Math.min(innerHeight * 0.45, (w * 110) / 320);
+  diagram.render(renderer, titleImage, 33, { x: 0, y: 0, w, h });
+}
+
 // ---- frame loop --------------------------------------------------------------------------
 const q = new THREE.Quaternion();
 let last = performance.now();
@@ -435,6 +447,7 @@ function frame(now = performance.now()): void {
   if (!game || !view) {
     renderer.setClearColor(0x05070c);
     renderer.clear();
+    showTitle(dt);
     return;
   }
   const r = game.runner;
