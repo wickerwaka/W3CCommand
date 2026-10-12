@@ -400,6 +400,28 @@ function fitFrustum(cam: ViewCamera): void {
   }
 }
 
+/** The world in a 2:1 box at the top of the screen (CSS pixels), for the arming screens. */
+function renderInset(g: Game, v: WorldView): void {
+  const w = Math.min(innerWidth - 32, 640), h = Math.round(w / 2), x = 16, top = 104;
+  carrierCam.update(g.ram);
+  carrierCam.orientation(q);
+  v.update(carrierCam.eye(), q);
+  camera.quaternion.copy(q);
+  const fullAspect = camera.aspect;
+  camera.aspect = w / h;
+  fitFrustum(carrierCam);
+  camera.updateProjectionMatrix();
+  const y = innerHeight - top - h;                 // WebGL's viewport origin is bottom-left
+  renderer.setViewport(x, y, w, h);
+  renderer.setScissor(x, y, w, h);
+  renderer.setScissorTest(true);
+  renderer.render(v.scene, camera);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, innerWidth, innerHeight);
+  camera.aspect = fullAspect;
+  camera.updateProjectionMatrix();
+}
+
 // ---- frame loop --------------------------------------------------------------------------
 const q = new THREE.Quaternion();
 let last = performance.now();
@@ -455,6 +477,9 @@ function frame(now = performance.now()): void {
     else {
       renderer.setClearColor(0x0b1220);
       renderer.clear();
+      // the arming screens draw the world into a small 2:1 window ($475A): Manta arming the
+      // bridge view, Walrus arming a view astern panning +-45 degrees ([$DC8])
+      if (ARMING_SCREENS.has(screen)) renderInset(game, view);
     }
     if (VEHICLE_SCREENS.has(screen)) vehicles.update(game.ram, screen);
   } else {

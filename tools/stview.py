@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Reference model of the 3D views: the bridge (screen 0) and the vehicle and weapon screens
-(8 turret, 9 flares, 10 viewing drone, 18 Walrus, 19 Walrus dock, 26 Manta deck, 27 Manta):
+"""Reference model of the 3D views: the bridge (screen 0), the vehicle and weapon screens
+(8 turret, 9 flares, 10 viewing drone, 18 Walrus, 19 Walrus dock, 26 Manta deck, 27 Manta)
+and the arming screens' small views (16 Walrus arming, 24 Manta arming):
 camera, object transform, projection, horizon, sea dots, the visible-object collection and
 the carrier's lift/dock attachments, from a 512 KB RAM image. docs/memory-map.md "Vehicle and
 weapon views" specifies the other screens' cameras (screen_views).
@@ -14,8 +15,8 @@ Camera space: X right, Y up, Z depth. Screen: sx = cx + trunc(X*2^shx/Z),
 sy = cy + trunc(-Y*2^shy/Z).
 
   uv run python tools/stview.py --check [captures...]
-      Runs the screen's own render ([$718]: $1460A, $15A94, $165B2, $1638C, $15496, $14A40,
-      $14816, $15244) under Unicorn on each capture and compares, per $7BF6 call, with this
+      Runs the screen's own render ([$718]: $1460A, $15A94, $165B2, $1638C, $14E56, $15496,
+      $14A40, $15002, $14816, $15244) under Unicorn on each capture and compares, per $7BF6 call, with this
       model: the camera object and pairs, the depth-sorted draw list (object, Z, X, Y), the LOD
       models (and the lift/dock attachments), the horizon endpoints, the sea dots, every
       projected model vertex and the turret's model 84 overlay. It also compares the rendered
@@ -161,8 +162,11 @@ def bridge_camera(ram: Ram) -> Camera:
 
 # --- the other 3D screens ------------------------------------------------------------------
 
-SCREEN_RENDER = {0: 0x1460A, 8: 0x15A94, 9: 0x165B2, 10: 0x1638C, 18: 0x15496, 19: 0x14A40,
-                 26: 0x14816, 27: 0x15244}
+SCREEN_RENDER = {0: 0x1460A, 8: 0x15A94, 9: 0x165B2, 10: 0x1638C, 16: 0x14E56, 18: 0x15496,
+                 19: 0x14A40, 24: 0x15002, 26: 0x14816, 27: 0x15244}
+HANGAR_VIEWPORT = 0x475A    # screens 16/24: (32, 6)-(159, 69), shx = shy = 7, centre (96, 38)
+HANGAR_EYE_BACK = -1000     # screen 16: the eye 1000 astern of the carrier origin, y 140
+HANGAR_SWING = 0xDC8        # screen 16: look yaw = carrier yaw + [$DC8] ($6000..$A000, aft)
 VIEWPORT_PTR = 0x6FE
 TURRET_VIEWPORT, HALF_VIEWPORT, INSET_VIEWPORT, TURRET_OVERLAY = 0x4786, 0x4770, 0x4834, 0x479C
 TURRET_OVERLAY_POS = (0, -40, 1200)   # model 84 at this camera-space origin, viewport $479C
@@ -218,12 +222,20 @@ def screen_views(data: bytes, screen: int) -> list:
         cam.screen = screen
         return View(rr, cam, label)
 
-    if screen == 0:
+    if screen in (0, 24):            # $1460A / $15002 (Manta arming: the same, in [$6FE] = $475A)
         pitch, yaw, roll = (r.u16(CARRIER + o) for o in (4, 6, 8))
         for o, v in ((4, pitch), (6, yaw), (8, roll)):
             _w16(d, obj0 + o, v)
         _carrier_eye(d, 0, EYE_BACK, 0)
-        return [view("bridge", obj0)]
+        return [view("bridge" if screen == 0 else "manta hangar", obj0)]
+    if screen == 16:                 # $14E56: Walrus arming, the stern door looking aft
+        # The offset is turned by the carrier's yaw (d7 at $A438), the look by yaw + [$DC8].
+        # Object 0 is also "the hangar model" (type $53, live and visible from the enter
+        # handler) at the eye: model 83 is empty ($99F0 rts), so nothing is drawn for it.
+        _w16(d, obj0 + 4, r.u16(CARRIER + 4))
+        _w16(d, obj0 + 8, r.u16(CARRIER + 8))
+        _carrier_eye(d, 0, HANGAR_EYE_BACK, r.u16(HANGAR_SWING))
+        return [view("walrus hangar", obj0)]
     if screen == 26:                 # $14816: Manta deck camera, turning with the lift crane $DDE
         _carrier_eye(d, 0x1A4, 0x41A, r.u16(0xDDE))
         return [view("deck", obj0)]
@@ -1119,6 +1131,17 @@ def perturb_view(data: bytes, screen: int, rng) -> bytes:
     if screen in (26, 19):
         _w16(d, 0xDDE if screen == 26 else 0xDEA, rng.randrange(0x10000))
         _w16(d, CARRIER + 2, rng.choice([1, 2, 3]))
+    elif screen in (16, 24):         # the swing (in range or not), the lift and dock in use
+        _w16(d, HANGAR_SWING, rng.choice([rng.randint(0x6000, 0xA000), rng.randrange(0x10000)]))
+        _w16(d, CARRIER + 2, rng.choice([1, 2, 3]))
+        _w32(d, 0xDD6, rng.choice([0, 0x4000, 0x7FFF]) << 16 | rng.choice([0, 0x4000, 0x7FFF]))
+        for slot, objs in ((0x6D6, range(2, 6)), (0x6DA, range(6, 10))):
+            if rng.random() < 0.5:
+                _w32(d, slot, 0)
+            elif not r.u32(slot):
+                o = WORLD_OBJECTS + OBJ_SIZE * rng.choice(list(objs))
+                _w32(d, slot, o)
+                d[o + 1] |= 7
     elif screen == 9:
         _w16(d, 0x1158, rng.randint(-0x3000, 0x1000))
         _w16(d, 0x115A, rng.randrange(0x10000))
@@ -1204,6 +1227,9 @@ DEFAULT_CAPTURES = ["emu/out/play/pass_quiet_0_in.bin", "emu/out/play/pass_fligh
                     "emu/out/sim/ai_120000_0_in.bin"]
 # tools/capture_views.py: one capture per vehicle/weapon screen (fuzzed with fuzz_view).
 VIEW_CAPTURES = ["emu/out/views/pass_decklift_0_in.bin", "emu/out/views/pass_docklaunch_0_in.bin",
+                 "emu/out/views/pass_walrushangar_0_in.bin", "emu/out/views/pass_walrushangar2_0_in.bin",
+                 "emu/out/views/pass_walrushangardock_0_in.bin", "emu/out/views/pass_mantahangar_0_in.bin",
+                 "emu/out/views/pass_mantahangarlift_0_in.bin",
                  "emu/out/views/pass_dock_0_in.bin", "emu/out/views/pass_manta_0_in.bin",
                  "emu/out/views/pass_walrus_0_in.bin", "emu/out/views/pass_turret_0_in.bin",
                  "emu/out/views/pass_flares_0_in.bin", "emu/out/views/pass_drone_0_in.bin"]

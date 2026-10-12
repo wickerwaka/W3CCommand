@@ -19,6 +19,7 @@ const s32 = (b: Uint8Array, a: number) => (b[a] << 24) | (b[a + 1] << 16) | (b[a
 const u16 = (b: Uint8Array, a: number) => (b[a] << 8) | b[a + 1];
 const s16 = (b: Uint8Array, a: number) => (u16(b, a) << 16) >> 16;
 
+const OBJ0 = 0x5dcda;
 const SCREEN = 0x718, VIEWPORT = 0x6fe, CAMERA = 0x9fa, VIEWED = 0x9fe, REAR_VIEW = 0x8f1;
 const ANG = (a: number) => (a * 2 * Math.PI) / 0x10000;
 
@@ -32,6 +33,10 @@ const ANG = (a: number) => (a * 2 * Math.PI) / 0x10000;
  *   9 flares      carrier + formB(0, -1000), y 300; pitch [$1158], yaw [$115A]
  *   8 turret      pivot (0, 320, -350) in the carrier frame, 30 out along the gun; pitch [$6CA],
  *                 yaw carrier + [$6CC], carrier roll; focal 256 * 2^[$6D2]
+ *   24 Manta arming   the bridge camera, in the small viewport $475A ((32, 6)-(159, 69), focal 128)
+ *   16 Walrus arming  carrier + formB(0, -1000) (the carrier's yaw), y 140; pitch and roll the
+ *                 carrier's, yaw carrier + [$DC8] (swinging $6000..$A000: looking aft out of the
+ *                 stern), viewport $475A. Object 0 is also type $53 there, whose model 83 is empty.
  *   10 drone      object 15 itself;  27 Manta: the Manta itself (rear view $8F1: yaw + $8000,
  *                 pitch and roll negated);  18 Walrus: Walrus y + 45, yaw + turret +$26 (rear
  *                 view: yaw + $8000, pitch negated). */
@@ -40,6 +45,9 @@ export class GameCamera implements ViewCamera {
   frustum = { tanX: 128 / 256, tanY: 64 / 256, near: 64 };
   /** False when the screen shows no 3D picture (2D screens, no telemetry, ...). */
   live = true;
+  /** The 3D window on the ST screen (320 x 200, inclusive corners), from the viewport record
+   * [$6FE]: (32, 6)-(287, 133) full size, (32, 6)-(159, 69) on the arming screens 16/24 ($475A). */
+  rect = { x0: 32, y0: 6, x1: 287, y1: 133 };
   private pos: Eye = { x: 0, y: 0, z: 0 };
   private rot = gameRotation(0, 0, 0);
 
@@ -68,6 +76,16 @@ export class GameCamera implements ViewCamera {
         this.name = "Walrus dock";
         this.pos = local(-420, -1050, 50);
         w = cyaw + u16(ram, 0xdea);
+        break;
+      case 16:
+        this.name = "Walrus hangar";
+        this.pos = local(0, -1000, s32(ram, OBJ0 + 0x0e));    // y 140 (enter handler $13C94)
+        [p, w, r] = [cp, cyaw + u16(ram, 0xdc8), croll];
+        break;
+      case 24:
+        this.name = "Manta hangar";
+        this.pos = local(0, -100, s32(ram, OBJ0 + 0x0e));     // y 240 (enter handler $13D82)
+        [p, w, r] = [cp, cyaw, croll];
         break;
       case 9:
         this.name = "Flares";
@@ -126,8 +144,10 @@ export class GameCamera implements ViewCamera {
       const x0 = s16(ram, vp), y0 = s16(ram, vp + 2), x1 = s16(ram, vp + 4), y1 = s16(ram, vp + 6);
       let shx = s16(ram, vp + 8), shy = s16(ram, vp + 10);
       if (screen === 8) shx = shy = 8 + u16(ram, 0x6d2);
-      if (x1 > x0 && y1 > y0 && shx > 0 && shx < 16)
+      if (x1 > x0 && y1 > y0 && shx > 0 && shx < 16) {
         this.frustum = { tanX: (x1 - x0 + 1) / 2 / 2 ** shx, tanY: (y1 - y0 + 1) / 2 / 2 ** shy, near: 64 };
+        this.rect = { x0, y0, x1, y1 };
+      }
     }
   }
 

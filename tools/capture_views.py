@@ -6,7 +6,8 @@ The same scripted Hatari session as tools/capture_play.py (clicks are poked poin
 captures are pass_<label>_<n>_in/out.bin plus shot_<label>.png): Manta 1 to the deck (on the
 lift, on deck, taking off), Manta control flying for island 27 (it is shot down later), the
 Walrus dock (docked, launching), Walrus control, the laser turret, flares (one launched) and
-the viewing drone (launched). Leave a few frames between a capture and a click: a click
+the viewing drone (launched), then the arming screens 16 and 24 (a bay with a loadout
+selected; the Manta lift and the Walrus dock in use). Leave a few frames between a capture and a click: a click
 straight after a capture is lost.
 
   uv run python tools/capture_views.py [--out emu/out/views]
@@ -21,8 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import capture_play as cp
 from hatari import BASE_ARGS, EMU, prepare
 
-cp.SCREENS.update({"turret": (8, 2), "flares": (9, 2), "drone": (10, 2)})
+cp.SCREENS.update({"turret": (8, 2), "flares": (9, 2), "drone": (10, 2), "walrus_arming": (16, 3),
+                   "manta_arming": (24, 4)})
 cp.BUTTONS.update({"flare": (176, 164), "recon_drone": (220, 164)})    # elements $435AC, $43558
+for _k in (2, 3):              # the bay icons at x 12 + 22(k-1), y 155 (screens 16-19, 24-27)
+    for _v in ("manta", "walrus"):
+        cp.BUTTONS[f"{_v}_select_{_k}"] = (21 + 22 * (_k - 1), 164)
 I27 = cp.ISLAND_27
 SCRIPT = [
     ("wait", 2500),
@@ -45,6 +50,21 @@ SCRIPT = [
     ("screen", "drone"), ("wait", 30), ("click", "recon_drone"), ("wait", 100), ("capture", ("drone", 4)),
     ("wait", 300), ("capture", ("dronelate", 4)),
     ("screen", "manta_control"), ("wait", 200), ("capture", ("mantalate", 8)),
+    # The arming screens (hangar views). Bay 2 of each gets a loadout (Manta wings 1/1 and
+    # fuselage 2, Walrus payload 7 and weapon 6, poked) and is selected by its icon.
+    ("poke", "$4d6 0 1 0 1 0 2"), ("poke", "$5ca 0 7 0 6"),
+    ("screen", "walrus_arming"), ("wait", 30), ("click", "walrus_select_2"), ("wait", 30),
+    ("capture", ("walrushangar", 4)), ("wait", 25), ("capture", ("walrushangar2", 4)),
+    ("screen", "manta_arming"), ("wait", 30), ("click", "manta_select_2"), ("wait", 30),
+    ("capture", ("mantahangar", 4)),
+    # Manta 3 on the lift (attachment) seen from screen 24; Walrus 3 launching from the dock
+    # seen from screen 16.
+    ("screen", "manta_deck"), ("wait", 30), ("click", "manta_select_3"), ("wait", 30),
+    ("click", "manta_to_deck"), ("wait", 100),
+    ("screen", "manta_arming"), ("wait", 30), ("capture", ("mantahangarlift", 4)),
+    ("screen", "walrus_dock"), ("wait", 30), ("click", "walrus_select_3"), ("wait", 30),
+    ("click", "walrus_launch"), ("wait", 40),
+    ("screen", "walrus_arming"), ("wait", 60), ("capture", ("walrushangardock", 4)),
 ]
 
 

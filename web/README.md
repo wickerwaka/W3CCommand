@@ -63,7 +63,6 @@ The tabs follow the original's four screen groups: **Carrier**, **Weapons**, **W
 
 - **Screens:** the screens are new. They show what the original shows (`src/app/readout_screens.ts`,
   checked against the original's drawing), but they aren't the ST's panels.
-- **Hangar screens:** the arming screens' 3D hangar view isn't drawn.
 - **Map:**
   - The modern map draws all islands at every zoom, plus the network and your units.
   - The enemy carrier is never shown, as in the original. The menu has a debug option to show it.
