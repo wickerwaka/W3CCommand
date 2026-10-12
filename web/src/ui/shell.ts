@@ -18,26 +18,26 @@ export const TABS: Tab[] = [
   },
   {
     id: "weapons", label: "Weapons", screens: [
-      { id: 8, label: "Laser turret", ready: false },
-      { id: 9, label: "Flares", ready: false },
-      { id: 10, label: "Viewing drone", ready: false },
+      { id: 8, label: "Laser turret", ready: true },
+      { id: 9, label: "Flares", ready: true },
+      { id: 10, label: "Viewing drone", ready: true },
       { id: 11, label: "Defence radar", ready: false },
     ],
   },
   {
     id: "walrus", label: "Walrus", screens: [
-      { id: 19, label: "Dock", ready: false },
-      { id: 16, label: "Arming", ready: false },
-      { id: 18, label: "Control", ready: false },
-      { id: 17, label: "Map", ready: false },
+      { id: 19, label: "Dock", ready: true },
+      { id: 16, label: "Arming", ready: true },
+      { id: 18, label: "Control", ready: true },
+      { id: 17, label: "Map", ready: true },
     ],
   },
   {
     id: "manta", label: "Manta", screens: [
-      { id: 26, label: "Deck", ready: false },
-      { id: 24, label: "Arming", ready: false },
-      { id: 27, label: "Control", ready: false },
-      { id: 25, label: "Map", ready: false },
+      { id: 26, label: "Deck", ready: true },
+      { id: 24, label: "Arming", ready: true },
+      { id: 27, label: "Control", ready: true },
+      { id: 25, label: "Map", ready: true },
     ],
   },
 ];

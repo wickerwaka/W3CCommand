@@ -63,7 +63,38 @@ Game flow:
                                       $4194 keys, paused_frame $44EE or debug keys $46E8,
                                       screen_input $17094, sim_pass, the end timer $732 and the
                                       end request $463. Events ("game over", screen, [$466]).
-    screen_input()                    $17094 for screens 0, 1, 2/17/25 and the empty ones.
+    screen_input()                    $17094 for screens 0, 1, 2/17/25, 16-19, 24-27 and the empty ones.
+Mantas and Walruses ("Fly and drive"; docs/units.md §10.4, §10.6):
+    Manta control 27 (input $172BC: lock timer $116C, number keys, re-entry, auto button):
+    cmd_manta_select(bay) $FE54, cmd_manta_weapon(w) $FEE2, cmd_manta_autopilot() $12A44,
+    cmd_manta_centre_rudder/pitch() $129E6/$129FE, cmd_manta_instruments() $100A8,
+    cmd_manta_throttle(y) $FDDA, cmd_manta_sight() $10100, cmd_manta_rear_view() $1015C,
+    cmd_manta_runway_take_off() $13356, cmd_manta_steer_to(rudder, pitch), cmd_vehicle_fire()
+    Manta deck 26: cmd_manta_deck_select(bay) $11F92, cmd_manta_abort_landing() $12360
+    Manta map 25: cmd_manta_map_select(bay) $FF1E (+ recall $12ECC), cmd_manta_set_course(held)
+    $12FC4, cmd_manta_clear_course() $12F8E, cmd_manta_cruise_up/down() / cmd_manta_cruise(y)
+    $12C90/$12CA2/$12CB4, cmd_manta_altitude_up/down() / cmd_manta_altitude(y)
+    $12CE2/$12CF6/$12D0A, cmd_manta_map_draw_mode() $12D40, cmd_manta_toggle_announce() $12D50,
+    cmd_set_manta_waypoint(x, z)
+    Manta arming 24: cmd_manta_arming_select(bay) $116C6, cmd_manta_arming_to_deck() $11886,
+    cmd_manta_loadout_next/prev() $1132E/$11352, cmd_manta_pick_loadout() $1135E,
+    cmd_manta_pick_slot(k) $114C8, cmd_manta_fit(slot, code), cmd_manta_unfit(slot)
+    Walrus control 18 (input $17374): cmd_walrus_select(bay) $10016, cmd_walrus_weapon(w) $FF7C,
+    cmd_walrus_autopilot() $12B00, cmd_walrus_centre_rudder(held) $12982,
+    cmd_walrus_turret_mode() $129A2, cmd_walrus_instruments() $100D4, cmd_walrus_throttle(y)
+    $FE0A, cmd_walrus_sight() $1012E, cmd_walrus_rear_view() $10190, cmd_walrus_steer_to(r),
+    cmd_walrus_missile_steer_to(yaw, pitch)
+    Walrus dock 19: cmd_walrus_dock_select(bay) $1249E, cmd_walrus_abort_docking() $128AE
+    Walrus map 17: cmd_walrus_map_select(bay) $FFB8 (+ recall $12F30), cmd_walrus_set_course(held)
+    $13122, cmd_walrus_clear_course() $130EE, cmd_walrus_cruise_up/down() / cmd_walrus_cruise(y)
+    $12D98/$12DAA/$12DBC, cmd_walrus_map_draw_mode() $12DEC, cmd_walrus_toggle_announce()
+    $12DFC, cmd_set_walrus_waypoint(x, z)
+    Walrus arming 16: cmd_walrus_arming_select(bay) $11DEE, cmd_walrus_loadout_next/prev()
+    $11A30/$11A76, cmd_walrus_loadout_plus/minus() (Harbingers $11CE0/$11D0C or ACCB type
+    $11D1C/$11D40), cmd_walrus_pick_loadout() $11A82, cmd_walrus_pick_slot(k) $11C16,
+    cmd_walrus_fit(slot, code), cmd_walrus_unfit(slot)
+    drags: cmd_drag_release(px, py), then ui_frame drops ($F6EA, callbacks DROPS)
+    read helper: vehicle_ui() (selections, controllable, list cursors, Harbingers, drag)
 
 The mixin is combined into stunits.UnitState ahead of stunits.UnitCore, so methods defined
 here replace the core's stubs and hooks. Use only `import stsim` / `import stunits` at module
@@ -114,6 +145,29 @@ PANEL_LISTS = (0x43606, 0x43620, 0x43636, 0x43660, 0x4368A, 0x43604, 0x43604, 0x
 DAMAGE_PARTS = (0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52)    # $14148: the damage diagram's models
 SUBPANEL = (0, 1, 1, 2)               # $11756: arming sub-panel by bay status (0, 1-2, 3+)
 STATUS_ICON = (0, 3, 3, 2, 2, 0, 1, 4)   # $13B6C: game-status button lit per [$708] (1 + index from 100)
+# Mantas and Walruses (screens 16-19, 24-27).
+MANTA_RECS, WALRUS_RECS, REC = 0x496, 0x570, 0x34
+MANTA_OBJS, WALRUS_OBJS = 0x5DF5A, 0x5E45A
+LOADOUT = 0xCAC4                      # 26-byte entries: +0 weight, +2 stock pointer, +6 quantity, +8 Walrus slot (1: payload)
+MANTA_CODES, WALRUS_CODES = 0xC770, 0xC242   # the arming screens' loadout lists (6 / 5 codes)
+LOADOUT_CURSOR, DRAG_ELEMENT = 0xDB8, 0xDBC  # $DB8 Manta, $DBA Walrus list cursor; the slot element being dragged
+DROP = 0x468                          # drag: the drop callback ($F73C), run by ui_frame on release ($F6EA)
+HARBINGER_LOAD = 0x11BD2              # weight, stock pointer ($B98), quantity: the old Harbinger load (code)
+HARBINGERS = 0xCB80                   # loadout entry 7's quantity: the Harbingers to load
+KEY_ELEMENT = 0x13352                 # $132D6 writes its element here (type, index)
+PLUS_HANDLER, MINUS_HANDLER = 0x4281C, 0x42832   # the Walrus arming +/- elements' handlers, patched by the panel draw
+MAP_EDIT_MANTA = (0x69C, 0x69E, 0x6A2, 0x6A6, 0x6AA, 0x6AC)   # cruise, x, altitude (long), z, draw mode, announce
+MAP_EDIT_WALRUS = (0x6AE, 0x6B0, 0x6B4, 0x6B8, 0x6BA)         # cruise, x, z, draw mode, announce
+VEHICLE_THROTTLE_Y = (158, 159 + 0x26)   # the Manta/Walrus control screens' throttle slider
+MAP_SLIDER_Y = (159, 159 + 0x24)         # the map screens' cruise and altitude sliders
+T_BUTTON, T_WEAPON, T_TURRET, T_HARBINGERS, T_HANGAR, T_DRAW, T_SIGHT, T_REAR = 38, 62, 80, 81, 78, 91, 104, 105
+T_MANTA, T_WALRUS = 58, 70            # select icons on the control and map screens (+ bay)
+T_MANTA_ARMING, T_WALRUS_ARMING, T_MANTA_DECK, T_WALRUS_DOCK = 74, 82, 86, 93
+# The arming screens' slot elements (panel data): slot index, pointer box x0, y0, x1, y1 ($B52C).
+SLOT_ELEMENTS = {0x429BA: (0, 219, 70, 233, 93), 0x429D0: (1, 196, 90, 210, 113), 0x429E6: (2, 241, 90, 255, 113),
+                 0x42836: (0, 173, 96, 188, 106), 0x4284C: (1, 201, 96, 248, 106)}
+MANTA_SLOTS, WALRUS_SLOTS = (0x429BA, 0x429D0, 0x429E6), (0x42836, 0x4284C)
+STORES_BOX = (0x21, 0x4B, 0xA2, 0x84)    # drop a fitted item here to return it to stores
 
 # State these routines read or write that the other regions don't cover.
 for _region in [
@@ -154,10 +208,51 @@ for _region in [
     ("selected Manta $48C", 0x48C, 2),
     ("bay selection $DB4", 0xDB4, 4),
     ("station snapshot $141DE", STATION_SNAPSHOT, 0x10),
+    # Mantas and Walruses (milestone 2): arming drags, number keys, map edit globals.
+    ("loadout cursors $DB8", LOADOUT_CURSOR, 8),            # $DB8 Manta, $DBA Walrus, $DBC dragged slot element
+    ("drop callback $468", DROP, 4),
+    ("harbinger load $11BD2", HARBINGER_LOAD, 8),            # in the code: the old Harbinger load as a loadout entry
+    ("key element $13352", KEY_ELEMENT, 4),                  # in the code: $132D6's fake panel element
+    ("arming +/- handlers $4281C", PLUS_HANDLER, 0x1A),      # panel data: the type-81 buttons' handlers (+$12)
+    ("loadout codes $C770", MANTA_CODES, 12),
+    ("loadout codes $C242", WALRUS_CODES, 10),
+    ("slot offsets $11448", 0x11448, 6),
+    ("slot offsets $11C12", 0x11C12, 4),
 ]:
     if _region[0] not in {r[0] for r in stunits.UNIT_REGIONS}:
         stunits.UNIT_REGIONS.append(_region)
-stunits.UNIT_INPUT_REGIONS |= {"current tab $714", "panel overlay $702", "key characters $1280", "map island $742", "map rect $47F2"}
+stunits.UNIT_INPUT_REGIONS |= {"current tab $714", "panel overlay $702", "key characters $1280", "map island $742", "map rect $47F2",
+                               "loadout codes $C770", "loadout codes $C242", "slot offsets $11448", "slot offsets $11C12"}
+
+# Milestone 3 ("War"): the weapons screens 8-11, resources 3, messages 4, options and title.
+RESOURCES = 0xD14                     # resources sub-panel: 0 main, 1 item picture, 2 stores priorities,
+#                                       3 fuel priorities, 4 stores queue, 5 fuel queue
+FUEL_WORK = 0xD0E                     # fuel classes being edited (EXIT copies them to $D08)
+ENTRY, ENTRY_DIGITS, ENTRY_COUNT, ENTRY_MAX = 0xD1A, 0xD1B, 0xD2A, 0xD2C   # keypad number entry ($11142)
+ENTRY_OLD, ENTRY_CALLBACK, ENTRY_DONE = 0xD32, 0xD34, 0x10B5A
+STORES_SCROLL, QUEUE_SCROLL, QUEUE_REPEAT = 0xD38, 0xD3A, 0xD3C
+ITEM_PANEL, ITEM_EDITED = 0xD16, 0xD18
+# $111D0: the keypad's key boxes relative to its element (216, 44): 0-9, 10 ENTER, 11 CANCEL, 12 DELETE.
+KEYPAD = (216, 44)
+KEYPAD_BOXES = ((0, 0x30, 0xE, 0x3E), (0, 0x20, 0xE, 0x2E), (0x10, 0x20, 0x1E, 0x2E), (0x20, 0x20, 0x2E, 0x2E),
+                (0, 0x10, 0xE, 0x1E), (0x10, 0x10, 0x1E, 0x1E), (0x20, 0x10, 0x2E, 0x1E), (0, 0, 0xE, 0xE),
+                (0x10, 0, 0x1E, 0xE), (0x20, 0, 0x2E, 0xE), (0x30, 0, 0x3E, 0x1E), (0x30, 0x20, 0x3E, 0x3E),
+                (0x10, 0x30, 0x2E, 0x3E))
+TARGET_ENTRY = ((120, 31), (120, 67), (120, 103))   # $E026: the target fields of the stores priority rows
+CLASS_Y = (26, 16, 5)                 # $10AE6: a pointer offset in a class field for class 0, 1, 2
+FORMATIONS = 0x1065C                  # 9 drone formations: 4 stations x (+$A, +$C)
+T_STATION = 66                        # the drone radar's station markers, types 66-69
+SSM_VIEW = (32, 6, 32 + 0xFF, 6 + 0x7F)   # screen 10: the drone picture's element ($13598)
+OPTIONS = 0x1246                      # sea dots, message ping, background noise, sound effects
+for _region in [
+    ("resources panel $D0E", FUEL_WORK, 0xD3C - FUEL_WORK),  # fuel work, sub-panel, item, keypad entry, scrolls
+    ("bridge zoom $8B2", 0x8B2, 4),                         # $8B2 view scale, $8B4 zoom (renderer)
+    ("options $1246", OPTIONS, 4),
+    ("drone formations $1065C", FORMATIONS, 0x90),          # in the code: read-only
+]:
+    if _region[0] not in {r[0] for r in stunits.UNIT_REGIONS}:
+        stunits.UNIT_REGIONS.append(_region)
+stunits.UNIT_INPUT_REGIONS |= {"drone formations $1065C"}
 
 
 class ControlsMixin:
@@ -165,8 +260,10 @@ class ControlsMixin:
     def _clickable(self, etype: int, state=(0x702, 0)) -> bool:
         """The panel is shown ([state addr] == value; None: always), the element type is
         neither hidden nor disabled, and the game runs unless the type works while paused
-        (bit 12)."""
+        (bit 12). No hit test runs during a drag ($460)."""
         m = self.mem
+        if m.u8(MODAL):
+            return False
         if state is not None and m.u16(state[0]) != state[1]:
             return False
         f = m.u16(FLAG_TABLE + 2 * etype)
@@ -723,9 +820,8 @@ class ControlsMixin:
             return
         self.pointer_button()
         if m.u8(MODAL):
-            if m.u8(0x880):
-                return
-            raise NotImplementedError("the drop at the end of a drag ($F6EA: jmp [$468])")
+            self.drag_drop()
+            return
         self._switch_pending()
 
     def new_game_screen(self) -> None:
@@ -790,7 +886,8 @@ class ControlsMixin:
     def _switch(self, screen: int) -> None:
         """$F6B6: leave the current screen, enter the new one ($139AE first zeroes $122D and
         the view pointers $9FA camera, $9FE viewed, $A02 controlled), its panel list $71C,
-        no request pending. The panel drawing $782A is left out."""
+        no request pending; of the panel drawing $782A only the game state two panel
+        callbacks write (panels_drawn)."""
         m = self.mem
         if screen > 35:
             raise NotImplementedError(f"switch to screen {screen} (not in the tables)")
@@ -805,6 +902,15 @@ class ControlsMixin:
         m.set32(PANEL_LIST, PANEL_LISTS[screen])
         m.set8(PENDING_TAB, 0xFF)                         # st.b: the high bytes
         m.set8(SCREEN_SELECT, 0xFF)
+        self.panels_drawn(screen)
+
+    def panels_drawn(self, screen: int) -> None:
+        """$782A draws the new screen's panels; two panel callbacks write game state: the
+        arming screens' loadout panels (24: _manta_panel, 16: _walrus_panel)."""
+        if screen == 24:
+            self._manta_panel()
+        elif screen == 16:
+            self._walrus_panel()
 
     def screen_leave(self) -> None:
         """$14302: the current screen's leave handler (table $14318; none while [$718] < 0)."""
@@ -1562,8 +1668,10 @@ class ControlsMixin:
                 m.set8(stunits.POINTER_MODE, ~m.u8(stunits.POINTER_MODE))
         elif not selected:
             self._sync_auto_button()
-        self._bclr0(0x83D)                                 # zoom $8B4/$8B2: rendering only
-        self._bclr0(0x827)
+        if self._bclr0(0x83D):                             # zoom $8B4/$8B2 (renderer)
+            self.bridge_zoom(1)
+        if self._bclr0(0x827):
+            self.bridge_zoom(-1)
         if self._bclr0(0x7F7) and self._bclr0(0x7D3):
             self._message("Atari Bundle Version    16/02/90")
 
@@ -1581,8 +1689,8 @@ class ControlsMixin:
 
     def map_input(self) -> None:
         """$17244 (maps, screens 2/17/25): cursor keys scroll, Insert / Clr-Home zoom (held),
-        a right click recentres ($F8B4); on the Walrus and Manta maps the keypad selects a
-        unit ($132D6, not ported)."""
+        a right click recentres ($F8B4); on the Walrus and Manta maps the number keys select
+        a unit ($132D6 -> $FFB8 / $FF1E)."""
         m = self.mem
         for key, f in ((0x828, self.map_scroll_up), (0x838, self.map_scroll_down),
                        (0x82E, self.map_scroll_left), (0x832, self.map_scroll_right),
@@ -1591,9 +1699,11 @@ class ControlsMixin:
                 f()
         if not m.u16(MAP_INFO) and self._bclr0(0x883):
             self.map_recentre_at_pointer()
-        if m.u16(stunits.SCREEN) in (0x11, 0x19) and m.u8(stunits.POINTER_MODE) and not m.u8(MODAL) \
-                and any(m.u8(a) & 1 for a in MAP_KEYPAD):
-            raise NotImplementedError("unit selection keys on the Walrus/Manta map ($132D6)")
+        screen = m.u16(stunits.SCREEN)
+        if screen == 0x11:
+            self.key_select(T_WALRUS, self._walrus_map_select)
+        elif screen == 0x19:
+            self.key_select(T_MANTA, self._manta_map_select)
 
     def game_frame(self) -> None:
         """One game_main loop ($408A-$4190) without ui_frame $F636 (the UI calls the cmd_
@@ -1626,12 +1736,2171 @@ class ControlsMixin:
             m.set16(REQUEST_TAB, 6)
             self.events.append(("game over", 34, m.u16(RESULT)))
 
+    # ---- Mantas and Walruses: shared helpers (milestone 2) ------------------------------------
+    def _unit_message(self, kind: str, bay: int, text: str) -> None:
+        """$A044 / $A02A: "Manta N " / "Walrus N " + text (N = bay + 1 as a digit byte)."""
+        self._message(f"{kind} {chr((bay + 0x31) & 0xFF)} {text}")
+
+    def _flag(self, etype: int) -> int:
+        """The flag word of an element type, as the handlers address it (adda.w 2 * type)."""
+        return FLAG_TABLE + s16(w16(2 * etype))
+
+    def _icon_set(self, etype: int) -> bool:
+        """bset #5 on the type's flag byte; True if it was set already."""
+        a = self._flag(etype)
+        v = self.mem.u8(a)
+        self.mem.set8(a, v | 0x20)
+        return bool(v & 0x20)
+
+    def _icon_clear(self, etype: int) -> None:
+        a = self._flag(etype)
+        self.mem.set8(a, self.mem.u8(a) & 0xDF)
+
+    def key_select(self, base: int, handler) -> None:
+        """$132D6: in pointer mode and not dragging, the first of 1-4 / keypad 1-4 with its
+        new flag set (cleared here) selects unit i: the handler runs as a fresh click on a
+        fake element at $13352 (type base + i, index i)."""
+        m = self.mem
+        if not m.u8(stunits.POINTER_MODE) or m.u8(MODAL):
+            return
+        for i in range(4):
+            if self._bclr0(MAP_KEYPAD[2 * i]) or self._bclr0(MAP_KEYPAD[2 * i + 1]):
+                break
+        else:
+            return
+        m.set16(KEY_ELEMENT + 2, i)
+        m.set16(KEY_ELEMENT, w16(i + base))
+        handler(w16(i + base), i)
+
+    def _manta_rec(self) -> int:
+        return self.mem.u32(0x48E)
+
+    def _walrus_rec(self) -> int:
+        return self.mem.u32(0x568)
+
+    def _manta_icons(self) -> None:
+        """$13FBA with a2 = [$48E]."""
+        self._vehicle_icons(self._manta_rec(), self.mem.u16(0x70C), 0x1A)
+
+    def _walrus_icons(self) -> None:
+        """$14004 with a2 = [$568]."""
+        self._vehicle_icons(self._walrus_rec(), self.mem.u16(0x70E), 0x18)
+
+    def _turret_icon(self) -> None:
+        """$13FA6: icon 80 (the rudder turns the turret) = Walrus [$568] bit 5."""
+        self._icon(T_TURRET, self.mem.u8(self._walrus_rec()) & 0x20)
+
+    def _slider(self, y: int, rng, etype: int = T_BUTTON) -> bool:
+        return rng[0] <= y <= rng[1] and self._clickable(etype)
+
+    # ---- Manta control, screen 27 (input $172BC; panels $4229A, $423C6, $42386, $42346, $42306, $42446)
+    def _manta_select(self, etype: int, i: int) -> None:
+        """$FE54: select Manta i in place: the old icon off and the old viewed object
+        [$492] visible again; $48C = i, its records ($141FE); camera and viewed = it
+        (invisible), camera mode 0; controllable / controlled and icons ($13EBA)."""
+        m = self.mem
+        if self._icon_set(etype):
+            return
+        self._icon_clear(m.u16(0x48C) + T_MANTA)
+        self._set_visible(m.u32(0x492))
+        m.set16(0x48C, i)
+        rec, o = self.select_manta()
+        m.set32(stunits.VIEWED, o)
+        m.set16(CAM_MODE, 0)
+        m.set32(CAMERA, o)
+        m.set8(o + 1, m.u8(o + 1) & 0xFD)
+        self.manta_view_update(rec)
+
+    def cmd_manta_select(self, bay: int) -> bool:
+        """$FE54, the Manta icons 1-4 (types 58-61) on the control screen 27 (the number keys
+        do the same in pointer mode): fly Manta `bay` (0-3) from now on."""
+        if not (0 <= bay <= 3 and self._clickable(T_MANTA + bay)):
+            return False
+        self._manta_select(T_MANTA + bay, bay)
+        return True
+
+    def cmd_manta_weapon(self, w: int) -> bool:
+        """$FEE2 (types 62-64): weapon +$1A = 0 laser, 1 Assassin missiles, 2 payload (bomb
+        or comms pod), unless that icon is lit already; icons ($13FBA)."""
+        m = self.mem
+        if not (0 <= w <= 2 and self._clickable(T_WEAPON + w)):
+            return False
+        if not m.u8(self._flag(T_WEAPON + w)) & 0x20:
+            m.set16(self._manta_rec() + 0x1A, w)
+            self._manta_icons()
+        return True
+
+    def cmd_manta_autopilot(self) -> bool:
+        """$12A44 (auto button, type 90): needs a controllable Manta ($70C) that isn't
+        crashing (bit 4). Off: automatic (bit 0), mode 3 (fly to the waypoint): "Autopilot on"
+        or, without a waypoint, "Autopilot on - set course". On: in mode 3 off; in the
+        take-off modes 2/6 only +$33 is set (deferred); other modes (landing) nothing. Then
+        the self-centre bits 6/7 are cleared."""
+        m = self.mem
+        if not self._clickable(T_AUTOPILOT):
+            return False
+        if not m.u16(0x70C):
+            return True
+        a2 = self._manta_rec()
+        if m.u8(a2) & 0x10:
+            return True
+        a0 = self._flag(T_AUTOPILOT)
+        if not m.u8(a0) & 0x20:
+            m.set8(a0, m.u8(a0) | 0x20)
+            m.set8(a2, m.u8(a2) | 1)
+            m.set8(a2 + 0x1C, 3)
+            self._message("Autopilot on" if m.u8(a2) & 2 else "Autopilot on - set course")
+        else:
+            mode = m.u8(a2 + 0x1C)
+            if mode in (2, 6):
+                m.set8(a2 + 0x33, 0xFF)
+                return True
+            if mode != 3:
+                return True
+            m.set8(a0, m.u8(a0) & 0xDF)
+            m.set8(a2, m.u8(a2) & 0xFE)
+        m.set8(a2, m.u8(a2) & 0x3F)
+        self._manta_icons()
+        return True
+
+    def cmd_manta_centre_rudder(self) -> bool:
+        """$129E6: manual flight: +0 bit 7, the rudder self-centres."""
+        return self._manta_bit(0x80)
+
+    def cmd_manta_centre_pitch(self) -> bool:
+        """$129FE: manual flight: +0 bit 6, the pitch self-centres."""
+        return self._manta_bit(0x40)
+
+    def _manta_bit(self, bit: int) -> bool:
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        a2 = self._manta_rec()
+        if not m.u8(a2) & 1:
+            m.set8(a2, m.u8(a2) | bit)
+        return True
+
+    def cmd_manta_instruments(self) -> bool:
+        """$100A8: the instrument panel's page +$18 = (+1) mod 3 (display)."""
+        return self._instrument_page(self._manta_rec() + 0x18)
+
+    def _instrument_page(self, a: int) -> bool:
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        v = s16(m.u16(a) + 1)
+        m.set16(a, 0 if v > 2 else v)
+        m.set16(0x962, 2)
+        m.set16(0x984, 1)
+        return True
+
+    def cmd_manta_throttle(self, y: int) -> bool:
+        """$FDDA, the throttle slider (x 288, y 158..197; repeats while held): manual flight:
+        target speed +8 = (195 - y) * 7, clamped to 0..250."""
+        m = self.mem
+        if not self._slider(y, VEHICLE_THROTTLE_Y):
+            return False
+        a0 = self._manta_rec()
+        if not m.u8(a0) & 1:
+            v = s16(w16(s16(w16(0xC3 - y)) * 7))
+            m.set16(a0 + 8, 0xFA if v > 0xFA else 0 if v < 0 else v)
+        return True
+
+    def cmd_manta_sight(self) -> bool:
+        """$10100 (type 104): controllable: toggle +$32 (the sight overlay *(guess)*), icons."""
+        m = self.mem
+        if not self._clickable(T_SIGHT):
+            return False
+        if m.u16(0x70C):
+            a2 = self._manta_rec()
+            m.set8(a2 + 0x32, ~m.u8(a2 + 0x32))
+            self._manta_icons()
+        return True
+
+    def cmd_manta_rear_view(self) -> bool:
+        """$1015C (type 105): controllable: toggle the rear view $8F1 (no firing while set)."""
+        return self._rear_view(0x70C)
+
+    def _rear_view(self, controllable: int) -> bool:
+        m = self.mem
+        if not self._clickable(T_REAR):
+            return False
+        if m.u16(controllable):
+            m.set16(self._flag(T_REAR), 0)
+            m.set8(0x8F1, ~m.u8(0x8F1))
+            if m.u8(0x8F1):
+                m.set16(self._flag(T_REAR), 0x2000)
+        return True
+
+    def cmd_manta_runway_take_off(self) -> bool:
+        """$13356 (135,117): a Manta landed on a runway (automatic, mode 5) is ordered to
+        take off (+0 bit 5)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        a0 = self._manta_rec()
+        if m.u8(a0) & 1 and m.u8(a0 + 0x1C) == 5:
+            m.set8(a0, m.u8(a0) | 0x20)
+        return True
+
+    def cmd_manta_steer_to(self, rudder: int, pitch: int) -> None:
+        """Mouse-steer input that makes the next manta_step set the selected Manta's rudder
+        +2 and pitch +4 (each clamped to +-255): the mouse deltas are the differences. It
+        applies when that Manta is the viewed one, manual, in mouse-steer mode ($457 clear)."""
+        m = self.mem
+        a = self._manta_rec()
+        m.set16(stunits.MOUSE_DX, w16(max(-255, min(255, rudder)) - m.s16(a + 2)))
+        m.set16(stunits.MOUSE_DX + 2, w16(max(-255, min(255, pitch)) - m.s16(a + 4)))
+
+    def cmd_vehicle_fire(self) -> None:
+        """A left click in mouse-steer mode: the new-press flag $881 that the viewed Manta or
+        Walrus fires with on its next step (its selected weapon; not in the rear view)."""
+        self.input_mouse_button(0, 1)
+        self.input_mouse_button(0, 0)
+
+    def manta_control_input(self) -> None:
+        """$172BC (screen 27): the Assassin lock timer $116C counts down (only here); the
+        number keys select a Manta ($FE54); the screen is re-entered ($71A = 27) when the
+        Manta's status crosses 8 (controllable $70C); gauge timers; automatic: the auto button
+        follows bit 0; manual: a right click toggles mouse-steer mode."""
+        m = self.mem
+        if m.u16(0x116C):
+            m.set16(0x116C, m.u16(0x116C) - 1)
+        self.key_select(T_MANTA, self._manta_select)
+        if self._vehicle_reenter(self._manta_rec(), 0x70C, 0x1B):
+            return
+        for t in (0x954, 0x956, 0x958, 0x962):
+            if m.u16(t):
+                m.set16(t, m.u16(t) - 1)
+        a2 = self._manta_rec()
+        if m.u8(a2) & 1:
+            if not m.u8(self._flag(T_AUTOPILOT)) & 0x20:
+                self._manta_icons()
+            return
+        if self._bclr0(0x883):
+            m.set8(stunits.POINTER_MODE, ~m.u8(stunits.POINTER_MODE))
+        if m.u8(self._flag(T_AUTOPILOT)) & 0x20:
+            self._manta_icons()
+
+    def _vehicle_reenter(self, a0: int, controllable: int, screen: int) -> bool:
+        """The control screens re-enter themselves when the unit's status (signed) crosses 8
+        relative to the controllable flag. True when the handler stops there."""
+        m = self.mem
+        out = stsim.s8(m.u8(a0 + 1)) >= 8
+        if not m.u16(controllable):
+            if out:
+                m.set16(SCREEN_SELECT, screen)
+            return True
+        if not out:
+            m.set16(SCREEN_SELECT, screen)
+            return True
+        return False
+
+    # ---- Manta deck, screen 26 (input $1773C; panel $42B40) ---------------------------------
+    def _manta_deck_select(self, etype: int, i: int) -> None:
+        """$11F92: the deck screen's own selection $DCC (records $48E/$492; $48C kept)."""
+        m = self.mem
+        d0 = w16(m.u16(0xDCC) + T_MANTA_DECK)
+        if etype == d0:
+            return
+        self._icon_clear(d0)
+        self._icon_set(etype)
+        k = w16(etype - T_MANTA_DECK)
+        m.set16(0xDCC, k)
+        m.set32(0x492, self._bay_object(MANTA_OBJS, k))
+        m.set32(0x48E, self._bay_record(MANTA_RECS, k))
+        m.set16(0x95C, 2)
+
+    def cmd_manta_deck_select(self, bay: int) -> bool:
+        """$11F92 (types 86-89): the Manta the deck commands act on (to deck, land)."""
+        if not (0 <= bay <= 3 and self._clickable(T_MANTA_DECK + bay)):
+            return False
+        self._manta_deck_select(T_MANTA_DECK + bay, bay)
+        return True
+
+    def cmd_manta_abort_landing(self) -> bool:
+        """$12360 (144,155): abort the landing of Manta [$DDC] while it is still in the
+        approach (step +$1D <= 3): it flies on (mode 3); without a waypoint it gets one ahead
+        of the carrier ($1207A)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        if not m.u8(0x1232):
+            self._message("No aircraft is currently landing")
+            return True
+        d1 = m.u16(0xDDC)
+        a0 = self._bay_record(MANTA_RECS, d1)
+        if m.u8(a0 + 0x1D) > 3:
+            self._message("Too late to abort landing")
+            return True
+        m.set8(0x1232, 0)
+        m.set8(a0 + 0x1C, 3)
+        m.set8(a0 + 0x1D, 0)
+        if not m.u8(a0) & 2:
+            m.set8(a0, (m.u8(a0) | 2) & 0xFB)
+            self._manta_waypoint_ahead(a0, d1)
+        m.set16(0x95C, 2)
+        self._unit_message("Manta", m.u16(0xDDC), "- Landing aborted")
+        return True
+
+    def _manta_waypoint_ahead(self, a0: int, d1: int) -> None:
+        """$1207A: cruise 60, height (bay + 1) * 300 + 500, 6000 ahead of the carrier."""
+        m, c = self.mem, stunits.CARRIER
+        m.set16(a0 + 0x2A, 0x3C)
+        m.set32(a0 + 0x22, s16(w16(w16(d1 + 1) * 0x12C + 0x1F4)))
+        self.set_matrix(m.u16(c + 6))
+        x, z = self.matrix_rotate(0, 0xE890)
+        m.set32(a0 + 0x1E, s32(x + m.u32(c + 0x0A)))
+        m.set32(a0 + 0x26, s32(z + m.u32(c + 0x12)))
+
+    def manta_deck_input(self) -> None:
+        """$1773C (screen 26): the number keys select ($11F92)."""
+        self.key_select(T_MANTA_DECK, self._manta_deck_select)
+
+    # ---- Manta map, screen 25 (panels $41B50, $41CD6) ---------------------------------------
+    def _manta_map_select(self, etype: int, i: int) -> None:
+        """$FF1E: select Manta i ($48C, records); its icon lit already: recall its course."""
+        m = self.mem
+        if m.u16(MAP_INFO):
+            return
+        if self._icon_set(etype):
+            return self._manta_recall()
+        self._icon_clear(m.u16(0x48C) + T_MANTA)
+        m.set16(0x48C, i)
+        self.select_manta()
+
+    def cmd_manta_map_select(self, bay: int) -> bool:
+        """$FF1E (types 58-61 on the Manta map): select Manta `bay`; clicking the selected
+        one again recalls its course into the map's edit values ($12ECC)."""
+        if not (0 <= bay <= 3 and self._clickable(T_MANTA + bay)):
+            return False
+        self._manta_map_select(T_MANTA + bay, bay)
+        return True
+
+    def _manta_recall(self) -> None:
+        """$12ECC: the Manta's course (+$1E/+$22/+$26, cruise +$2A, announce bit 2) into the
+        edit values $69E/$6A2/$6A6, $69C, $6AC; the map centred on it at zoom 0."""
+        m = self.mem
+        a0, bay = self._manta_rec(), m.u16(0x48C)
+        if m.u8(a0 + 1) & 0x80:
+            return self._unit_message("Manta", bay, "no longer exists")
+        if not m.u8(a0) & 2:
+            return self._unit_message("Manta", bay, "has no course to recall")
+        m.set32(0x69E, m.u32(a0 + 0x1E))
+        m.set32(MAP_X, m.u32(a0 + 0x1E))
+        m.set32(0x6A2, m.u32(a0 + 0x22))
+        m.set32(0x6A6, m.u32(a0 + 0x26))
+        m.set32(MAP_Z, m.u32(a0 + 0x26))
+        m.set16(0x69C, m.u16(a0 + 0x2A))
+        m.set8(0x6AC, 0xFF if m.u8(a0) & 4 else 0)
+        self._manta_map_icons()
+        self._map_zoom_set(0)
+        self._unit_message("Manta", bay, "course recalled")
+
+    def _manta_map_icons(self) -> None:
+        """$12D72: icons 91 (draw mode $6AA) and 92 (announce $6AC)."""
+        m = self.mem
+        self._icon(T_DRAW, m.u16(0x6AA))
+        self._icon(T_ANNOUNCE, m.u8(0x6AC))
+
+    def _walrus_map_icons(self) -> None:
+        """$12E1E: icons 91 ($6B8) and 92 ($6BA)."""
+        m = self.mem
+        self._icon(T_DRAW, m.u16(0x6B8))
+        self._icon(T_ANNOUNCE, m.u8(0x6BA))
+
+    def cmd_manta_set_course(self, held: int = 0) -> bool:
+        """$12FC4 (13,178). A fresh press gives the selected Manta the edited course: bit 1,
+        bit 2 = announce $6AC, cruise +$2A = $69C, waypoint +$1E/+$22/+$26 = $69E/$6A2/$6A6
+        ("course set", or "course set - engage autopilot" when manual). Held (auto-repeat),
+        a Manta with a course becomes automatic ("autopilot engaged"; its mode isn't set)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        if m.u16(MAP_INFO):
+            return True
+        a0, bay = self._manta_rec(), m.u16(0x48C)
+        d0 = m.u8(a0)
+        if held:
+            if not d0 & 2 or d0 & 1:
+                return True
+            m.set8(a0, d0 | 1)
+            self._unit_message("Manta", bay, "autopilot engaged")
+            return True
+        if m.u8(a0 + 1) & 0x80:
+            self._unit_message("Manta", bay, "no longer exists")
+            return True
+        d0 = (d0 | 2) & 0xFB
+        if m.u8(0x6AC):
+            d0 |= 4
+        m.set8(a0, d0)
+        m.set16(a0 + 0x2A, m.u16(0x69C))
+        m.set32(a0 + 0x1E, m.u32(0x69E))
+        m.set32(a0 + 0x22, m.u32(0x6A2))
+        m.set32(a0 + 0x26, m.u32(0x6A6))
+        self._unit_message("Manta", bay, "course set" if d0 & 1 else "course set - engage autopilot")
+        return True
+
+    def cmd_manta_clear_course(self) -> bool:
+        """$12F8E (57,178): the selected Manta's course cleared (bit 1)."""
+        return self._clear_course(self._manta_rec(), "Manta", 0x48C)
+
+    def _clear_course(self, a0: int, kind: str, sel: int) -> bool:
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        if m.u16(MAP_INFO):
+            return True
+        bay = m.u16(sel)
+        if m.u8(a0 + 1) & 0x80:
+            self._unit_message(kind, bay, "no longer exists")
+        elif m.u8(a0) & 2:
+            m.set8(a0, m.u8(a0) & 0xFD)
+            self._unit_message(kind, bay, "course cleared")
+        else:
+            self._unit_message(kind, bay, "course already clear")
+        return True
+
+    def _edit(self, a: int, v: int, lo: int, hi: int) -> None:
+        v = s16(v)
+        self.mem.set16(a, hi if v > hi else lo if v < lo else v)
+
+    def _map_edit(self, y=None) -> bool:
+        """The map edit buttons: clickable (sliders: y in 159..195), and no island info box."""
+        if y is not None:
+            ok = self._slider(y, MAP_SLIDER_Y)
+        else:
+            ok = self._clickable(T_BUTTON)
+        return ok and not self.mem.u16(MAP_INFO)
+
+    def cmd_manta_cruise_up(self) -> bool:
+        """$12C90: the course's cruise speed $69C + 16 (50..250; repeats)."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._edit(0x69C, self.mem.u16(0x69C) + 0x10, 0x32, 0xFA)
+        return True
+
+    def cmd_manta_cruise_down(self) -> bool:
+        """$12CA2: $69C - 16."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._edit(0x69C, self.mem.u16(0x69C) - 0x10, 0x32, 0xFA)
+        return True
+
+    def cmd_manta_cruise(self, y: int) -> bool:
+        """$12CB4, the cruise slider (x 288, y 159..195): $69C = (195 - y) * 7, 50..250."""
+        if not self._slider(y, MAP_SLIDER_Y):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._edit(0x69C, s16(w16(0xC3 - y)) * 7, 0x32, 0xFA)
+        return True
+
+    def _altitude(self, v: int) -> None:
+        """$12D1C: the course altitude $6A2 (long), 250..3500."""
+        v = s32(v)
+        self.mem.set32(0x6A2, 0xDAC if v > 0xDAC else 0xFA if v < 0xFA else v)
+
+    def cmd_manta_altitude_up(self) -> bool:
+        """$12CE2: the course's altitude $6A2 + 230 (250..3500; repeats)."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._altitude(self.mem.u32(0x6A2) + 0xE6)
+        return True
+
+    def cmd_manta_altitude_down(self) -> bool:
+        """$12CF6: $6A2 - 230."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._altitude(self.mem.u32(0x6A2) - 0xE6)
+        return True
+
+    def cmd_manta_altitude(self, y: int) -> bool:
+        """$12D0A, the altitude slider (x 244, y 159..195): $6A2 = (195 - y) * 97."""
+        if not self._slider(y, MAP_SLIDER_Y):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._altitude(s16(w16(0xC3 - y)) * 0x61)
+        return True
+
+    def cmd_manta_map_draw_mode(self) -> bool:
+        """$12D40 (type 91): toggle $6AA (what the Manta map draws; display), icons. No
+        fresh-press check: holding it toggles every pass."""
+        m = self.mem
+        if not self._clickable(T_DRAW):
+            return False
+        if not m.u16(MAP_INFO):
+            m.set8(0x6AB, m.u8(0x6AB) ^ 1)
+            self._manta_map_icons()
+        return True
+
+    def cmd_manta_toggle_announce(self) -> bool:
+        """$12D50 (type 92): toggle $6AC, the next course's "report arrival" bit, icons."""
+        m = self.mem
+        if not self._clickable(T_ANNOUNCE):
+            return False
+        if not m.u16(MAP_INFO):
+            m.set8(0x6AC, ~m.u8(0x6AC))
+            self._manta_map_icons()
+        return True
+
+    def cmd_set_manta_waypoint(self, x: int, z: int) -> bool:
+        """The UI's "fly to (x, z)": the Manta map cursor $69E/$6A6 at world (x, z), as a map
+        click writes it, then a fresh press of set course (altitude $6A2 and cruise $69C as
+        edited). Engage with cmd_manta_set_course(1) or cmd_manta_autopilot()."""
+        m = self.mem
+        if not (self._clickable(T_BUTTON, (MAP_INFO, 0)) and self._clickable(T_BUTTON)):
+            return False
+        m.set32(0x69E, s32(x))
+        m.set32(0x6A6, s32(z))
+        return self.cmd_manta_set_course(0)
+
+    # ---- Manta arming, screen 24 (input $17610; panels $428A2, $42966, $429FE) ------------
+    def _manta_arming_select(self, etype: int, i: int) -> None:
+        """$116C6: the arming screen's selection $DB4, record $48E, sub-panel $DC0."""
+        m = self.mem
+        d0 = w16(m.u16(0xDB4) + T_MANTA_ARMING)
+        if etype == d0:
+            return
+        self._icon_clear(d0)
+        self._icon_set(etype)
+        k = w16(etype - T_MANTA_ARMING)
+        m.set16(0xDB4, k)
+        rec = self._bay_record(MANTA_RECS, k)
+        m.set32(0x48E, rec)
+        m.set16(0xDC0, self._subpanel(rec))
+        self._manta_panel()
+        m.set16(0x95C, 2)
+
+    def cmd_manta_arming_select(self, bay: int) -> bool:
+        """$116C6 (types 74-77): the bay the hangar commands and loadout act on."""
+        if not (0 <= bay <= 3 and self._clickable(T_MANTA_ARMING + bay)):
+            return False
+        self._manta_arming_select(T_MANTA_ARMING + bay, bay)
+        return True
+
+    def manta_arming_input(self) -> None:
+        """$17610 (screen 24): the number keys select ($116C6)."""
+        self.key_select(T_MANTA_ARMING, self._manta_arming_select)
+
+    def cmd_manta_arming_to_deck(self) -> bool:
+        """$11886 (12,178, type 78): send the arming screen's Manta ([$48E], bay [$DB4]) up
+        the lift: the body of $11894 (cmd_manta_to_deck) with d1 = [$DB4]."""
+        m = self.mem
+        if not self._clickable(T_HANGAR):
+            return False
+        keep = m.u16(0xDCC)
+        m.set16(0xDCC, m.u16(0xDB4))
+        try:
+            self.cmd_manta_to_deck()
+        finally:
+            m.set16(0xDCC, keep)
+        return True
+
+    def _manta_panel(self) -> None:
+        """The Manta loadout panel's redraw ($B418 with $42966, callback $C580, while
+        [$DC0] = 0): besides drawing, it marks the Manta [$48E] unbalanced (+$1C) when the
+        wing loads differ by more than 80 ($C640, _manta_balance)."""
+        m = self.mem
+        if m.u16(0xDC0):
+            return
+        if m.u16(LOADOUT_CURSOR) >= 6:
+            raise NotImplementedError(f"loadout cursor {m.u16(LOADOUT_CURSOR)} beyond the list $C770 (panel draw)")
+        self._manta_balance(self._manta_rec())
+
+    def _walrus_panel(self) -> None:
+        """The Walrus loadout panel's redraw ($B418 with $427B6, callback $BFE8, while
+        [$DC2] = 0): with the list on the Harbinger, its entry's weight $CB7A = 100 + 150 n
+        (n = [$CB80]) and the +/- buttons (type 81) patched to the Harbinger count
+        ($11CE0/$11D0C); on the ACCB to its building type ($11D1C/$11D40). The buttons are
+        shown (flag 0) only for those two, else hidden ($8000)."""
+        m = self.mem
+        if m.u16(0xDC2):
+            return
+        k = m.u16(LOADOUT_CURSOR + 2)
+        if k >= 5:
+            raise NotImplementedError(f"loadout cursor {k} beyond the list $C242")
+        code, d1 = m.u16(WALRUS_CODES + 2 * k), 0x8000
+        if code == 7:
+            d1 = 0
+            m.set16(LOADOUT + 26 * 7, w16(m.u16(HARBINGERS) * 0x96 + 0x64))
+            m.set32(PLUS_HANDLER, 0x11CE0)
+            m.set32(MINUS_HANDLER, 0x11D0C)
+        if code == 9:
+            d1 = 0
+            m.set32(PLUS_HANDLER, 0x11D1C)
+            m.set32(MINUS_HANDLER, 0x11D40)
+        m.set16(self._flag(T_HARBINGERS), d1)
+
+    def _cursor_step(self, a: int, n: int, d: int) -> None:
+        """$1132E/$11352, $11A30/$11A76: a list cursor + 1 (unsigned wrap at n) / - 1."""
+        m = self.mem
+        v = w16(m.u16(a) + d)
+        if d > 0:
+            v = v if v < n else 0
+        elif v & 0x8000:
+            v = n - 1
+        m.set16(a, v)
+
+    def cmd_manta_loadout_next(self) -> bool:
+        """$1132E (142,84): the stores list cursor $DB8 + 1 (0..5: Assassin x1, x2, x3,
+        Quaker, Quasar, comms pod; repeats)."""
+        if not self._clickable(T_BUTTON, (0xDC0, 0)):
+            return False
+        self._cursor_step(LOADOUT_CURSOR, 6, 1)
+        self._manta_panel()
+        return True
+
+    def cmd_manta_loadout_prev(self) -> bool:
+        """$11352 (142,108): $DB8 - 1."""
+        if not self._clickable(T_BUTTON, (0xDC0, 0)):
+            return False
+        self._cursor_step(LOADOUT_CURSOR, 6, -1)
+        self._manta_panel()
+        return True
+
+    def _code(self, table: int, k: int, n: int) -> int:
+        if k >= n:
+            raise NotImplementedError(f"loadout cursor {k} beyond the list ${table:X}")
+        return self.mem.u16(table + 2 * k)
+
+    def _entry(self, code: int) -> int:
+        """mulu.w #$1A + adda.w: the loadout entry of a code."""
+        if code > 11:
+            raise NotImplementedError(f"loadout code {code} beyond the table $CAC4")
+        return LOADOUT + s16(w16(code * 0x1A))
+
+    def _start_drag(self, callback: int) -> None:
+        """$F73C: the drop callback $468, modal mode $460 (the pointer clip is UI)."""
+        self.mem.set32(DROP, callback)
+        self.mem.set8(MODAL, 0xFF)
+
+    def cmd_manta_pick_loadout(self) -> bool:
+        """$1135E (123,85): pick up the stores item at the cursor to drag it onto a slot
+        ("Stores unable to supply payload" if fewer are on board than it holds). Then
+        cmd_drag_release(px, py) over a slot; the next ui_frame fits it (drop $113A4)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON, (0xDC0, 0)):
+            return False
+        a1 = self._entry(self._code(MANTA_CODES, m.u16(LOADOUT_CURSOR), 6))
+        if m.u16(a1 + 6) > m.u16(m.u32(a1 + 2)):
+            self._message("Stores unable to supply payload")
+            return True
+        self._start_drag(0x113A4)
+        return True
+
+    def cmd_manta_pick_slot(self, k: int) -> bool:
+        """$114C8 (slots 0 fuselage at 218,70, 1/2 wings at 195,90 / 240,90): pick up a
+        fitted item to drag it back to the stores box (drop $11500)."""
+        m = self.mem
+        if not (0 <= k <= 2 and self._clickable(T_BUTTON, (0xDC0, 0))):
+            return False
+        off = m.u16(0x11448 + 2 * k)
+        if m.u16(self._manta_rec() + off):
+            m.set32(DRAG_ELEMENT, MANTA_SLOTS[k])
+            self._start_drag(0x11500)
+        return True
+
+    def _slot_at(self, slots, px: int, py: int):
+        """$B52C over the slot elements: the first whose box holds the pointer."""
+        for a in slots:
+            k, x0, y0, x1, y1 = SLOT_ELEMENTS[a]
+            if x0 <= px <= x1 and y0 <= py <= y1:
+                return k
+        return None
+
+    def _dragged_slot(self) -> int:
+        a = self.mem.u32(DRAG_ELEMENT)
+        if a not in SLOT_ELEMENTS:
+            raise NotImplementedError(f"dragged element ${a:X} is not a slot")
+        return SLOT_ELEMENTS[a][0]
+
+    def _in_stores_box(self, px: int, py: int) -> bool:
+        x0, y0, x1, y1 = STORES_BOX
+        return x0 <= px <= x1 and y0 <= py <= y1
+
+    def _manta_drop_loadout(self, px: int, py: int) -> None:
+        """$113A4: dropped on slot k: wings (k >= 1) take Assassins only (codes <= 2); the
+        weight +$12 - old item + new must stay <= 750; the old item goes back to stock and
+        the new one is taken from it."""
+        m = self.mem
+        k = self._slot_at(MANTA_SLOTS, px, py)
+        if k is None:
+            return
+        a0 = self._manta_rec()
+        d1 = self._code(MANTA_CODES, m.u16(LOADOUT_CURSOR), 6)
+        a1 = self._entry(d1)
+        if k and d1 > 2:
+            return self._message("Payload cannot be wing mounted")
+        off = m.u16(0x11448 + 2 * k)
+        d3 = m.u16(a0 + off)
+        a2 = self._entry(d3)
+        d0 = w16(m.u16(a0 + 0x12) - m.u16(a2) + m.u16(a1))
+        if s16(d0) > 0x2EE:
+            return self._message("Payload capacity exceeded")
+        m.set16(a0 + 0x12, d0)
+        if d3:
+            p = m.u32(a2 + 2)
+            m.set16(p, m.u16(p) + m.u16(a2 + 6))
+        m.set16(a0 + off, d1)
+        p = m.u32(a1 + 2)
+        m.set16(p, m.u16(p) - m.u16(a1 + 6))
+        self._manta_panel()
+
+    def _manta_drop_return(self, px: int, py: int) -> None:
+        """$11500: dropped in the stores box: the slot emptied, its item back to stock, the
+        weight reduced, "Payload returned to stores"."""
+        m = self.mem
+        if not self._in_stores_box(px, py):
+            return
+        a0 = self._manta_rec()
+        off = m.u16(0x11448 + 2 * self._dragged_slot())
+        d0 = m.u16(a0 + off)
+        m.set16(a0 + off, 0)
+        a1 = self._entry(d0)
+        p = m.u32(a1 + 2)
+        m.set16(p, m.u16(p) + m.u16(a1 + 6))
+        m.set16(a0 + 0x12, m.u16(a0 + 0x12) - m.u16(a1))
+        self._message("Payload returned to stores")
+        self._manta_panel()
+
+    def cmd_drag_release(self, px: int, py: int) -> None:
+        """The end of a drag: the pointer at (px, py) and the left button released; the next
+        ui_frame runs the drop ($F6EA)."""
+        self._set_pointer(px, py)
+        self.input_mouse_button(0, 0)
+
+    def drag_drop(self) -> None:
+        """$F6EA, ui_frame during a drag: once the button is up, modal mode ends ($F712) and
+        the drop callback [$468] runs with the pointer (the hit test it repeats only marks
+        the element under the pointer, UI)."""
+        m = self.mem
+        if m.u8(0x880):
+            return
+        m.set8(MODAL, 0)
+        cb = m.u32(DROP)
+        handler = DROPS.get(cb)
+        if handler is None:
+            raise NotImplementedError(f"drop callback ${cb:X} ($F6EA: jmp [$468])")
+        getattr(self, handler)(m.u16(0x474), m.u16(0x476))
+
+    def _fit(self, kind: str, slot: int, code: int) -> bool:
+        """Cursor clicks until the list shows `code`, pick it up, drop it on `slot`."""
+        m = self.mem
+        codes, n, a = (MANTA_CODES, 6, LOADOUT_CURSOR) if kind == "Manta" else (WALRUS_CODES, 5, LOADOUT_CURSOR + 2)
+        slots = MANTA_SLOTS if kind == "Manta" else WALRUS_SLOTS
+        if not 0 <= slot < len(slots):
+            return False
+        nxt = self.cmd_manta_loadout_next if kind == "Manta" else self.cmd_walrus_loadout_next
+        pick = self.cmd_manta_pick_loadout if kind == "Manta" else self.cmd_walrus_pick_loadout
+        for _ in range(n + 1):
+            if m.u16(a) < n and m.u16(codes + 2 * m.u16(a)) == code:
+                break
+            if not nxt():
+                return False
+        else:
+            return False
+        if not pick() or not m.u8(MODAL):
+            return False
+        _, x0, y0, x1, y1 = SLOT_ELEMENTS[slots[slot]]
+        self.cmd_drag_release((x0 + x1) // 2, (y0 + y1) // 2)
+        self.ui_frame()
+        return True
+
+    def _unfit(self, kind: str, slot: int) -> bool:
+        m = self.mem
+        pick = self.cmd_manta_pick_slot if kind == "Manta" else self.cmd_walrus_pick_slot
+        if not pick(slot) or not m.u8(MODAL):
+            return False
+        x0, y0, x1, y1 = STORES_BOX
+        self.cmd_drag_release((x0 + x1) // 2, (y0 + y1) // 2)
+        self.ui_frame()
+        return True
+
+    def cmd_manta_fit(self, slot: int, code: int) -> bool:
+        """Load `code` (1-3 Assassins, 4 Quaker, 5 Quasar, 10 comms pod) into slot 0
+        (fuselage) or 1/2 (wings) of the arming screen's Manta as a player does it: cursor
+        clicks, pick up, drop on the slot (ui_frame runs the drop). False if a click wasn't
+        possible; refusals are messages."""
+        return self._fit("Manta", slot, code)
+
+    def cmd_manta_unfit(self, slot: int) -> bool:
+        """Drag slot 0-2's item back to the stores box."""
+        return self._unfit("Manta", slot)
+
+    # ---- Walrus control, screen 18 (input $17374; panels $42470, $4259C, $4255C, $4251C, $424DC)
+    def _walrus_select(self, etype: int, i: int) -> None:
+        """$10016: select Walrus i in place: old icon off, the old object [$56C] visible;
+        $566 = i, records ($14224); camera and viewed = it (invisible), camera mode 1;
+        controllable / controlled and icons ($13F5A)."""
+        m = self.mem
+        if self._icon_set(etype):
+            return
+        self._icon_clear(m.u16(0x566) + T_WALRUS)
+        self._set_visible(m.u32(0x56C))
+        m.set16(0x566, i)
+        rec, o = self.select_walrus()
+        m.set32(stunits.VIEWED, o)
+        m.set16(CAM_MODE, 1)
+        m.set32(CAMERA, o)
+        m.set8(o + 1, m.u8(o + 1) & 0xFD)
+        self.walrus_view_update(rec)
+
+    def cmd_walrus_select(self, bay: int) -> bool:
+        """$10016 (types 70-73 on the control screen 18; number keys alike): drive Walrus
+        `bay` from now on."""
+        if not (0 <= bay <= 3 and self._clickable(T_WALRUS + bay)):
+            return False
+        self._walrus_select(T_WALRUS + bay, bay)
+        return True
+
+    def cmd_walrus_weapon(self, w: int) -> bool:
+        """$FF7C (types 62-64): weapon +$18 = 0 Avatar laser, 1 Harbinger missile, 2 payload
+        (virus bomb, ACCB, fuel pod); icons ($14004)."""
+        m = self.mem
+        if not (0 <= w <= 2 and self._clickable(T_WEAPON + w)):
+            return False
+        if not m.u8(self._flag(T_WEAPON + w)) & 0x20:
+            m.set16(self._walrus_rec() + 0x18, w)
+            self._walrus_icons()
+        return True
+
+    def cmd_walrus_autopilot(self) -> bool:
+        """$12B00 (type 90): needs a controllable Walrus ($70E). Off: needs a course ("No
+        course set"): automatic, mode 3, "Autopilot on". On: in launch mode 2 only +$33 is
+        set; in mode 3 off. Then bits 5 and 7 cleared (turret mode, rudder centring)."""
+        m = self.mem
+        if not self._clickable(T_AUTOPILOT):
+            return False
+        if not m.u16(0x70E):
+            return True
+        a2 = self._walrus_rec()
+        a0 = self._flag(T_AUTOPILOT)
+        if not m.u8(a0) & 0x20:
+            if not m.u8(a2) & 2:
+                self._message("No course set")
+                return True
+            m.set8(a0, m.u8(a0) | 0x20)
+            m.set8(a2, m.u8(a2) | 1)
+            m.set8(a2 + 0x1A, 3)
+            self._message("Autopilot on")
+        else:
+            mode = m.u8(a2 + 0x1A)
+            if mode == 2:
+                m.set8(a2 + 0x33, 0xFF)
+                return True
+            if mode != 3:
+                return True
+            m.set8(a0, m.u8(a0) & 0xDF)
+            m.set8(a2, m.u8(a2) & 0xFE)
+        m.set8(a2, m.u8(a2) & 0x5F)
+        self._walrus_icons()
+        self._turret_icon()
+        return True
+
+    def cmd_walrus_centre_rudder(self, held: int = 0) -> bool:
+        """$12982 (100,155): manual: a fresh press sets bit 7 (the rudder self-centres);
+        held, bit 6 and the rudder +2 = 0."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        a2 = self._walrus_rec()
+        if m.u8(a2) & 1:
+            return True
+        if held:
+            m.set8(a2, m.u8(a2) | 0x40)
+            m.set16(a2 + 2, 0)
+        else:
+            m.set8(a2, m.u8(a2) | 0x80)
+        return True
+
+    def cmd_walrus_turret_mode(self) -> bool:
+        """$129A2 (type 80): controllable and manual: toggle bit 5 (the mouse turns the
+        turret, not the hull); off also clears bit 6. The rudder +2 = 0, bit 7 cleared."""
+        m = self.mem
+        if not self._clickable(T_TURRET):
+            return False
+        a2 = self._walrus_rec()
+        if not m.u16(0x70E) or m.u8(a2) & 1:
+            return True
+        f = m.u8(a2) ^ 0x20
+        if not f & 0x20:
+            f &= 0xBF
+        m.set8(a2, f)
+        self._turret_icon()
+        m.set16(a2 + 2, 0)
+        m.set8(a2, m.u8(a2) & 0x7F)
+        return True
+
+    def cmd_walrus_instruments(self) -> bool:
+        """$100D4: the instrument page +$16 = (+1) mod 3 (display)."""
+        return self._instrument_page(self._walrus_rec() + 0x16)
+
+    def cmd_walrus_throttle(self, y: int) -> bool:
+        """$FE0A, the throttle slider (x 288, y 158..197; repeats): manual: target speed
+        +6 = (195 - y) * $2AA >> 8 (asr), clamped to 0..96."""
+        m = self.mem
+        if not self._slider(y, VEHICLE_THROTTLE_Y):
+            return False
+        a0 = self._walrus_rec()
+        if not m.u8(a0) & 1:
+            v = s16(w16(s16(w16(0xC3 - y)) * 0x2AA)) >> 8
+            m.set16(a0 + 6, 0x60 if v > 0x60 else 0 if v < 0 else v)
+        return True
+
+    def cmd_walrus_sight(self) -> bool:
+        """$1012E (type 104): controllable: toggle +$32, icons."""
+        m = self.mem
+        if not self._clickable(T_SIGHT):
+            return False
+        if m.u16(0x70E):
+            a2 = self._walrus_rec()
+            m.set8(a2 + 0x32, ~m.u8(a2 + 0x32))
+            self._walrus_icons()
+        return True
+
+    def cmd_walrus_rear_view(self) -> bool:
+        """$10190 (type 105): controllable: toggle the rear view $8F1."""
+        return self._rear_view(0x70E)
+
+    def cmd_walrus_steer_to(self, rudder: int) -> None:
+        """Mouse-steer input that makes the next walrus_step set the selected Walrus's rudder
+        +2 (clamped to +-255) when it is the viewed one, manual, in mouse-steer mode and not
+        steering a missile."""
+        m = self.mem
+        a = self._walrus_rec()
+        m.set16(stunits.MOUSE_DX, w16(max(-255, min(255, rudder)) - m.s16(a + 2)))
+
+    def cmd_walrus_missile_steer_to(self, yaw: int, pitch: int) -> bool:
+        """While the selected Walrus steers a Harbinger (bit 4), the mouse turns the missile:
+        deltas that make its turn rates (missile +$1E / +$20) yaw and pitch (+-255) on the
+        next walrus_step. False (nothing written) when it isn't steering one."""
+        m = self.mem
+        o = m.u32(m.u32(0x56C) + 0x20)
+        if not m.u8(self._walrus_rec()) & 0x10 or not stunits.OBJECTS <= o < stunits.OBJECTS + 64 * stunits.OBJECT_SIZE:
+            return False
+        m.set16(stunits.MOUSE_DX, w16(max(-255, min(255, yaw)) - m.s16(o + 0x1E)))
+        m.set16(stunits.MOUSE_DX + 2, w16(max(-255, min(255, pitch)) - m.s16(o + 0x20)))
+        return True
+
+    def walrus_control_input(self) -> None:
+        """$17374 (screen 18): number keys select ($10016); re-enter when the status crosses
+        8 ($70E); gauge timers; automatic: the auto button follows bit 0; manual: a right
+        click toggles mouse-steer mode, except while steering a missile (bit 4)."""
+        m = self.mem
+        self.key_select(T_WALRUS, self._walrus_select)
+        if self._vehicle_reenter(self._walrus_rec(), 0x70E, 0x12):
+            return
+        for t in (0x954, 0x958, 0x962):
+            if m.u16(t):
+                m.set16(t, m.u16(t) - 1)
+        a2 = self._walrus_rec()
+        if m.u8(a2) & 1:
+            if not m.u8(self._flag(T_AUTOPILOT)) & 0x20:
+                self._walrus_icons()
+            return
+        if self._bclr0(0x883):
+            if m.u8(a2) & 0x10:
+                return
+            m.set8(stunits.POINTER_MODE, ~m.u8(stunits.POINTER_MODE))
+        if m.u8(self._flag(T_AUTOPILOT)) & 0x20:
+            self._walrus_icons()
+
+    # ---- Walrus dock, screen 19 (input $17782; panel $42C1A) --------------------------------
+    def _walrus_dock_select(self, etype: int, i: int) -> None:
+        """$1249E: the dock screen's own selection $DE4 (records $568/$56C; $566 kept)."""
+        m = self.mem
+        d0 = w16(m.u16(0xDE4) + T_WALRUS_DOCK)
+        if etype == d0:
+            return
+        self._icon_clear(d0)
+        self._icon_set(etype)
+        k = w16(etype - T_WALRUS_DOCK)
+        m.set16(0xDE4, k)
+        m.set32(0x56C, self._bay_object(WALRUS_OBJS, k))
+        m.set32(0x568, self._bay_record(WALRUS_RECS, k))
+        m.set16(0x95C, 2)
+
+    def cmd_walrus_dock_select(self, bay: int) -> bool:
+        """$1249E (types 93-96): the Walrus launch and dock act on."""
+        if not (0 <= bay <= 3 and self._clickable(T_WALRUS_DOCK + bay)):
+            return False
+        self._walrus_dock_select(T_WALRUS_DOCK + bay, bay)
+        return True
+
+    def cmd_walrus_abort_docking(self) -> bool:
+        """$128AE (144,155): abort Walrus [$6E0]'s docking while it is still approaching
+        (mode 0, step 0): it drives on (mode 3); without a waypoint it gets one astern of the
+        carrier ($12786)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        if not m.u8(0x1233):
+            self._message("No AAV is currently docking")
+            return True
+        d0 = m.u16(0x6E0)
+        a1 = self._bay_record(WALRUS_RECS, d0)
+        a0 = self._bay_object(WALRUS_OBJS, d0)
+        if m.u8(a1 + 0x1A):
+            self._message("No AAV is currently docking")
+            return True
+        if m.u8(a1 + 0x1B):
+            self._message("Too late to abort docking")
+            return True
+        m.set8(0x1233, 0)
+        m.set8(a1 + 0x1A, 3)
+        m.set8(a1 + 0x1B, 0)
+        if not m.u8(a1) & 2:
+            m.set8(a1, (m.u8(a1) | 2) & 0xFB)
+            self._walrus_waypoint_astern(a0, a1)
+        m.set16(0x95C, 2)
+        self._unit_message("Walrus", m.u16(0x6E0), "- Docking aborted")
+        return True
+
+    def _walrus_waypoint_astern(self, a0: int, a1: int) -> None:
+        """$12786: cruise 60, a waypoint astern of the carrier, by the bay's lane."""
+        m, c = self.mem, stunits.CARRIER
+        m.set16(a1 + 0x24, 0x3C)
+        self.set_matrix(m.u16(c + 6))
+        x, z = self.matrix_rotate(w16(m.u16(a0 + 0x1A) * 0x7D0 - 0xBB8), 0xF060)
+        m.set32(a1 + 0x1C, s32(x + m.u32(c + 0x0A)))
+        m.set32(a1 + 0x20, s32(z + m.u32(c + 0x12)))
+
+    def walrus_dock_input(self) -> None:
+        """$17782 (screen 19): the number keys select ($1249E)."""
+        self.key_select(T_WALRUS_DOCK, self._walrus_dock_select)
+
+    # ---- Walrus map, screen 17 (panels $41C3E, $41DC6) --------------------------------------
+    def _walrus_map_select(self, etype: int, i: int) -> None:
+        """$FFB8: select Walrus i ($566, records); selected already: recall its course."""
+        m = self.mem
+        if m.u16(MAP_INFO):
+            return
+        if self._icon_set(etype):
+            return self._walrus_recall()
+        self._icon_clear(m.u16(0x566) + T_WALRUS)
+        m.set16(0x566, i)
+        self.select_walrus()
+
+    def cmd_walrus_map_select(self, bay: int) -> bool:
+        """$FFB8 (types 70-73 on the Walrus map): select Walrus `bay`; again: recall its
+        course ($12F30)."""
+        if not (0 <= bay <= 3 and self._clickable(T_WALRUS + bay)):
+            return False
+        self._walrus_map_select(T_WALRUS + bay, bay)
+        return True
+
+    def _walrus_recall(self) -> None:
+        """$12F30: the course (+$1C/+$20, cruise +$24, bit 2) into $6B0/$6B4, $6AE, $6BA."""
+        m = self.mem
+        a0, bay = self._walrus_rec(), m.u16(0x566)
+        if m.u8(a0 + 1) & 0x80:
+            return self._unit_message("Walrus", bay, "no longer exists")
+        if not m.u8(a0) & 2:
+            return self._unit_message("Walrus", bay, "has no course to recall")
+        m.set32(0x6B0, m.u32(a0 + 0x1C))
+        m.set32(MAP_X, m.u32(a0 + 0x1C))
+        m.set32(0x6B4, m.u32(a0 + 0x20))
+        m.set32(MAP_Z, m.u32(a0 + 0x20))
+        m.set16(0x6AE, m.u16(a0 + 0x24))
+        m.set8(0x6BA, 0xFF if m.u8(a0) & 4 else 0)
+        self._walrus_map_icons()
+        self._map_zoom_set(0)
+        self._unit_message("Walrus", bay, "course recalled")
+
+    def cmd_walrus_set_course(self, held: int = 0) -> bool:
+        """$13122 (13,178): fresh: the edited course (bit 1, bit 2 = $6BA, cruise +$24 = $6AE,
+        waypoint +$1C/+$20 = $6B0/$6B4); held: engage the autopilot (bit 0)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        if m.u16(MAP_INFO):
+            return True
+        a0, bay = self._walrus_rec(), m.u16(0x566)
+        d0 = m.u8(a0)
+        if held:
+            if not d0 & 2 or d0 & 1:
+                return True
+            m.set8(a0, d0 | 1)
+            self._unit_message("Walrus", bay, "autopilot engaged")
+            return True
+        if m.u8(a0 + 1) & 0x80:
+            self._unit_message("Walrus", bay, "no longer exists")
+            return True
+        d0 = (d0 | 2) & 0xFB
+        if m.u8(0x6BA):
+            d0 |= 4
+        m.set8(a0, d0)
+        m.set16(a0 + 0x24, m.u16(0x6AE))
+        m.set32(a0 + 0x1C, m.u32(0x6B0))
+        m.set32(a0 + 0x20, m.u32(0x6B4))
+        self._unit_message("Walrus", bay, "course set" if d0 & 1 else "course set - engage autopilot")
+        return True
+
+    def cmd_walrus_clear_course(self) -> bool:
+        """$130EE (57,178): clear the selected Walrus's course."""
+        return self._clear_course(self._walrus_rec(), "Walrus", 0x566)
+
+    def cmd_walrus_cruise_up(self) -> bool:
+        """$12D98: the course's cruise speed $6AE + 8 (0..96; repeats)."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._edit(0x6AE, self.mem.u16(0x6AE) + 8, 0, 0x60)
+        return True
+
+    def cmd_walrus_cruise_down(self) -> bool:
+        """$12DAA: $6AE - 8."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._edit(0x6AE, self.mem.u16(0x6AE) - 8, 0, 0x60)
+        return True
+
+    def cmd_walrus_cruise(self, y: int) -> bool:
+        """$12DBC, the slider (y 159..195): $6AE = (195 - y) * $2AA >> 8 (lsr.w), 0..96."""
+        if not self._slider(y, MAP_SLIDER_Y):
+            return False
+        if not self.mem.u16(MAP_INFO):
+            self._edit(0x6AE, w16(s16(w16(0xC3 - y)) * 0x2AA) >> 8, 0, 0x60)
+        return True
+
+    def cmd_walrus_map_draw_mode(self) -> bool:
+        """$12DEC (type 91): toggle $6B8 (display), icons."""
+        m = self.mem
+        if not self._clickable(T_DRAW):
+            return False
+        if not m.u16(MAP_INFO):
+            m.set8(0x6B9, m.u8(0x6B9) ^ 1)
+            self._walrus_map_icons()
+        return True
+
+    def cmd_walrus_toggle_announce(self) -> bool:
+        """$12DFC (type 92): toggle $6BA (report arrival for the next course), icons."""
+        m = self.mem
+        if not self._clickable(T_ANNOUNCE):
+            return False
+        if not m.u16(MAP_INFO):
+            m.set8(0x6BA, ~m.u8(0x6BA))
+            self._walrus_map_icons()
+        return True
+
+    def cmd_set_walrus_waypoint(self, x: int, z: int) -> bool:
+        """The UI's "drive to (x, z)": the Walrus map cursor $6B0/$6B4 at (x, z), then a
+        fresh press of set course."""
+        m = self.mem
+        if not (self._clickable(T_BUTTON, (MAP_INFO, 0)) and self._clickable(T_BUTTON)):
+            return False
+        m.set32(0x6B0, s32(x))
+        m.set32(0x6B4, s32(z))
+        return self.cmd_walrus_set_course(0)
+
+    # ---- Walrus arming, screen 16 (input $17748; panels $42708, $427B6, $42864) -------------
+    def _walrus_arming_select(self, etype: int, i: int) -> None:
+        """$11DEE: the arming selection $DB6, record $568, sub-panel $DC2."""
+        m = self.mem
+        d0 = w16(m.u16(0xDB6) + T_WALRUS_ARMING)
+        if etype == d0:
+            return
+        self._icon_clear(d0)
+        self._icon_set(etype)
+        k = w16(etype - T_WALRUS_ARMING)
+        m.set16(0xDB6, k)
+        rec = self._bay_record(WALRUS_RECS, k)
+        m.set32(0x568, rec)
+        m.set16(0xDC2, self._subpanel(rec))
+        self._walrus_panel()
+        m.set16(0x95C, 2)
+
+    def cmd_walrus_arming_select(self, bay: int) -> bool:
+        """$11DEE (types 82-85)."""
+        if not (0 <= bay <= 3 and self._clickable(T_WALRUS_ARMING + bay)):
+            return False
+        self._walrus_arming_select(T_WALRUS_ARMING + bay, bay)
+        return True
+
+    def walrus_arming_input(self) -> None:
+        """$17748 (screen 16): the number keys select ($11DEE); the hangar animation $DC8
+        bounces by $DCA between $6000 and $A000."""
+        m = self.mem
+        self.key_select(T_WALRUS_ARMING, self._walrus_arming_select)
+        d0, d1 = m.u16(0xDC8), m.u16(0xDCA)
+        d0 = w16(d0 + d1)
+        if not d1 & 0x8000:
+            if d0 >= 0xA000:
+                d0 = 0xA000
+                m.set16(0xDCA, w16(-d1))
+        elif d0 <= 0x6000:
+            d0 = 0x6000
+            m.set16(0xDCA, w16(-d1))
+        m.set16(0xDC8, d0)
+
+    def _walrus_cursor_step(self, d: int) -> None:
+        """$11A30/$11A76: cursor $DBA (0..4: Avatar, Harbinger, virus bomb, ACCB, fuel pod);
+        on the Harbinger, $CB80 = 1 if any are on board ($B98) else 0."""
+        m = self.mem
+        self._cursor_step(LOADOUT_CURSOR + 2, 5, d)
+        k = m.u16(LOADOUT_CURSOR + 2)
+        if k >= 5:
+            raise NotImplementedError(f"loadout cursor {k} beyond the list $C242")
+        if m.u16(WALRUS_CODES + 2 * k) == 7:
+            m.set16(HARBINGERS, 1 if m.u16(0xB98) else 0)
+        self._walrus_panel()
+
+    def cmd_walrus_loadout_next(self) -> bool:
+        """$11A30 (142,84): $DBA + 1 (repeats)."""
+        if not self._clickable(T_BUTTON, (0xDC2, 0)):
+            return False
+        self._walrus_cursor_step(1)
+        return True
+
+    def cmd_walrus_loadout_prev(self) -> bool:
+        """$11A76 (142,108): $DBA - 1."""
+        if not self._clickable(T_BUTTON, (0xDC2, 0)):
+            return False
+        self._walrus_cursor_step(-1)
+        return True
+
+    def cmd_walrus_loadout_plus(self) -> bool:
+        """The "+" button (type 81 at 114,86; repeats): whatever the panel draw installed
+        ([$4281C]): $11CE0 the Harbingers to load $CB80 + 1 (at most the stock $B98 and 9),
+        or $11D1C the ACCB's building type $DC6 + 1 (0..2)."""
+        return self._plus_minus(PLUS_HANDLER)
+
+    def cmd_walrus_loadout_minus(self) -> bool:
+        """The "-" button (type 81 at 43,86): $11D0C Harbingers - 1 (at least 1) or $11D40
+        the ACCB type - 1."""
+        return self._plus_minus(MINUS_HANDLER)
+
+    def _plus_minus(self, a: int) -> bool:
+        m = self.mem
+        if not self._clickable(T_HARBINGERS, (0xDC2, 0)):
+            return False
+        h = m.u32(a)
+        if h == 0x11CE0:
+            d0 = w16(m.u16(HARBINGERS) + 1)
+            if d0 > m.u16(0xB98) or d0 > 9:
+                return True
+            m.set16(HARBINGERS, d0)
+        elif h == 0x11D0C:
+            d0 = m.u16(HARBINGERS)
+            if d0 <= 1:
+                return True
+            m.set16(HARBINGERS, d0 - 1)
+        elif h == 0x11D1C:
+            d0 = w16(m.u16(0xDC6) + 1)
+            m.set16(0xDC6, 0 if d0 == 3 else d0)
+        elif h == 0x11D40:
+            d0 = w16(m.u16(0xDC6) - 1)
+            m.set16(0xDC6, 2 if d0 & 0x8000 else d0)
+        else:
+            raise NotImplementedError(f"arming +/- handler ${h:X}")
+        self._walrus_panel()
+        return True
+
+    def cmd_walrus_pick_loadout(self) -> bool:
+        """$11A82 (35,86): pick up the item at the cursor (none or too few on board: "Stores
+        unable to supply payload"); drop $11ACE."""
+        m = self.mem
+        if not self._clickable(T_BUTTON, (0xDC2, 0)):
+            return False
+        a1 = self._entry(self._code(WALRUS_CODES, m.u16(LOADOUT_CURSOR + 2), 5))
+        stock = m.u16(m.u32(a1 + 2))
+        if not stock or m.u16(a1 + 6) > stock:
+            self._message("Stores unable to supply payload")
+            return True
+        self._start_drag(0x11ACE)
+        return True
+
+    def cmd_walrus_pick_slot(self, k: int) -> bool:
+        """$11C16 (slot 0 payload at 173,96, slot 1 weapon at 201,96): pick up a fitted item
+        to drag back to stores (drop $11C4E)."""
+        m = self.mem
+        if not (0 <= k <= 1 and self._clickable(T_BUTTON, (0xDC2, 0))):
+            return False
+        off = m.u16(0x11C12 + 2 * k)
+        if m.u16(self._walrus_rec() + off):
+            m.set32(DRAG_ELEMENT, WALRUS_SLOTS[k])
+            self._start_drag(0x11C4E)
+        return True
+
+    def _walrus_drop_loadout(self, px: int, py: int) -> None:
+        """$11ACE: slot 0 (+$26) takes the payloads (entry +8 = 1: virus bomb, ACCB, fuel
+        pod), slot 1 (+$28) the weapons (Avatar, Harbinger), else "Payload cannot be mounted
+        here". Weight <= 2000; an old Harbinger load weighs 100 + 150 n (the entry $11BD2 is
+        rewritten for it); stock exchanged. Harbingers: +$C = [$CB80] (then at most the
+        stock left); ACCB: +$10 = the building type [$DC6]."""
+        m = self.mem
+        k = self._slot_at(WALRUS_SLOTS, px, py)
+        if k is None:
+            return
+        a0 = self._walrus_rec()
+        d1 = self._code(WALRUS_CODES, m.u16(LOADOUT_CURSOR + 2), 5)
+        a1 = self._entry(d1)
+        if k:
+            if m.u16(a1 + 8) == 1:
+                return self._message("Payload cannot be mounted here")
+            off = 0x28
+        else:
+            if m.u16(a1 + 8) != 1:
+                return self._message("Payload cannot be mounted here")
+            off = 0x26
+        d3 = m.u16(a0 + off)
+        if d3 == 7:
+            a2 = HARBINGER_LOAD
+            n = m.u16(a0 + 0x0C)
+            m.set16(a2 + 6, n)
+            m.set16(a2, w16(n * 0x96 + 0x64))
+        else:
+            a2 = self._entry(d3)
+        d0 = w16(m.u16(a0 + 0x12) - m.u16(a2) + m.u16(a1))
+        if s16(d0) > 0x7D0:
+            return self._message("Payload capacity exceeded")
+        m.set16(a0 + 0x12, d0)
+        if d3:
+            if d3 == 7:
+                m.set16(a0 + 0x0C, 0)
+            p = m.u32(a2 + 2)
+            m.set16(p, m.u16(p) + m.u16(a2 + 6))
+        m.set16(a0 + off, d1)
+        p = m.u32(a1 + 2)
+        m.set16(p, m.u16(p) - m.u16(a1 + 6))
+        if d1 == 7:
+            d0 = m.u16(HARBINGERS)
+            m.set16(a0 + 0x0C, d0)
+            if d0 > m.u16(p):
+                m.set16(HARBINGERS, m.u16(p))
+        if d1 == 9:
+            m.set16(a0 + 0x10, m.u16(0xDC6))
+        self._walrus_panel()
+
+    def _walrus_drop_return(self, px: int, py: int) -> None:
+        """$11C4E: dropped in the stores box: the slot emptied, the item back to stock (a
+        Harbinger load: its count +$C to $B98, weight 100 + 150 n; +$C itself is kept)."""
+        m = self.mem
+        if not self._in_stores_box(px, py):
+            return
+        a0 = self._walrus_rec()
+        off = m.u16(0x11C12 + 2 * self._dragged_slot())
+        d0 = m.u16(a0 + off)
+        m.set16(a0 + off, 0)
+        if d0 == 7:
+            n = m.u16(a0 + 0x0C)
+            m.set16(0xB98, m.u16(0xB98) + n)
+            m.set16(a0 + 0x12, m.u16(a0 + 0x12) - w16(n * 0x96 + 0x64))
+        else:
+            a1 = self._entry(d0)
+            p = m.u32(a1 + 2)
+            m.set16(p, m.u16(p) + m.u16(a1 + 6))
+            m.set16(a0 + 0x12, m.u16(a0 + 0x12) - m.u16(a1))
+        self._message("Payload returned to stores")
+        self._walrus_panel()
+
+    def cmd_walrus_fit(self, slot: int, code: int) -> bool:
+        """Load `code` (6 Avatar or 7 Harbingers into slot 1; 8 virus bomb, 9 ACCB, 11 fuel
+        pod into slot 0) into the arming screen's Walrus as a player does it (cursor clicks,
+        pick up, drop). Harbingers: stepping the cursor onto them resets the count $CB80 to
+        1, so move the cursor there first, set the count (cmd_walrus_loadout_plus/minus),
+        then fit (the cursor isn't moved when it shows the code already)."""
+        return self._fit("Walrus", slot, code)
+
+    def cmd_walrus_unfit(self, slot: int) -> bool:
+        """Drag slot 0/1's item back to the stores box."""
+        return self._unfit("Walrus", slot)
+
+    # ---- read helpers for the UI ---------------------------------------------------------------
+    def vehicle_ui(self) -> dict:
+        """What the vehicle screens show that isn't obvious from the records: the selections
+        (control/map Manta $48C and Walrus $566; arming $DB4/$DB6; deck $DCC; dock $DE4),
+        whether the selected unit can be controlled ($70C/$70E), the loadout list cursors and
+        the codes they show, the Harbingers to load ($CB80), a drag in progress, and each
+        bay's telemetry and status."""
+        m = self.mem
+        mk, wk = m.u16(LOADOUT_CURSOR), m.u16(LOADOUT_CURSOR + 2)
+        return {
+            "manta": m.u16(0x48C), "walrus": m.u16(0x566),
+            "manta_arming": m.u16(0xDB4), "walrus_arming": m.u16(0xDB6),
+            "manta_deck": m.u16(0xDCC), "walrus_dock": m.u16(0xDE4),
+            "manta_controllable": m.u16(0x70C) != 0, "walrus_controllable": m.u16(0x70E) != 0,
+            "manta_loadout": m.u16(MANTA_CODES + 2 * mk) if mk < 6 else -1,
+            "walrus_loadout": m.u16(WALRUS_CODES + 2 * wk) if wk < 5 else -1,
+            "harbingers": m.u16(HARBINGERS),
+            "dragging": m.u32(DROP) if m.u8(MODAL) else 0,
+            "lock_timer": m.u16(0x116C),
+            # telemetry per bay (0 OK, 1 weak, 2 lost) and status (+1: 0 ready ... 8 out, $FF destroyed)
+            "manta_telemetry": [m.u16(MANTA_RECS + REC * k + 0x2E) for k in range(4)],
+            "walrus_telemetry": [m.u16(WALRUS_RECS + REC * k + 0x2C) for k in range(4)],
+            "manta_status": [m.u8(MANTA_RECS + REC * k + 1) for k in range(4)],
+            "walrus_status": [m.u8(WALRUS_RECS + REC * k + 1) for k in range(4)],
+        }
+
+    # ---- milestone 3 "War": bridge view zoom (screen 0, panel $42672) -----------------------
+    def bridge_zoom(self, d: int) -> None:
+        """$FCE8 / $FCF8: the bridge view's zoom $8B4 + d (0-4), scale $8B2 = $2E8 asr zoom
+        (read by the renderer only)."""
+        m = self.mem
+        z = s16(w16(m.u16(0x8B4) + d))
+        z = 4 if z > 4 else 0 if z < 0 else z
+        m.set16(0x8B4, z)
+        m.set16(0x8B2, 0x2E8 >> z)
+
+    def cmd_bridge_zoom_in(self) -> bool:
+        """$FCE8 (56,155; Insert): zoom + 1."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.bridge_zoom(1)
+        return True
+
+    def cmd_bridge_zoom_out(self) -> bool:
+        """$FCF8 (56,178; Clr-Home): zoom - 1."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.bridge_zoom(-1)
+        return True
+
+    # ---- laser turret, screen 8 (input $1741A; panel $421C0) ---------------------------------
+    def _turret_aim(self, a: int, sign: int) -> None:
+        """$FD2C-$FD44: heading $6CC or elevation $6CA moves by 300 >> zoom [$6D2] ($FD54),
+        and both aim rates ($6CE, $6D0) stop."""
+        m = self.mem
+        step = (0x12C >> (m.u16(0x6D2) & 63)) & 0xFFFF
+        m.set16(a, m.u16(a) + sign * step)
+        m.set16(0x6CE, 0)
+        m.set16(0x6D0, 0)
+
+    def turret_aim_up(self) -> None:
+        """$FD3C: elevation $6CA - step (cursor up)."""
+        self._turret_aim(0x6CA, -1)
+
+    def turret_aim_down(self) -> None:
+        """$FD44: elevation + step."""
+        self._turret_aim(0x6CA, 1)
+
+    def turret_aim_left(self) -> None:
+        """$FD2C: heading $6CC - step."""
+        self._turret_aim(0x6CC, -1)
+
+    def turret_aim_right(self) -> None:
+        """$FD34: heading + step."""
+        self._turret_aim(0x6CC, 1)
+
+    def cmd_turret_up(self) -> bool:
+        """$FD3C (100,155), works while held."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.turret_aim_up()
+        return True
+
+    def cmd_turret_down(self) -> bool:
+        """$FD44 (122,178), works while held."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.turret_aim_down()
+        return True
+
+    def cmd_turret_left(self) -> bool:
+        """$FD2C (100,178), works while held."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.turret_aim_left()
+        return True
+
+    def cmd_turret_right(self) -> bool:
+        """$FD34 (122,155), works while held."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.turret_aim_right()
+        return True
+
+    def cmd_turret_fire(self) -> bool:
+        """$FD60 (117,170, between the arrows; works while held): the fire key $88C; the
+        turret (carrier_laser_turret_step) fires on its next step unless it is cooling down."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.mem.set8(0x88C, 0xFF)
+        return True
+
+    def turret_zoom(self, d: int) -> None:
+        """$FC9C / $FCAC: the turret zoom $6D2 + d (0-3; a higher zoom aims in finer steps)
+        and the view offsets $A94/$A98 ($FCD4)."""
+        m = self.mem
+        z = s16(w16(m.u16(0x6D2) + d))
+        z = 3 if z > 3 else 0 if z < 0 else z
+        m.set16(0x6D2, z)
+        self.turret_zoom_view(z)
+
+    def cmd_turret_zoom_in(self) -> bool:
+        """$FC9C (144,155; Insert), fresh press."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.turret_zoom(1)
+        return True
+
+    def cmd_turret_zoom_out(self) -> bool:
+        """$FCAC (144,178; Clr-Home), fresh press."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.turret_zoom(-1)
+        return True
+
+    def cmd_turret_centre_heading(self) -> bool:
+        """$12A34 (166,155): $6D5 bit 7, the heading rate $6CE self-centres to 0."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.mem.set8(0x6D5, self.mem.u8(0x6D5) | 0x80)
+        return True
+
+    def cmd_turret_centre_elevation(self) -> bool:
+        """$12A3C (166,178): $6D5 bit 6, the elevation rate $6D0 self-centres."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.mem.set8(0x6D5, self.mem.u8(0x6D5) | 0x40)
+        return True
+
+    def cmd_turret_steer_to(self, heading_rate: int, elevation_rate: int) -> None:
+        """Mouse-steer deltas that make the next turret step set the aim rates $6CE (heading)
+        and $6D0 (elevation) to these values (clamped to +-255): only on screen 8 in
+        mouse-steer mode ($457 clear) with the observation turret working; a left click
+        (cmd_vehicle_fire) fires."""
+        m = self.mem
+        m.set16(stunits.MOUSE_DX, w16(max(-255, min(255, heading_rate)) - m.s16(0x6CE)))
+        m.set16(stunits.MOUSE_DX + 2, w16(max(-255, min(255, elevation_rate)) - m.s16(0x6D0)))
+
+    def turret_input(self) -> None:
+        """$1741A (screen 8): the gauge timer $968 (redraw); held cursor keys aim, Insert /
+        Clr-Home zoom, a right click toggles mouse-steer mode $457."""
+        m = self.mem
+        if m.u16(0x968):
+            m.set16(0x968, m.u16(0x968) - 1)
+        for key, f in ((0x828, self.turret_aim_up), (0x838, self.turret_aim_down),
+                       (0x82E, self.turret_aim_left), (0x832, self.turret_aim_right)):
+            if m.u8(key):
+                f()
+        if self._bclr0(0x83D):
+            self.turret_zoom(1)
+        if self._bclr0(0x827):
+            self.turret_zoom(-1)
+        if self._bclr0(0x883):
+            m.set8(stunits.POINTER_MODE, ~m.u8(stunits.POINTER_MODE))
+
+    # ---- flares 9, viewing drone 10 (input $1778E), defence drones 11 -----------------------
+    def cmd_flare_launch(self) -> bool:
+        """$1338C (screen 9, 166,155), fresh press: cmd_launch_flare."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.cmd_launch_flare()
+        return True
+
+    def cmd_recon_launch(self) -> bool:
+        """$134C2 (screen 10, 210,155), fresh press: cmd_launch_recon_drone."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.cmd_launch_recon_drone()
+        return True
+
+    def cmd_ssm_fire_at(self, px: int, py: int) -> bool:
+        """$13598 (screen 10, the drone picture at 32,6, 256 x 128), fresh press: the pointer
+        moves to (px, py) and, with the SSM armed ($1160, a right click), cmd_fire_ssm aims a
+        cruise missile at the point under it. While armed the original clips the pointer to
+        the picture."""
+        x0, y0, x1, y1 = SSM_VIEW
+        if not (x0 <= px <= x1 and y0 <= py <= y1 and self._clickable(T_BUTTON)):
+            return False
+        self._set_pointer(px, py)
+        self.cmd_fire_ssm()
+        return True
+
+    def pointer_free(self) -> None:
+        """$F712: modal mode $460 off (the pointer sprite and its clip are UI)."""
+        self.mem.set8(MODAL, 0)
+
+    def drone_view_input(self) -> None:
+        """$1778E (screen 10): without the viewing drone (object 15) out the SSM is disarmed;
+        otherwise a right click toggles SSM armed $1160 (arming points the pointer at the
+        picture, disarming frees it, $F712)."""
+        m = self.mem
+        if not m.u8(self.obj(15) + 1) & 1:
+            if m.u8(0x1160):
+                m.set8(0x1160, 0)
+                self.pointer_free()
+            return
+        if not self._bclr0(0x883):
+            return
+        if m.u8(0x1160):
+            m.set8(0x1160, 0)
+            self.pointer_free()
+            return
+        m.set8(0x1160, 0xFF)
+
+    def cmd_drones_launch(self) -> bool:
+        """$10738 (screen 11, 166,155; repeats while held): cmd_launch_defence_drone."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.cmd_launch_defence_drone()
+        return True
+
+    def cmd_drones_recall(self) -> bool:
+        """$1088C (screen 11, 166,178), fresh press: cmd_recall_defence_drones."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self.cmd_recall_defence_drones()
+        return True
+
+    def _no_override(self) -> bool:
+        """$10552: during a drone recall ($122F) the stations can't change."""
+        if self.mem.u8(0x122F):
+            self._message("Cannot override docking sequence")
+            return True
+        return False
+
+    def _set_stations(self, src: int) -> None:
+        """$10614: each station's state (a0) &= 1 and its offsets +$A/+$C from src."""
+        m = self.mem
+        for k in range(4):
+            a = 0x65E + 14 * k
+            m.set16(a, m.u16(a) & 1)
+            m.set16(a + 0xA, m.u16(src + 4 * k))
+            m.set16(a + 0xC, m.u16(src + 4 * k + 2))
+
+    def cmd_drone_stations_reset(self) -> bool:
+        """$10602 (12,155), fresh press: the stations as they were when the screen was
+        entered ($141DE); not during a recall ("Cannot cancel docking sequence")."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if self.mem.u8(0x122F):
+            self._message("Cannot cancel docking sequence")
+        else:
+            self._set_stations(STATION_SNAPSHOT)
+        return True
+
+    def _formation(self, d: int) -> None:
+        m = self.mem
+        k = s16(w16(m.u16(0x698) + d))
+        if d > 0 and k == 9:
+            k = 0
+        elif d < 0 and k < 0:
+            k = 8
+        m.set16(0x698, k)
+        m.set16(0x95A, 2)
+
+    def cmd_drone_formation_next(self) -> bool:
+        """$106EC (298,155; repeats): formation $698 + 1 (wraps 9 to 0)."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self._formation(1)
+        return True
+
+    def cmd_drone_formation_prev(self) -> bool:
+        """$10706 (298,178; repeats): formation - 1 (below 0: 8)."""
+        if not self._clickable(T_BUTTON):
+            return False
+        self._formation(-1)
+        return True
+
+    def cmd_drone_formation_apply(self) -> bool:
+        """$10714 (188,155), fresh press: the stations of formation [$698] (table $1065C)."""
+        m = self.mem
+        if not self._clickable(T_BUTTON):
+            return False
+        if self._no_override():
+            return True
+        k = m.u16(0x698)
+        if k > 8:
+            raise NotImplementedError(f"drone formation {k} beyond the table $1065C")
+        self._set_stations(FORMATIONS + 16 * k)
+        return True
+
+    def cmd_drone_station_pick(self, k: int) -> bool:
+        """$104C8 (the radar marker of station k, types 66-69): start dragging it ($696 = k,
+        drop $104E6); not during a recall."""
+        if not (0 <= k <= 3 and self._clickable(T_STATION + k)):
+            return False
+        if self._no_override():
+            return True
+        self.mem.set16(0x696, k)
+        self._start_drag(0x104E6)
+        return True
+
+    def _drone_station_drop(self, px: int, py: int) -> None:
+        """$104E6: the station [$696] to the radar point: +$A = (py - cy + 1) * 60, +$C =
+        (px - cx - 4) * 60 (centre $4750/$4752); refused inside the red box (+-900 x
+        +-1500) or within about 384 of another active station; its state &= 1."""
+        m = self.mem
+        a0 = (0x65E + s16(w16(m.u16(0x696) * 14))) & 0xFFFFFFFF
+        d0 = s32(s16(w16(px - m.u16(0x4750) - 4)) * 60)
+        d1 = s32(s16(w16(py - m.u16(0x4752) + 1)) * 60)
+        lo0, lo1 = s16(w16(d0)), s16(w16(d1))
+        if -900 <= lo1 <= 900 and -1500 <= lo0 <= 1500:
+            return self._message("Drone must be outside red boundary")
+        if self._drone_station_clash(a0, w16(d1), w16(d0)):
+            return self._message("Cannot put drones on top of each other")
+        m.set16(a0 + 0xA, d1)
+        m.set16(a0 + 0xC, d0)
+        m.set16(a0, m.u16(a0) & 1)
+
+    def drone_station_pixel(self, k: int):
+        """The radar point of station k's offsets (the drop's inverse, for the UI)."""
+        m = self.mem
+        a = 0x65E + 14 * k
+        return (m.s16(0x4750) + 4 + (m.s16(a + 0xC) + 30) // 60, m.s16(0x4752) - 1 + (m.s16(a + 0xA) + 30) // 60)
+
+    def cmd_drone_station_move(self, k: int, px: int, py: int) -> bool:
+        """Drag station k's marker to the radar point (px, py): pick it up, release there,
+        ui_frame drops it. False if the pick-up wasn't possible."""
+        if not self.cmd_drone_station_pick(k) or not self.mem.u8(MODAL):
+            return False
+        self.cmd_drag_release(px, py)
+        self.ui_frame()
+        return True
+
+    # ---- resources, screen 3 (input $177DE; panels $42CC8-$4314A by sub-panel [$D14]) ------
+    def _at_stockpile(self) -> bool:
+        """The carrier's island buffer ([$5E996], carrier +$3C) is the stockpile island's."""
+        m = self.mem
+        buf = m.u32(stunits.CARRIER + 0x3C)
+        return bool(buf) and m.u8(buf + 1) == m.u16(stsim.STOCKPILE)
+
+    def _resources_refused(self, text: str) -> None:
+        """$17812: the message, back to the main panel, the tab re-entered ($1227/$1228)."""
+        m = self.mem
+        self._message(text)
+        m.set16(RESOURCES, 0)
+        m.set16(REQUEST_TAB, m.u16(TAB))
+        m.set8(SCREEN_REQUEST, 0xFF)
+
+    def resources_input(self) -> None:
+        """$177DE (screen 3): the priority panels (2, 3) need communications ($B0A), the
+        queue panels (4, 5) also no transfer running ($D3E) and the carrier at the stockpile
+        island; otherwise back to the main panel."""
+        m = self.mem
+        mode = m.u16(RESOURCES)
+        if mode < 2:
+            return
+        if not m.u8(0xB0A):
+            return self._resources_refused("Communications are out")
+        if mode < 4:
+            return
+        if m.u8(0xD3E):
+            return self._resources_refused("Resupply operation in progress")
+        if not self._at_stockpile():
+            return self._resources_refused("Stockpile island out of range")
+
+    def _res(self, mode: int) -> bool:
+        return self._clickable(T_BUTTON, (RESOURCES, mode))
+
+    def _items_copy(self, src: int, dst: int) -> None:
+        """Class and target of the 15 store items (+$10/+$12 committed, +$14/+$16 edited)."""
+        m = self.mem
+        for k in range(stsim.N_ITEMS):
+            a = stsim.ITEMS + stsim.ITEM_SIZE * k
+            m.set16(a + dst, m.u16(a + src))
+            m.set16(a + dst + 2, m.u16(a + src + 2))
+
+    def cmd_resupply_abort(self) -> bool:
+        """$1102E (12,155), fresh press: recall the supply drone ($D42 = $D46 = 2, $D40 = 0)
+        unless no transfer runs, it has completed or been aborted, or it is docking
+        ($D40 with $DE6 = 4)."""
+        m = self.mem
+        if not self._res(0):
+            return False
+        if not m.u8(0xD3E):
+            self._message("No resupply operation is in progress")
+        elif m.u16(0xD46) == 1:
+            self._message("Resupply already completed")
+        elif m.u16(0xD46) == 2:
+            self._message("Resupply operation has been aborted")
+        elif m.u8(0xD40) and m.u16(0xDE6) == 4:
+            self._message("Too late to abort resupply")
+        else:
+            m.set16(0xD42, 2)
+            m.set16(0xD46, 2)
+            m.set8(0xD40, 0)
+            self._message("Resupply aborted - drone recalled")
+        return True
+
+    def cmd_resources_transfer(self) -> bool:
+        """$10E4A (34,155), fresh press: cmd_supply_transfer (stunits_enemy)."""
+        if not self._res(0):
+            return False
+        self.cmd_supply_transfer()
+        return True
+
+    def cmd_item_picture(self, k: int) -> bool:
+        """$1098A (the 15 item pictures, 44..244 x 8..92): sub-panel 1 showing item k ($D16)."""
+        if not (0 <= k < stsim.N_ITEMS and self._res(0)):
+            return False
+        self.mem.set16(ITEM_PANEL, k)
+        self.mem.set16(RESOURCES, 1)
+        return True
+
+    def cmd_item_picture_back(self) -> bool:
+        """$109BC (142,115): back to the main panel."""
+        if not self._res(1):
+            return False
+        self.mem.set16(RESOURCES, 0)
+        return True
+
+    def cmd_stores_priorities_open(self) -> bool:
+        """$109E8 (56,155): needs communications; sub-panel 2, scroll $D38 = 0, no entry,
+        the items' classes and targets copied to their edit fields (+$14/+$16)."""
+        m = self.mem
+        if not self._res(0):
+            return False
+        if not m.u8(0xB0A):
+            self._message("Communications are out")
+            return True
+        m.set16(RESOURCES, 2)
+        m.set16(STORES_SCROLL, 0)
+        m.set8(ENTRY, 0)
+        self._items_copy(0x10, 0x14)
+        return True
+
+    def cmd_stores_priorities_reset(self) -> bool:
+        """$10A66 (228,22): the edit fields back to the committed values (not while a
+        number is being typed)."""
+        if not self._res(2):
+            return False
+        if not self.mem.u8(ENTRY):
+            self._items_copy(0x10, 0x14)
+        return True
+
+    def cmd_stores_priorities_exit(self) -> bool:
+        """$10A3C (228,114): commit the edit fields (+$14/+$16 -> +$10/+$12), main panel."""
+        if not self._res(2):
+            return False
+        if not self.mem.u8(ENTRY):
+            self.mem.set16(RESOURCES, 0)
+            self._items_copy(0x14, 0x10)
+        return True
+
+    def cmd_stores_scroll_up(self) -> bool:
+        """$10AA6 (176,44): the three rows show items $D38.. ; $D38 - 1 (>= 0)."""
+        m = self.mem
+        if not self._res(2):
+            return False
+        if not m.u8(ENTRY) and m.u16(STORES_SCROLL):
+            m.set16(STORES_SCROLL, m.u16(STORES_SCROLL) - 1)
+        return True
+
+    def cmd_stores_scroll_down(self) -> bool:
+        """$10A8A (176,76): $D38 + 1 (up to 12)."""
+        m = self.mem
+        if not self._res(2):
+            return False
+        if not m.u8(ENTRY) and m.u16(STORES_SCROLL) != 12:
+            m.set16(STORES_SCROLL, m.u16(STORES_SCROLL) + 1)
+        return True
+
+    def _item(self, row: int, scroll: int) -> int:
+        """The item record of a row: $B76 + (row + scroll) * $1A (mulu.w, index .w)."""
+        m = self.mem
+        return (stsim.ITEMS + s16(w16(w16(row + m.u16(scroll)) * stsim.ITEM_SIZE))) & 0xFFFFFFFF
+
+    def cmd_stores_class(self, row: int, cls: int) -> bool:
+        """$10ABC (80, 24/60/96), fresh press: the class field of row 0-2 (item $D38 + row):
+        edit class +$14 = cls (0-2, by where the pointer is in the field, $10AE6)."""
+        if not (0 <= row <= 2 and 0 <= cls <= 2 and self._res(2)):
+            return False
+        if not self.mem.u8(ENTRY):
+            self.mem.set16(self._item(row, STORES_SCROLL) + 0x14, cls)
+        return True
+
+    def _entry_start(self, x: int, y: int, old: int, digits: int, d4: int, d5: int, callback: int) -> None:
+        """$11142: start typing a number on the keypad (layout $D22-$D30 for the panel
+        drawing, the old value $D32, the callback $D34, no digits yet: "0")."""
+        m = self.mem
+        m.set8(ENTRY, 0xFF)
+        m.set32(ENTRY_CALLBACK, callback)
+        m.set16(0xD22, x)
+        m.set16(0xD24, y)
+        m.set16(ENTRY_OLD, old)
+        m.set16(ENTRY_MAX, digits)
+        m.set16(0xD2E, d4)
+        m.set16(0xD30, d5)
+        m.set16(0xD26, x + 6 * digits - 1)
+        m.set16(0xD28, y + 5)
+        m.set16(ENTRY_COUNT, 0)
+        m.set8(ENTRY_DIGITS, 0x30)
+        m.set8(ENTRY_DIGITS + 1, 0)
+
+    def cmd_stores_target(self, row: int) -> bool:
+        """$10B02 (120, 31/67/103), fresh press: type a new target for row 0-2's item on the
+        keypad (cmd_keypad), $D18 = row."""
+        m = self.mem
+        if not (0 <= row <= 2 and self._res(2)):
+            return False
+        if m.u8(ENTRY):
+            return True
+        m.set16(ITEM_EDITED, row)
+        x, y = TARGET_ENTRY[row]
+        self._entry_start(x + 0xE, y + 0xA, m.u16(self._item(row, STORES_SCROLL) + 0x16), 3, 10, 8, ENTRY_DONE)
+        return True
+
+    def _entry_done(self, v: int) -> None:
+        """jmp [$D34]: only $10B5A: the edited row's item target +$16 = v."""
+        m = self.mem
+        cb = m.u32(ENTRY_CALLBACK)
+        if cb != ENTRY_DONE:
+            raise NotImplementedError(f"keypad entry callback ${cb:X} ($11142 has only the caller $10B02)")
+        m.set16(self._item(m.u16(ITEM_EDITED), STORES_SCROLL) + 0x16, v)
+
+    def cmd_keypad(self, key: int) -> bool:
+        """$11196 (the keypad at 216,44 in the stores priorities), fresh press, while a
+        number is being typed ($D1A): key 0-9 a digit (at most [$D2C], no leading 0), 10
+        ENTER (the number to the callback), 11 CANCEL (the old value), 12 DELETE."""
+        m = self.mem
+        if not (0 <= key <= 12 and self._res(2)):
+            return False
+        if not m.u8(ENTRY):
+            return True
+        if key == 10:
+            m.set8(ENTRY, 0)
+            v, d1 = 0, 0
+            for i in range(m.u16(ENTRY_COUNT)):          # move.b into d1, subi.w #'0': its high byte stays
+                d1 = w16((d1 & 0xFF00) + m.u8(ENTRY_DIGITS + i) - 0x30)
+                v = w16(v * 10 + d1)
+            self._entry_done(v)
+        elif key == 11:
+            m.set8(ENTRY, 0)
+            self._entry_done(m.u16(ENTRY_OLD))
+        elif key == 12:
+            n = m.u16(ENTRY_COUNT)
+            if n:
+                n -= 1
+                m.set16(ENTRY_COUNT, n)
+                if n:
+                    m.set8(ENTRY_DIGITS + s16(n), 0)
+                else:
+                    m.set8(ENTRY_DIGITS, 0x30)
+        else:
+            n = m.u16(ENTRY_COUNT)
+            if (n or key) and n != m.u16(ENTRY_MAX):
+                a = (ENTRY_DIGITS + s16(n)) & 0xFFFFFFFF
+                m.set8(a, key + 0x30)
+                m.set8(a + 1, 0)
+                m.set16(ENTRY_COUNT, n + 1)
+        return True
+
+    def cmd_fuel_priorities_open(self) -> bool:
+        """$10B72 (122,155): needs communications; sub-panel 3, the fuel classes $D08-$D0C
+        copied to the edit fields $D0E-$D12."""
+        m = self.mem
+        if not self._res(0):
+            return False
+        if not m.u8(0xB0A):
+            self._message("Communications are out")
+            return True
+        m.set16(RESOURCES, 3)
+        m.buf[FUEL_WORK:FUEL_WORK + 6] = m.buf[stsim.FUEL_CLASS:stsim.FUEL_CLASS + 6]
+        return True
+
+    def cmd_fuel_priorities_reset(self) -> bool:
+        """$10BC6 (228,22): the edit fields back to $D08-$D0C."""
+        m = self.mem
+        if not self._res(3):
+            return False
+        m.buf[FUEL_WORK:FUEL_WORK + 6] = m.buf[stsim.FUEL_CLASS:stsim.FUEL_CLASS + 6]
+        return True
+
+    def cmd_fuel_priorities_exit(self) -> bool:
+        """$10BAC (228,114): commit $D0E-$D12 to the fuel classes, main panel."""
+        m = self.mem
+        if not self._res(3):
+            return False
+        m.set16(RESOURCES, 0)
+        m.buf[stsim.FUEL_CLASS:stsim.FUEL_CLASS + 6] = m.buf[FUEL_WORK:FUEL_WORK + 6]
+        return True
+
+    def cmd_fuel_class(self, k: int, cls: int) -> bool:
+        """$10BDA (136, 24/60/96), fresh press: fuel k's (0-2) edit class $D0E + 2k = cls."""
+        if not (0 <= k <= 2 and 0 <= cls <= 2 and self._res(3)):
+            return False
+        self.mem.set16(FUEL_WORK + 2 * k, cls)
+        return True
+
+    def _queue_open(self, mode: int) -> bool:
+        """$10C06 / $10D52: needs communications, no transfer running and the carrier at
+        the stockpile island."""
+        m = self.mem
+        if not self._res(0):
+            return False
+        if not m.u8(0xB0A):
+            self._message("Communications are out")
+        elif m.u8(0xD3E):
+            self._message("Resupply operation in progress")
+        elif not self._at_stockpile():
+            self._message("Stockpile island out of range")
+        else:
+            m.set16(RESOURCES, mode)
+        return True
+
+    def cmd_stores_queue_open(self) -> bool:
+        """$10C06 (188,155): sub-panel 4, the stores to ship from the stockpile."""
+        return self._queue_open(4)
+
+    def cmd_fuel_queue_open(self) -> bool:
+        """$10D52 (254,155): sub-panel 5, the fuel to ship."""
+        return self._queue_open(5)
+
+    def cmd_stores_queue_back(self) -> bool:
+        """$10C62 (244,116): main panel."""
+        if not self._res(4):
+            return False
+        self.mem.set16(RESOURCES, 0)
+        return True
+
+    def cmd_fuel_queue_back(self) -> bool:
+        """$10D9C (140,116): main panel."""
+        if not self._res(5):
+            return False
+        self.mem.set16(RESOURCES, 0)
+        return True
+
+    def cmd_stores_queue_scroll_up(self) -> bool:
+        """$10C7C (251,47): the rows show items $D3A..; $D3A - 1 (>= 0)."""
+        m = self.mem
+        if not self._res(4):
+            return False
+        if m.u16(QUEUE_SCROLL):
+            m.set16(QUEUE_SCROLL, m.u16(QUEUE_SCROLL) - 1)
+        return True
+
+    def cmd_stores_queue_scroll_down(self) -> bool:
+        """$10C6A (251,79): $D3A + 1 (up to 12)."""
+        m = self.mem
+        if not self._res(4):
+            return False
+        if m.u16(QUEUE_SCROLL) != 12:
+            m.set16(QUEUE_SCROLL, m.u16(QUEUE_SCROLL) + 1)
+        return True
+
+    def _queue_step(self, held: int) -> int:
+        """1 on a press ($D3C = 5); held: 1 for 5 more passes, then 10 a pass."""
+        m = self.mem
+        if not held:
+            m.set16(QUEUE_REPEAT, 5)
+            return 1
+        if m.u16(QUEUE_REPEAT):
+            m.set16(QUEUE_REPEAT, m.u16(QUEUE_REPEAT) - 1)
+            return 1
+        return 10
+
+    def cmd_stores_unqueue(self, row: int, held: int = 0) -> bool:
+        """$10C88 (134, 35/69/103; repeats): move row 0-2's item (item $D3A + row) from the
+        queue $D96 back to the stockpile $D78, 1 at a time, 10 once held a while."""
+        m = self.mem
+        if not (0 <= row <= 2 and self._res(4)):
+            return False
+        d1 = self._queue_step(held)
+        i = s16(w16(2 * w16(row + m.u16(QUEUE_SCROLL))))
+        q, s = (stsim.STORES_PENDING + i) & 0xFFFFFFFF, (stsim.STORES + i) & 0xFFFFFFFF
+        if m.s16(q) < d1:
+            d1 = m.s16(q)
+        m.set16(q, m.u16(q) - d1)
+        m.set16(s, m.u16(s) + d1)
+        return True
+
+    def cmd_stores_queue(self, row: int, held: int = 0) -> bool:
+        """$10CCA (163, 35/69/103; repeats): move row 0-2's item from the stockpile to the
+        queue, up to the carrier's room (capacity +$18 - on board +8 - queued): "Limit of
+        ACC stores reached"."""
+        m = self.mem
+        if not (0 <= row <= 2 and self._res(4)):
+            return False
+        d1 = self._queue_step(held)
+        idx = w16(row + m.u16(QUEUE_SCROLL))
+        i = s16(w16(2 * idx))
+        q, s = (stsim.STORES_PENDING + i) & 0xFFFFFFFF, (stsim.STORES + i) & 0xFFFFFFFF
+        a2 = (stsim.ITEMS + s16(w16(idx * stsim.ITEM_SIZE))) & 0xFFFFFFFF
+        if m.s16(s) < d1:
+            d1 = m.s16(s)
+        room = s16(w16(m.u16(a2 + 0x18) - m.u16(a2 + 8) - m.u16(q)))
+        if room == 0:
+            self._message("Limit of ACC stores reached")
+            return True
+        if d1 > room:
+            d1 = room
+        m.set16(s, m.u16(s) - d1)
+        m.set16(q, m.u16(q) + d1)
+        return True
+
+    def cmd_fuel_unqueue(self, k: int) -> bool:
+        """$10DA4 / $10E18 / $10E30 (134, 36/61/86; repeats): fuel k's queue ($D6C + 4k)
+        back to the stockpile ($D60 + 4k), $4000 a pass."""
+        m = self.mem
+        if not (0 <= k <= 2 and self._res(5)):
+            return False
+        s, q = stsim.FUEL + 4 * k, stsim.FUEL_PENDING + 4 * k
+        d1 = min(0x4000, s32(m.u32(q)))
+        m.set32(q, m.u32(q) - d1)
+        m.set32(s, m.u32(s) + d1)
+        return True
+
+    def cmd_fuel_queue(self, k: int) -> bool:
+        """$10DC0 / $10E22 / $10E3C (163, 36/61/86; repeats): stockpile fuel k to the queue,
+        $4000 a pass, up to the room in the carrier's tank ($FFFE0 - queued - tank $CFC +
+        4k): "Limit of ACC tanks reached"."""
+        m = self.mem
+        if not (0 <= k <= 2 and self._res(5)):
+            return False
+        s, q, tank = stsim.FUEL + 4 * k, stsim.FUEL_PENDING + 4 * k, 0xCFC + 4 * k
+        d1 = min(0x4000, s32(m.u32(s)))
+        room = s32(0xFFFE0 - m.u32(q) - m.u32(tank))
+        if room == 0:
+            self._message("Limit of ACC tanks reached")
+            return True
+        if room < d1:
+            d1 = room
+        m.set32(s, m.u32(s) - d1)
+        m.set32(q, m.u32(q) + d1)
+        return True
+
+    # ---- messages 4, game status 32, title 33 ----------------------------------------------------
+    def cmd_clear_message_log(self, logged: int) -> bool:
+        """$12C2C (screen 4, 144,155), fresh press. The message log ($1148, $65D10: the
+        messages $A128 records) is the app's, not the model's: `logged` says whether it has
+        entries. Then it is cleared ($A1E8, the app's), $966 = 2 and "Message log
+        cleared"; else "Message log is already clear"."""
+        if not self._clickable(T_BUTTON):
+            return False
+        if logged:
+            self.mem.set16(0x966, 2)
+            self._message("Message log cleared")
+        else:
+            self._message("Message log is already clear")
+        return True
+
+    def cmd_game_option(self, k: int, on: int) -> bool:
+        """$13778 (the options panel, $708 = 7; rows at y 29 + 16k, OFF at x 243-251, ON at
+        252-277): option k (0 sea dots, 1 message ping, 2 background noise, 3 sound effects)
+        $1246 + k = on ($FF) or off. Quirk: the element reaches a fifth row (y 93-106), k = 4,
+        which writes $124A, the strategy flag."""
+        if not (0 <= k <= 4 and self._clickable(T_BUTTON, (GAME_STATUS, 7))):
+            return False
+        self.mem.set8(OPTIONS + k, 0xFF if on else 0)
+        return True
+
+    def cmd_title_new_game(self, strategy: int) -> bool:
+        """$103B2 / $103A0 (title menu, $708 = 0): a strategy / action game ($124A), new_game
+        ($42A8); the next ui_frame enters the bridge."""
+        if not self._clickable(T_BUTTON, (GAME_STATUS, 0)):
+            return False
+        self.new_game(bool(strategy))
+        return True
+
+
 
 # $170D4, the per-screen input handlers (screen: address; the rest are $170D2, rts).
 INPUT_TABLE = {0: 0x17164, 1: 0x1747A, 2: 0x17244, 3: 0x177DE, 8: 0x1741A, 10: 0x1778E, 16: 0x17748,
                17: 0x17244, 18: 0x17374, 19: 0x17782, 24: 0x17610, 25: 0x17244, 26: 0x1773C, 27: 0x172BC}
 # $170D4: screens whose input handler is ported ("" = $170D2, rts).
-SCREEN_INPUT = {0: "bridge_input", 1: "damage_input", 2: "map_input", 17: "map_input", 25: "map_input"}
+SCREEN_INPUT = {0: "bridge_input", 1: "damage_input", 2: "map_input", 17: "map_input", 25: "map_input",
+                3: "resources_input", 8: "turret_input", 10: "drone_view_input",
+                16: "walrus_arming_input", 18: "walrus_control_input", 19: "walrus_dock_input",
+                24: "manta_arming_input", 26: "manta_deck_input", 27: "manta_control_input"}
 SCREEN_INPUT.update({s: "" for s in range(36) if s not in INPUT_TABLE})
 # $139D4 / $14318: the enter and leave handlers that write state (the others only set the
 # palette or nothing: enter 3, 5-7, 12-15, 20-23, 28-31; leave 3-7, 9, 11-15, 19-23, 26, 28-31).
@@ -1646,6 +3915,11 @@ SCREEN_LEAVE = {0: "leave_bridge", 1: "leave_damage", 2: "leave_carrier_map", 8:
                 18: "leave_vehicle_control", 24: "leave_bridge", 25: "leave_manta_map",
                 27: "leave_vehicle_control", 32: "leave_game_status", 33: "leave_title",
                 34: "leave_game_over", 35: "leave_destroyed"}
+
+# $F6EA: the drop callbacks of the drags that are ported (jmp [$468]).
+DROPS = {0x113A4: "_manta_drop_loadout", 0x11500: "_manta_drop_return",
+         0x11ACE: "_walrus_drop_loadout", 0x11C4E: "_walrus_drop_return",
+         0x104E6: "_drone_station_drop"}
 
 ROUTINES = {}
 
@@ -1716,6 +3990,10 @@ def _diff(mine: bytes, ref: bytes) -> list:
 
 def _u16(oracle, a: int) -> int:
     return int.from_bytes(oracle.uc.mem_read(a, 2), "big")
+
+
+def _u32(oracle, a: int) -> int:
+    return int.from_bytes(oracle.uc.mem_read(a, 4), "big")
 
 
 def _copy_input(oracle, state, args, result) -> None:
@@ -2316,5 +4594,476 @@ def check_screen_switch(files) -> bool:
     return ok
 
 
+
+# ---- Manta and Walrus control checks (milestone 2) ------------------------------------------------
+VEHICLE_SCREENS = (16, 17, 18, 19, 24, 25, 26, 27)
+STOCKS = (0xB7E, 0xB98, 0xBCC, 0xBE6, 0xC00, 0xC34, 0xC4E, 0xC68, 0xCB6)   # the loadout entries' stock counts
+
+
+def _el(handler: int, base: int = 0, step: int = 0x16, d2=None):
+    """An oracle action: the click handler with a3 = the real panel element (base + step *
+    the first argument when step, else base), d2 = 2 (1 when the first argument says held)."""
+    def act(oracle, state, args, result):
+        if result is False:
+            return
+        a3 = base + step * args[0] if step and args else base
+        held = d2(args) if d2 else 0
+        _regs(oracle, d2=1 if held else 2, a3=a3)
+        _call(oracle, handler)
+    return act
+
+
+def _y(handler: int, x: int):
+    def act(oracle, state, args, result):
+        if result is not False:
+            _regs(oracle, d0=x, d1=args[0], d2=2)
+            _call(oracle, handler)
+    return act
+
+
+def _cursor_then(handler: int, cursors):
+    """cmd_set_*_waypoint: the cursor values as the model wrote them, then set course."""
+    def act(oracle, state, args, result):
+        if result is False:
+            return
+        for a in cursors:
+            oracle.uc.mem_write(a, bytes(state.mem.buf[a:a + 4]))
+        _regs(oracle, d2=2)
+        _call(oracle, handler)
+    return act
+
+
+def _oracle_release(oracle, px: int, py: int) -> None:
+    """cmd_drag_release + ui_frame on the original: pointer, left button up, $F636."""
+    oracle.uc.mem_write(0x474, (px & 0xFFFF).to_bytes(2, "big") + (py & 0xFFFF).to_bytes(2, "big"))
+    oracle.uc.mem_write(0x880, b"\x00")
+    _call(oracle, UI_FRAME)
+
+
+def _release(state, px: int, py: int) -> None:
+    state.cmd_drag_release(px, py)
+    state.ui_frame()
+
+
+def _oracle_fit(kind: str):
+    """cmd_manta_fit / cmd_walrus_fit / *_unfit, click by click on the original (each
+    decided from its own state, as the model's)."""
+    manta = kind == "Manta"
+    codes, n, cur = (MANTA_CODES, 6, LOADOUT_CURSOR) if manta else (WALRUS_CODES, 5, LOADOUT_CURSOR + 2)
+    sub = 0xDC0 if manta else 0xDC2
+    nxt, pick = (0x1132E, 0x1135E) if manta else (0x11A30, 0x11A82)
+    slots, slot_handler = (MANTA_SLOTS, 0x114C8) if manta else (WALRUS_SLOTS, 0x11C16)
+
+    def probe(o):
+        return stunits.UnitState.from_ram(bytes(o.ram()))
+
+    def fit(oracle, state, args, result):
+        slot, code = args
+        if not 0 <= slot < len(slots):
+            return
+        for _ in range(n + 1):
+            k = _u16(oracle, cur)
+            if k < n and _u16(oracle, codes + 2 * k) == code:
+                break
+            if not probe(oracle)._clickable(T_BUTTON, (sub, 0)):
+                return
+            _regs(oracle, d2=2)
+            _call(oracle, nxt)
+        else:
+            return
+        if not probe(oracle)._clickable(T_BUTTON, (sub, 0)):
+            return
+        _regs(oracle, d2=2)
+        _call(oracle, pick)
+        if not oracle.uc.mem_read(MODAL, 1)[0]:
+            return
+        _, x0, y0, x1, y1 = SLOT_ELEMENTS[slots[slot]]
+        _oracle_release(oracle, (x0 + x1) // 2, (y0 + y1) // 2)
+
+    def unfit(oracle, state, args, result):
+        slot = args[0]
+        if not (0 <= slot < len(slots) and probe(oracle)._clickable(T_BUTTON, (sub, 0))):
+            return
+        _regs(oracle, d2=2, a3=slots[slot])
+        _call(oracle, slot_handler)
+        if not oracle.uc.mem_read(MODAL, 1)[0]:
+            return
+        x0, y0, x1, y1 = STORES_BOX
+        _oracle_release(oracle, (x0 + x1) // 2, (y0 + y1) // 2)
+    return fit, unfit
+
+
+_MFIT, _MUNFIT = _oracle_fit("Manta")
+_WFIT, _WUNFIT = _oracle_fit("Walrus")
+
+
+def _drop_point(r, m):
+    """Over a slot of either screen, the stores box, or elsewhere."""
+    pts = [((x0 + x1) // 2, (y0 + y1) // 2) for _, x0, y0, x1, y1 in SLOT_ELEMENTS.values()]
+    pts += [((STORES_BOX[0] + STORES_BOX[2]) // 2, (STORES_BOX[1] + STORES_BOX[3]) // 2),
+            (STORES_BOX[0], STORES_BOX[3]), (STORES_BOX[2] + 1, 100), (r.randrange(320), r.randrange(200))]
+    return r.choice(pts)
+
+
+_bay = lambda r, m: (r.choice((0, 1, 2, 3, 0, 1, 2, 3, -1, 4)),)
+_w = lambda r, m: (r.choice((0, 1, 2, 0, 1, 2, 3)),)
+_held = lambda r, m: (r.choice((0, 0, 1)),)
+_sy = lambda r, m: (r.randrange(150, 205),)
+_wp = lambda r, m: (r.randrange(-0x900000, 0x900000), r.randrange(-0x900000, 0x900000))
+_slot3 = lambda r, m: (r.choice((0, 1, 2, 0, 1, 2, 3)),)
+_slot2 = lambda r, m: (r.choice((0, 1, 0, 1, 2)),)
+
+# name: (oracle action, argument generator(rnd, mem), model call or None)
+VCOMMANDS = {
+    # Manta control (27)
+    "cmd_manta_select": (_el(0xFE54, 0x422AC), _bay, None),
+    "cmd_manta_weapon": (_el(0xFEE2, 0x423D8), _w, None),
+    "cmd_manta_autopilot": (_el(0x12A44, 0x4241A, 0), None, None),
+    "cmd_manta_centre_rudder": (_el(0x129E6), None, None),
+    "cmd_manta_centre_pitch": (_el(0x129FE), None, None),
+    "cmd_manta_instruments": (_el(0x100A8), None, None),
+    "cmd_manta_throttle": (_y(0xFDDA, 290), _sy, None),
+    "cmd_manta_sight": (_el(0x10100, 0x42318, 0), None, None),
+    "cmd_manta_rear_view": (_el(0x1015C, 0x4232E, 0), None, None),
+    "cmd_manta_runway_take_off": (_el(0x13356), None, None),
+    # Manta deck (26) and map (25)
+    "cmd_manta_deck_select": (_el(0x11F92, 0x42B52), _bay, None),
+    "cmd_manta_abort_landing": (_el(0x12360), None, None),
+    "cmd_manta_map_select": (_el(0xFF1E, 0x41B62), _bay, None),
+    "cmd_manta_set_course": (_el(0x12FC4, d2=lambda a: a[0]), _held, None),
+    "cmd_manta_clear_course": (_el(0x12F8E), None, None),
+    "cmd_manta_cruise_up": (_el(0x12C90), None, None),
+    "cmd_manta_cruise_down": (_el(0x12CA2), None, None),
+    "cmd_manta_cruise": (_y(0x12CB4, 290), _sy, None),
+    "cmd_manta_altitude_up": (_el(0x12CE2), None, None),
+    "cmd_manta_altitude_down": (_el(0x12CF6), None, None),
+    "cmd_manta_altitude": (_y(0x12D0A, 246), _sy, None),
+    "cmd_manta_map_draw_mode": (_el(0x12D40, 0x41D82, 0), None, None),
+    "cmd_manta_toggle_announce": (_el(0x12D50, 0x41D98, 0), None, None),
+    "cmd_set_manta_waypoint": (_cursor_then(0x12FC4, (0x69E, 0x6A6)), _wp, None),
+    # Manta arming (24)
+    "cmd_manta_arming_select": (_el(0x116C6, 0x428B4), _bay, None),
+    "cmd_manta_arming_to_deck": (_el(0x11886, 0x4294E, 0), None, None),
+    "cmd_manta_loadout_next": (_el(0x1132E), None, None),
+    "cmd_manta_loadout_prev": (_el(0x11352), None, None),
+    "cmd_manta_pick_loadout": (_el(0x1135E), None, None),
+    "cmd_manta_pick_slot": (lambda o, st, a, res: None if res is False else (_regs(o, d2=2, a3=MANTA_SLOTS[a[0]]), _call(o, 0x114C8)),
+                            _slot3, None),
+    "cmd_manta_fit": (_MFIT, lambda r, m: (r.choice((0, 1, 2, 0, 3)), r.choice((1, 2, 3, 4, 5, 10, 0))), None),
+    "cmd_manta_unfit": (_MUNFIT, _slot3, None),
+    # Walrus control (18)
+    "cmd_walrus_select": (_el(0x10016, 0x42482), _bay, None),
+    "cmd_walrus_weapon": (_el(0xFF7C, 0x425AE), _w, None),
+    "cmd_walrus_autopilot": (_el(0x12B00, 0x425F0, 0), None, None),
+    "cmd_walrus_centre_rudder": (_el(0x12982, d2=lambda a: a[0]), _held, None),
+    "cmd_walrus_turret_mode": (_el(0x129A2, 0x42584, 0), None, None),
+    "cmd_walrus_instruments": (_el(0x100D4), None, None),
+    "cmd_walrus_throttle": (_y(0xFE0A, 290), _sy, None),
+    "cmd_walrus_sight": (_el(0x1012E, 0x424EE, 0), None, None),
+    "cmd_walrus_rear_view": (_el(0x10190, 0x42504, 0), None, None),
+    # Walrus dock (19) and map (17)
+    "cmd_walrus_dock_select": (_el(0x1249E, 0x42C2C), _bay, None),
+    "cmd_walrus_abort_docking": (_el(0x128AE), None, None),
+    "cmd_walrus_map_select": (_el(0xFFB8, 0x41C50), _bay, None),
+    "cmd_walrus_set_course": (_el(0x13122, d2=lambda a: a[0]), _held, None),
+    "cmd_walrus_clear_course": (_el(0x130EE), None, None),
+    "cmd_walrus_cruise_up": (_el(0x12D98), None, None),
+    "cmd_walrus_cruise_down": (_el(0x12DAA), None, None),
+    "cmd_walrus_cruise": (_y(0x12DBC, 290), _sy, None),
+    "cmd_walrus_map_draw_mode": (_el(0x12DEC, 0x41E30, 0), None, None),
+    "cmd_walrus_toggle_announce": (_el(0x12DFC, 0x41E46, 0), None, None),
+    "cmd_set_walrus_waypoint": (_cursor_then(0x13122, (0x6B0, 0x6B4)), _wp, None),
+    # Walrus arming (16)
+    "cmd_walrus_arming_select": (_el(0x11DEE, 0x4271A), _bay, None),
+    "cmd_walrus_loadout_next": (_el(0x11A30), None, None),
+    "cmd_walrus_loadout_prev": (_el(0x11A76), None, None),
+    "cmd_walrus_loadout_plus": (lambda o, st, a, res: None if res is False else (_regs(o, d2=2, a3=0x42820), _call(o, _u32(o, PLUS_HANDLER))), None, None),
+    "cmd_walrus_loadout_minus": (lambda o, st, a, res: None if res is False else (_regs(o, d2=2, a3=0x4280A), _call(o, _u32(o, MINUS_HANDLER))), None, None),
+    "cmd_walrus_refuel": (_el(0x11D4C), None, None),            # stunits_vehicles; here for the panel redraw
+    "cmd_walrus_defuel": (_el(0x11DA4), None, None),
+    "cmd_walrus_pick_loadout": (_el(0x11A82), None, None),
+    "cmd_walrus_pick_slot": (lambda o, st, a, res: None if res is False else (_regs(o, d2=2, a3=WALRUS_SLOTS[a[0]]), _call(o, 0x11C16)),
+                             _slot2, None),
+    "cmd_walrus_fit": (_WFIT, lambda r, m: (r.choice((0, 1, 0, 1, 2)), r.choice((6, 7, 8, 9, 11, 1))), None),
+    "cmd_walrus_unfit": (_WUNFIT, _slot2, None),
+    # drags, raw mouse
+    "cmd_drag_release": (lambda o, st, a, res: _oracle_release(o, *a), _drop_point, _release),
+    "cmd_manta_steer_to": (_copy_input, lambda r, m: (r.randrange(-300, 300), r.randrange(-300, 300)), None),
+    "cmd_walrus_steer_to": (_copy_input, lambda r, m: (r.randrange(-300, 300),), None),
+    "cmd_walrus_missile_steer_to": (_copy_input, lambda r, m: (r.randrange(-300, 300), r.randrange(-300, 300)), None),
+    "cmd_vehicle_fire": (_copy_input, None, None),
+}
+# Pick-ups that start a drag are followed by a release in the checks (the drop runs in ui_frame).
+DRAG_STARTS = ("cmd_manta_pick_loadout", "cmd_manta_pick_slot", "cmd_walrus_pick_loadout", "cmd_walrus_pick_slot")
+
+
+def apply_vcommand(state, oracle, name: str, rnd):
+    """A vehicle command on the model and what the original does for it."""
+    act, gen, call = VCOMMANDS[name]
+    args = gen(rnd, state.mem) if gen else ()
+    result = call(state, *args) if call else getattr(state, name)(*args)
+    act(oracle, state, args, result)
+    return args, result
+
+
+def _perturb_vehicles(m, rnd) -> None:
+    """_perturb_screens plus the vehicle screens' state: a vehicle screen, the select and
+    button icons' flags, controllable flags, records (flags, modes, loadout codes, weights,
+    Harbingers), stocks, landing/docking in progress, the map edit values, list cursors,
+    drags, number keys, gauges and the lock timer."""
+    _perturb_screens(m, rnd)
+    screen = rnd.choice(VEHICLE_SCREENS)
+    m.set16(stunits.SCREEN, screen)
+    m.set16(TAB, TAB_OF[screen])
+    m.set16(0x702, 0 if rnd.random() < 0.9 else 1)
+    odd = lambda v: rnd.choice((0x4000, 0x8000)) if rnd.random() < 0.04 else v
+    for base in (T_MANTA, T_WALRUS, T_MANTA_ARMING, T_WALRUS_ARMING, T_MANTA_DECK, T_WALRUS_DOCK):
+        lit = rnd.randrange(5)
+        for i in range(4):
+            m.set16(FLAG_TABLE + 2 * (base + i), odd(0x2000 if i == lit else 0))
+    for t in (T_BUTTON, T_HANGAR, T_HARBINGERS, T_AUTOPILOT, T_DRAW, T_ANNOUNCE, T_SIGHT, T_REAR, T_TURRET, 62, 63, 64):
+        m.set16(FLAG_TABLE + 2 * t, odd(rnd.choice((0, 0, 0x2000))))
+    for a in (0x70C, 0x70E):
+        m.set16(a, rnd.choice((0, 1, 1)))
+    m.set16(MAP_INFO, rnd.choice((0, 0, 0, 0, 1)))
+    m.set16(0xDC0, rnd.choice((0, 0, 0, 1, 2)))
+    m.set16(0xDC2, rnd.choice((0, 0, 0, 1, 2)))
+    m.set16(LOADOUT_CURSOR, rnd.choice((0, 1, 2, 3, 4, 5, 5, 0xFFFF)) if rnd.random() < 0.97 else 6)
+    m.set16(LOADOUT_CURSOR + 2, rnd.choice((0, 1, 2, 3, 4, 4, 0xFFFF)) if rnd.random() < 0.97 else 5)
+    m.set16(HARBINGERS, rnd.choice((0, 1, 2, 3, 9)))
+    for a in STOCKS:
+        m.set16(a, rnd.choice((0, 0, 1, 2, 3, 5, 12)))
+    m.set16(0xDC6, rnd.randrange(3))
+    m.set32(0xD04, rnd.choice((0, 0x10000, 0xFFFE0)))     # AAV fuel tank (refuel / defuel redraw the panel)
+    plus = rnd.choice((0x11CE0, 0x11D1C))
+    m.set32(PLUS_HANDLER, plus)
+    m.set32(MINUS_HANDLER, 0x11D0C if plus == 0x11CE0 else 0x11D40)
+    for k in range(4):
+        r = MANTA_RECS + REC * k
+        m.set8(r, rnd.choice((0, 1, 2, 3, 0x41, 0x82, 0x13, 0xC2, rnd.randrange(256))))
+        m.set8(r + 0x1C, rnd.choice((0, 1, 2, 3, 3, 4, 5, 6)))
+        m.set8(r + 0x1D, rnd.randrange(7))
+        m.set16(r + 0x0C, rnd.choice((0, 1, 2, 3, 4)))
+        m.set16(r + 0x0E, rnd.choice((0, 1, 2, 3, 4)))
+        m.set16(r + 0x10, rnd.choice((0, 1, 4, 5, 10)))
+        m.set16(r + 0x12, rnd.choice((0, 300, 600, 700, 750)))
+        m.set16(r + 0x18, rnd.choice((0, 1, 2, 3)))
+        m.set16(r + 2, rnd.randrange(-255, 256))
+        m.set16(r + 4, rnd.randrange(-255, 256))
+        w = WALRUS_RECS + REC * k
+        m.set8(w, rnd.choice((0, 1, 2, 3, 0x21, 0x23, 0x61, 0x13, 0x10, rnd.randrange(256))))
+        m.set8(w + 0x1A, rnd.choice((0, 0, 2, 3, 3)))
+        m.set8(w + 0x1B, rnd.choice((0, 0, 1, 2)))
+        m.set16(w + 0x0C, rnd.choice((0, 1, 3, 9)))
+        m.set16(w + 0x26, rnd.choice((0, 8, 9, 11, 6)))
+        m.set16(w + 0x28, rnd.choice((0, 6, 7, 7, 9)))
+        m.set16(w + 0x12, rnd.choice((0, 400, 1500, 1900, 2000)))
+        m.set16(w + 0x16, rnd.choice((0, 1, 2, 3)))
+        m.set16(w + 2, rnd.randrange(-255, 256))
+        m.set16(w + 8, rnd.choice((0, 100, 0x7000, 0x7FFF)))
+    for a in (0x1232, 0x1233):
+        m.set8(a, rnd.choice((0, 0xFF)))
+    m.set16(0xDDC, rnd.randrange(4))
+    m.set16(0x6E0, rnd.randrange(4))
+    m.set16(0x69C, rnd.choice((0, 50, 100, 240, 250, 300)))
+    m.set32(0x6A2, rnd.choice((0, 250, 1000, 3400, 3500, 4000, -100)))
+    m.set16(0x6AE, rnd.choice((0, 8, 60, 96, 120)))
+    for a in (0x69E, 0x6A6, 0x6B0, 0x6B4):
+        m.set32(a, rnd.randrange(-0x400000, 0x400000))
+    for a in (0x6AA, 0x6B8):
+        m.set16(a, rnd.choice((0, 1, 0x100, 0x101)))
+    for a in (0x6AC, 0x6BA, 0x8F1):
+        m.set8(a, rnd.choice((0, 0xFF)))
+    m.set16(0x116C, rnd.choice((0, 0, 1, 25)))
+    for t in (0x954, 0x956, 0x958, 0x962):
+        m.set16(t, rnd.choice((0, 0, 2)))
+    m.set16(0xDC8, rnd.choice((0x6000, 0x8000, 0xA000, 0x9FF0, 0x6010)))
+    m.set16(0xDCA, rnd.choice((0x100, 0xFF00, 0x40, 0xFFC0)))
+    mk, wk = rnd.randrange(4), rnd.randrange(4)
+    m.set16(0x48C, mk)
+    m.set16(0x566, wk)
+    m.set32(0x48E, MANTA_RECS + REC * (mk if rnd.random() < 0.8 else rnd.randrange(4)))
+    m.set32(0x492, MANTA_OBJS + 0x140 * (mk if rnd.random() < 0.8 else rnd.randrange(4)))
+    m.set32(0x568, WALRUS_RECS + REC * (wk if rnd.random() < 0.8 else rnd.randrange(4)))
+    m.set32(0x56C, WALRUS_OBJS + 0x140 * (wk if rnd.random() < 0.8 else rnd.randrange(4)))
+    if screen == 27:
+        m.set32(stunits.VIEWED, MANTA_OBJS + 0x140 * mk)
+    elif screen == 18:
+        m.set32(stunits.VIEWED, WALRUS_OBJS + 0x140 * wk)
+    if rnd.random() < 0.3:                                 # the selected Walrus steering a Harbinger
+        w = WALRUS_RECS + REC * wk
+        m.set8(w, m.u8(w) | 0x10)
+        m.set32(WALRUS_OBJS + 0x140 * wk + 0x20, stunits.OBJECTS + stunits.OBJECT_SIZE * rnd.randrange(20, 64))
+    m.set8(MODAL, 0xFF if rnd.random() < 0.05 else 0)
+    m.set32(DROP, rnd.choice(list(DROPS)))
+    m.set32(DRAG_ELEMENT, rnd.choice(list(SLOT_ELEMENTS)))
+    m.set8(0x880, 0)
+    m.set8(0x881, 0)
+    for a in MAP_KEYPAD:
+        m.set8(a, 1 if rnd.random() < 0.06 else 0)
+    m.set8(0x883, 1 if rnd.random() < 0.2 else 0)
+
+
+def _vehicle_states(files) -> list:
+    """Action captures and the play captures (Manta and Walrus out, landing, docking)."""
+    from stgfx import ROOT
+    play = sorted((ROOT / "emu" / "out" / "play").glob("pass_*_in.bin"))
+    return list(files[::6]) + play[::12]
+
+
+def check_vehicle_commands(files) -> bool:
+    """Every Manta / Walrus command against its original click handler(s) (registers as the
+    hit test passes them: d0/d1 pointer, d2 = 2 or 1, a3 the real panel element; drags
+    released over slots or the stores box and dropped by ui_frame) on perturbed captured
+    states."""
+    import random
+    import check_sim
+    rnd = random.Random(53)
+    ok = True
+    states = _vehicle_states(files)
+    for name in VCOMMANDS:
+        runs, stopped = 0, 0
+        for f in states:
+            for _ in range(3):
+                m = stsim.Mem(bytearray(f.read_bytes()))
+                _perturb_vehicles(m, rnd)
+                ram = bytes(m.buf)
+                oracle = check_sim.Oracle(ram)
+                state = stunits.UnitState.from_ram(ram)
+                try:
+                    args, _ = apply_vcommand(state, oracle, name, rnd)
+                    if name in DRAG_STARTS and state.mem.u8(MODAL):
+                        px, py = _drop_point(rnd, state.mem)
+                        _release(state, px, py)
+                        _oracle_release(oracle, px, py)
+                except NotImplementedError:
+                    stopped += 1
+                    continue
+                runs += 1
+                if not _compare(state, oracle, f"{name}{args} from {f.name} (screen {m.u16(stunits.SCREEN)})"):
+                    ok = False
+                    break
+            else:
+                continue
+            break
+        else:
+            print(f"{name}: OK ({runs} states{f', {stopped} stopped at unported code' if stopped else ''})")
+    return ok
+
+
+def check_vehicle_input(files) -> bool:
+    """screen_input ($17094) on the vehicle screens 16-19 and 24-27 against the original:
+    number keys (pointer mode, drags), re-entry when a unit's status crosses 8, gauges, the
+    auto button sync, the right button, the lock timer and the hangar animation."""
+    import random
+    from collections import Counter
+    import check_sim
+    rnd = random.Random(59)
+    seen = Counter()
+    for f in _vehicle_states(files):
+        for _ in range(16):
+            m = stsim.Mem(bytearray(f.read_bytes()))
+            _perturb_vehicles(m, rnd)
+            if rnd.random() < 0.3:
+                m.set8(MODAL, 0)
+                m.set8(stunits.POINTER_MODE, 0xFF)
+                m.set8(rnd.choice(MAP_KEYPAD), 1)
+            ram = bytes(m.buf)
+            state = stunits.UnitState.from_ram(ram)
+            try:
+                state.screen_input()
+            except NotImplementedError:
+                continue
+            oracle = check_sim.Oracle(ram)
+            _call(oracle, 0x17094)
+            seen[m.u16(stunits.SCREEN)] += 1
+            if not _compare(state, oracle, f"screen_input on {m.u16(stunits.SCREEN)} from {f.name}"):
+                return False
+    print(f"vehicle screen input: OK ({dict(sorted(seen.items()))})")
+    return True
+
+
+def check_vehicle_runs(files) -> bool:
+    """Play: from captures with Mantas and Walruses out (and the action captures), switch to
+    a vehicle screen by clicks, then 120 passes of ui_frame + game_frame on both, with random
+    vehicle commands, drags, mouse steering, firing, throttle keys and right clicks between
+    passes (the original running its own ui_frame and screen_input)."""
+    import random
+    rnd = random.Random(61)
+    from stgfx import ROOT
+    play = sorted((ROOT / "emu" / "out" / "play").glob("pass_*_in.bin"))
+    states = play[::8] + list(files[::15])
+    names = [n for n in VCOMMANDS if n != "cmd_drag_release"]
+    from collections import Counter
+    stopped, passes, runs, reached = {}, 0, 0, Counter()
+    for i, f in enumerate(states):
+        m = stsim.Mem(bytearray(f.read_bytes()))
+        m.set8(RUNNING, 0xFF)
+        for a in (MENU, MODAL, 0x880, 0x881, 0x882, 0x883, SCREEN_REQUEST, 0x704, 0x706, 0x702):
+            m.set8(a, 0)
+        m.set16(0x702, 0)
+        for s in range(29):                                  # icons lit as the screen shown
+            a = FLAG_TABLE + 2 * s
+            m.set8(a, (m.u8(a) & 0xDF) | (0x20 if s == m.u16(stunits.SCREEN) else 0))
+        for k in range(5):
+            a = FLAG_TABLE + 2 * (T_TAB + k)
+            m.set8(a, (m.u8(a) & 0xDF) | (0x20 if k == m.u16(TAB) else 0))
+        ram = bytes(m.buf)
+        state, oracle = stunits.UnitState.from_ram(ram), _switch_oracle(ram)
+        target = VEHICLE_SCREENS[i % len(VEHICLE_SCREENS)]
+        state.cmd_switch_screen(target)
+        _oracle_switch(oracle, target)
+        if not _compare(state, oracle, f"switch to {target} from {f.name}"):
+            return False
+        reached[state.mem.u16(stunits.SCREEN)] += 1
+        runs += 1
+        for p in range(120):
+            try:
+                r = rnd.random()
+                mm = state.mem
+                if mm.u8(MODAL):
+                    if r < 0.5:
+                        px, py = _drop_point(rnd, mm)
+                        state.cmd_drag_release(px, py)
+                        oracle.uc.mem_write(0x474, px.to_bytes(2, "big") + py.to_bytes(2, "big"))
+                        oracle.uc.mem_write(0x880, b"\x00")
+                elif r < 0.3:
+                    apply_vcommand(state, oracle, rnd.choice(names), rnd)
+                elif r < 0.45 and not mm.u8(stunits.POINTER_MODE):
+                    name = rnd.choice(("cmd_manta_steer_to", "cmd_walrus_steer_to", "cmd_walrus_missile_steer_to", "cmd_vehicle_fire"))
+                    apply_vcommand(state, oracle, name, rnd)
+                elif r < 0.55:
+                    sc, down = rnd.choice((0x48, 0x50, 0x02, 0x03, 0x04, 0x05, 0x6D, 0x6E)), rnd.choice((0, 1))
+                    state.input_key(sc, down)
+                    _copy_input(oracle, state, (), None)
+                elif r < 0.6:
+                    state.cmd_toggle_mouse_steer()
+                    _copy_input(oracle, state, (), None)
+                if p % 8 == 0:
+                    oracle.uc.mem_write(0x8FD, b"\xff")
+                    state.mem.set8(0x8FD, 0xFF)
+                if state.mem.u8(stunits.POINTER_MODE):          # no click for the original's hit test
+                    state.mem.set8(0x881, 0)
+                    oracle.uc.mem_write(0x881, b"\x00")
+                state.ui_frame()
+                if state.mem.u16(stunits.SCREEN) not in SCREEN_INPUT:
+                    state._vec = None           # tools/export_sim_vectors.py: stop recording (the stub is check-only)
+                with _stub_inputs():
+                    state.game_frame()
+            except STOP as e:
+                stopped[str(e) or type(e).__name__] = stopped.get(str(e) or type(e).__name__, 0) + 1
+                break
+            _call(oracle, UI_FRAME)
+            oracle_game_frame(oracle)
+            passes += 1
+            if not _compare(state, oracle, f"run from {f.name} on {target}, pass {p}"):
+                return False
+    print(f"vehicle runs: OK ({runs} runs on screens {dict(sorted(reached.items()))}, {passes} passes)")
+    for k, v in sorted(stopped.items(), key=lambda kv: -kv[1]):
+        print(f"  stopped at unported code {v}x: {k}")
+    return True
+
+
 SCENARIOS = []
-CHECKS = [check_commands, check_game_frame, check_screen_switch]
+CHECKS = [check_commands, check_game_frame, check_screen_switch, check_vehicle_commands, check_vehicle_input,
+          check_vehicle_runs]

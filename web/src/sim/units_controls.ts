@@ -32,7 +32,15 @@
  *                    cmd_game_status_back() $1021C, cmd_surrender() $101D8, cmd_continue(yes)
  *                    $13990/$1399C; enter $139D4 / leave $14318 handlers (docs/units.md §10.5)
  *   game flow        cmd_pause() $FD66, game_frame() ($408A loop without ui_frame/rendering),
- *                    screen_input() $17094 (screens 0, 1, 2/17/25 and the empty handlers)
+ *                    screen_input() $17094 (screens 0, 1, 2/17/25, 16-19, 24-27 and the empty handlers)
+ *   Mantas (27/26/25/24) cmd_manta_select/weapon/autopilot/centre_rudder/centre_pitch/instruments/
+ *                    throttle(y)/sight/rear_view/runway_take_off, cmd_manta_steer_to, cmd_vehicle_fire,
+ *                    cmd_manta_deck_select, cmd_manta_abort_landing, cmd_manta_map_select,
+ *                    cmd_manta_set_course(held)/clear_course/cruise/altitude/map_draw_mode/
+ *                    toggle_announce, cmd_set_manta_waypoint, cmd_manta_arming_select/arming_to_deck/
+ *                    loadout_next/prev/pick_loadout/pick_slot/fit/unfit
+ *   Walruses (18/19/17/16) the same set (turret_mode, missile_steer_to, abort_docking,
+ *                    loadout_plus/minus), cmd_drag_release(px, py) + ui_frame drop, vehicle_ui()
  */
 import { NotPorted, divu, pyDiv, s8, s16, s32, u32, w16 } from "./mem.ts";
 import type { Region } from "./mem.ts";
@@ -82,6 +90,29 @@ export const PANEL_LISTS = [
 export const DAMAGE_PARTS = [0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52]; // $14148: the damage diagram's models
 export const SUBPANEL = [0, 1, 1, 2]; // $11756: arming sub-panel by bay status (0, 1-2, 3+)
 export const STATUS_ICON = [0, 3, 3, 2, 2, 0, 1, 4]; // $13B6C: game-status button lit per [$708] (1 + index from 100)
+// Mantas and Walruses (screens 16-19, 24-27).
+export const MANTA_RECS = 0x496, WALRUS_RECS = 0x570, REC = 0x34;
+export const MANTA_OBJS = 0x5df5a, WALRUS_OBJS = 0x5e45a;
+export const LOADOUT = 0xcac4; // 26-byte entries: +0 weight, +2 stock pointer, +6 quantity, +8 Walrus slot (1: payload)
+export const MANTA_CODES = 0xc770, WALRUS_CODES = 0xc242; // the arming screens' loadout lists (6 / 5 codes)
+export const LOADOUT_CURSOR = 0xdb8, DRAG_ELEMENT = 0xdbc; // $DB8 Manta, $DBA Walrus list cursor; the slot element being dragged
+export const DROP = 0x468; // drag: the drop callback ($F73C), run by ui_frame on release ($F6EA)
+export const HARBINGER_LOAD = 0x11bd2; // weight, stock pointer ($B98), quantity: the old Harbinger load (code)
+export const HARBINGERS = 0xcb80; // loadout entry 7's quantity: the Harbingers to load
+export const KEY_ELEMENT = 0x13352; // $132D6 writes its element here (type, index)
+export const PLUS_HANDLER = 0x4281c, MINUS_HANDLER = 0x42832; // the Walrus arming +/- elements' handlers, patched by the panel draw
+export const VEHICLE_THROTTLE_Y: [number, number] = [158, 159 + 0x26]; // the Manta/Walrus control screens' throttle slider
+export const MAP_SLIDER_Y: [number, number] = [159, 159 + 0x24]; // the map screens' cruise and altitude sliders
+export const T_BUTTON = 38, T_WEAPON = 62, T_TURRET = 80, T_HARBINGERS = 81, T_HANGAR = 78, T_DRAW = 91, T_SIGHT = 104, T_REAR = 105;
+export const T_MANTA = 58, T_WALRUS = 70; // select icons on the control and map screens (+ bay)
+export const T_MANTA_ARMING = 74, T_WALRUS_ARMING = 82, T_MANTA_DECK = 86, T_WALRUS_DOCK = 93;
+// The arming screens' slot elements (panel data): slot index, pointer box x0, y0, x1, y1 ($B52C).
+export const SLOT_ELEMENTS: Record<number, [number, number, number, number, number]> = {
+  0x429ba: [0, 219, 70, 233, 93], 0x429d0: [1, 196, 90, 210, 113], 0x429e6: [2, 241, 90, 255, 113],
+  0x42836: [0, 173, 96, 188, 106], 0x4284c: [1, 201, 96, 248, 106],
+};
+export const MANTA_SLOTS = [0x429ba, 0x429d0, 0x429e6], WALRUS_SLOTS = [0x42836, 0x4284c];
+export const STORES_BOX: [number, number, number, number] = [0x21, 0x4b, 0xa2, 0x84]; // drop a fitted item here to return it to stores
 
 // State these routines read or write that the other regions don't cover.
 for (const _region of [
@@ -121,10 +152,21 @@ for (const _region of [
   ["selected Manta $48C", 0x48c, 2],
   ["bay selection $DB4", 0xdb4, 4],
   ["station snapshot $141DE", STATION_SNAPSHOT, 0x10],
+  // Mantas and Walruses (milestone 2): arming drags, number keys, map edit globals.
+  ["loadout cursors $DB8", LOADOUT_CURSOR, 8], // $DB8 Manta, $DBA Walrus, $DBC dragged slot element
+  ["drop callback $468", DROP, 4],
+  ["harbinger load $11BD2", HARBINGER_LOAD, 8], // in the code: the old Harbinger load as a loadout entry
+  ["key element $13352", KEY_ELEMENT, 4], // in the code: $132D6's fake panel element
+  ["arming +/- handlers $4281C", PLUS_HANDLER, 0x1a], // panel data: the type-81 buttons' handlers (+$12)
+  ["loadout codes $C770", MANTA_CODES, 12],
+  ["loadout codes $C242", WALRUS_CODES, 10],
+  ["slot offsets $11448", 0x11448, 6],
+  ["slot offsets $11C12", 0x11c12, 4],
 ] as Region[]) {
   if (!UNIT_REGIONS.some((r) => r[0] === _region[0])) UNIT_REGIONS.push(_region);
 }
-for (const n of ["current tab $714", "panel overlay $702", "key characters $1280", "map island $742", "map rect $47F2"]) {
+for (const n of ["current tab $714", "panel overlay $702", "key characters $1280", "map island $742", "map rect $47F2",
+  "loadout codes $C770", "loadout codes $C242", "slot offsets $11448", "slot offsets $11C12"]) {
   UNIT_INPUT_REGIONS.add(n);
 }
 
@@ -134,7 +176,11 @@ export const INPUT_TABLE: Record<number, number> = {
   17: 0x17244, 18: 0x17374, 19: 0x17782, 24: 0x17610, 25: 0x17244, 26: 0x1773c, 27: 0x172bc,
 };
 // Screens whose input handler is ported ("" = $170D2, rts).
-export const SCREEN_INPUT: Record<number, string> = { 0: "bridge_input", 1: "damage_input", 2: "map_input", 17: "map_input", 25: "map_input" };
+export const SCREEN_INPUT: Record<number, string> = {
+  0: "bridge_input", 1: "damage_input", 2: "map_input", 17: "map_input", 25: "map_input",
+  16: "walrus_arming_input", 18: "walrus_control_input", 19: "walrus_dock_input",
+  24: "manta_arming_input", 26: "manta_deck_input", 27: "manta_control_input",
+};
 for (let s = 0; s < 36; s++) if (!(s in INPUT_TABLE)) SCREEN_INPUT[s] = "";
 // $139D4 / $14318: the enter and leave handlers that write state (the others only set the
 // palette or nothing: enter 3, 5-7, 12-15, 20-23, 28-31; leave 3-7, 9, 11-15, 19-23, 26, 28-31).
@@ -154,13 +200,20 @@ export const SCREEN_LEAVE: Record<number, string> = {
   34: "leave_game_over", 35: "leave_destroyed",
 };
 
+// $F6EA: the drop callbacks of the drags that are ported (jmp [$468]).
+export const DROPS: Record<number, string> = {
+  0x113a4: "_manta_drop_loadout", 0x11500: "_manta_drop_return",
+  0x11ace: "_walrus_drop_loadout", 0x11c4e: "_walrus_drop_return",
+};
+
 export abstract class ControlsUnits extends SetupUnits {
   // ---- the hit test's conditions ($B46E) ------------------------------------------------
   /** The panel is shown ([state addr] == value; null: always), the element type is
    * neither hidden nor disabled, and the game runs unless the type works while paused
-   * (bit 12). */
+   * (bit 12). No hit test runs during a drag ($460). */
   _clickable(etype: number, state: [number, number] | null = [0x702, 0]): boolean {
     const m = this.mem;
+    if (m.u8(MODAL)) return false;
     if (state !== null && m.u16(state[0]) !== state[1]) return false;
     const f = m.u16(FLAG_TABLE + 2 * etype);
     if (f & 0xc000) return false;
@@ -721,8 +774,8 @@ export abstract class ControlsUnits extends SetupUnits {
     }
     this.pointer_button();
     if (m.u8(MODAL)) {
-      if (m.u8(0x880)) return;
-      throw new NotPorted("the drop at the end of a drag ($F6EA: jmp [$468])");
+      this.drag_drop();
+      return;
     }
     this._switch_pending();
   }
@@ -791,7 +844,8 @@ export abstract class ControlsUnits extends SetupUnits {
 
   /** $F6B6: leave the current screen, enter the new one ($139AE first zeroes $122D and
    * the view pointers $9FA camera, $9FE viewed, $A02 controlled), its panel list $71C,
-   * no request pending. The panel drawing $782A is left out. */
+   * no request pending; of the panel drawing $782A only the game state two panel
+   * callbacks write (panels_drawn). */
   _switch(screen: number): void {
     const m = this.mem;
     if (screen > 35) throw new NotPorted(`switch to screen ${screen} (not in the tables)`);
@@ -804,6 +858,14 @@ export abstract class ControlsUnits extends SetupUnits {
     m.set32(PANEL_LIST, PANEL_LISTS[screen]);
     m.set8(PENDING_TAB, 0xff); // st.b: the high bytes
     m.set8(SCREEN_SELECT, 0xff);
+    this.panels_drawn(screen);
+  }
+
+  /** $782A draws the new screen's panels; two panel callbacks write game state: the
+   * arming screens' loadout panels (24: _manta_panel, 16: _walrus_panel). */
+  panels_drawn(screen: number): void {
+    if (screen === 24) this._manta_panel();
+    else if (screen === 16) this._walrus_panel();
   }
 
   /** $14302: the current screen's leave handler (table $14318; none while [$718] < 0). */
@@ -1643,8 +1705,8 @@ export abstract class ControlsUnits extends SetupUnits {
   }
 
   /** $17244 (maps, screens 2/17/25): cursor keys scroll, Insert / Clr-Home zoom (held),
-   * a right click recentres ($F8B4); on the Walrus and Manta maps the keypad selects a
-   * unit ($132D6, not ported). */
+   * a right click recentres ($F8B4); on the Walrus and Manta maps the number keys select
+   * a unit ($132D6 -> $FFB8 / $FF1E). */
   map_input(): void {
     const m = this.mem;
     const keys: [number, () => void][] = [
@@ -1655,9 +1717,8 @@ export abstract class ControlsUnits extends SetupUnits {
     for (const [key, f] of keys) if (m.u8(key)) f();
     if (!m.u16(MAP_INFO) && this._bclr0(0x883)) this.map_recentre_at_pointer();
     const screen = m.u16(SCREEN);
-    if ((screen === 0x11 || screen === 0x19) && m.u8(POINTER_MODE) && !m.u8(MODAL) && MAP_KEYPAD.some((a) => m.u8(a) & 1)) {
-      throw new NotPorted("unit selection keys on the Walrus/Manta map ($132D6)");
-    }
+    if (screen === 0x11) this.key_select(T_WALRUS, (e, i) => this._walrus_map_select(e, i));
+    else if (screen === 0x19) this.key_select(T_MANTA, (e, i) => this._manta_map_select(e, i));
   }
 
   /** One game_main loop ($408A-$4190) without ui_frame $F636 (the UI calls the cmd_
@@ -1692,5 +1753,1457 @@ export abstract class ControlsUnits extends SetupUnits {
       m.set16(REQUEST_TAB, 6);
       this.events.push(["game over", 34, m.u16(RESULT)]);
     }
+  }
+
+  // ---- Mantas and Walruses: shared helpers (milestone 2) ------------------------------------
+  // Defined by UnitState (units_vehicles.ts).
+  abstract _manta_balance(a1: number): void;
+  abstract cmd_manta_to_deck(bay?: number | null): void;
+
+  /** $A044 / $A02A: "Manta N " / "Walrus N " + text (N = bay + 1 as a digit byte). */
+  _unit_message(kind: string, bay: number, text: string): void {
+    this._message(`${kind} ${String.fromCharCode((bay + 0x31) & 0xff)} ${text}`);
+  }
+
+  /** The flag word of an element type, as the handlers address it (adda.w 2 * type). */
+  _flag(etype: number): number {
+    return FLAG_TABLE + s16(w16(2 * etype));
+  }
+
+  /** bset #5 on the type's flag byte; true if it was set already. */
+  _icon_set(etype: number): boolean {
+    const a = this._flag(etype);
+    const v = this.mem.u8(a);
+    this.mem.set8(a, v | 0x20);
+    return Boolean(v & 0x20);
+  }
+
+  _icon_clear(etype: number): void {
+    const a = this._flag(etype);
+    this.mem.set8(a, this.mem.u8(a) & 0xdf);
+  }
+
+  /** $132D6: in pointer mode and not dragging, the first of 1-4 / keypad 1-4 with its
+   * new flag set (cleared here) selects unit i: the handler runs as a fresh click on a
+   * fake element at $13352 (type base + i, index i). */
+  key_select(base: number, handler: (etype: number, i: number) => void): void {
+    const m = this.mem;
+    if (!m.u8(POINTER_MODE) || m.u8(MODAL)) return;
+    let i = 0;
+    for (; i < 4; i++) {
+      if (this._bclr0(MAP_KEYPAD[2 * i]) || this._bclr0(MAP_KEYPAD[2 * i + 1])) break;
+    }
+    if (i === 4) return;
+    m.set16(KEY_ELEMENT + 2, i);
+    m.set16(KEY_ELEMENT, w16(i + base));
+    handler(w16(i + base), i);
+  }
+
+  _manta_rec(): number {
+    return this.mem.u32(0x48e);
+  }
+
+  _walrus_rec(): number {
+    return this.mem.u32(0x568);
+  }
+
+  /** $13FBA with a2 = [$48E]. */
+  _manta_icons(): void {
+    this._vehicle_icons(this._manta_rec(), this.mem.u16(0x70c), 0x1a);
+  }
+
+  /** $14004 with a2 = [$568]. */
+  _walrus_icons(): void {
+    this._vehicle_icons(this._walrus_rec(), this.mem.u16(0x70e), 0x18);
+  }
+
+  /** $13FA6: icon 80 (the rudder turns the turret) = Walrus [$568] bit 5. */
+  _turret_icon(): void {
+    this._icon(T_TURRET, this.mem.u8(this._walrus_rec()) & 0x20);
+  }
+
+  _slider(y: number, rng: [number, number], etype = T_BUTTON): boolean {
+    return rng[0] <= y && y <= rng[1] && this._clickable(etype);
+  }
+
+  // ---- Manta control, screen 27 (input $172BC; panels $4229A, $423C6, $42386, $42346, $42306, $42446)
+  /** $FE54: select Manta i in place: the old icon off and the old viewed object
+   * [$492] visible again; $48C = i, its records ($141FE); camera and viewed = it
+   * (invisible), camera mode 0; controllable / controlled and icons ($13EBA). */
+  _manta_select(etype: number, i: number): void {
+    const m = this.mem;
+    if (this._icon_set(etype)) return;
+    this._icon_clear(m.u16(0x48c) + T_MANTA);
+    this._set_visible(m.u32(0x492));
+    m.set16(0x48c, i);
+    const [rec, o] = this.select_manta();
+    m.set32(VIEWED, o);
+    m.set16(CAM_MODE, 0);
+    m.set32(CAMERA, o);
+    m.set8(o + 1, m.u8(o + 1) & 0xfd);
+    this.manta_view_update(rec);
+  }
+
+  /** $FE54, the Manta icons 1-4 (types 58-61) on the control screen 27 (the number keys
+   * do the same in pointer mode): fly Manta `bay` (0-3) from now on. */
+  cmd_manta_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_MANTA + bay))) return false;
+    this._manta_select(T_MANTA + bay, bay);
+    return true;
+  }
+
+  /** $FEE2 (types 62-64): weapon +$1A = 0 laser, 1 Assassin missiles, 2 payload (bomb
+   * or comms pod), unless that icon is lit already; icons ($13FBA). */
+  cmd_manta_weapon(w: number): boolean {
+    const m = this.mem;
+    if (!(0 <= w && w <= 2 && this._clickable(T_WEAPON + w))) return false;
+    if (!(m.u8(this._flag(T_WEAPON + w)) & 0x20)) {
+      m.set16(this._manta_rec() + 0x1a, w);
+      this._manta_icons();
+    }
+    return true;
+  }
+
+  /** $12A44 (auto button, type 90): needs a controllable Manta ($70C) that isn't
+   * crashing (bit 4). Off: automatic (bit 0), mode 3 (fly to the waypoint): "Autopilot on"
+   * or, without a waypoint, "Autopilot on - set course". On: in mode 3 off; in the
+   * take-off modes 2/6 only +$33 is set (deferred); other modes (landing) nothing. Then
+   * the self-centre bits 6/7 are cleared. */
+  cmd_manta_autopilot(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_AUTOPILOT)) return false;
+    if (!m.u16(0x70c)) return true;
+    const a2 = this._manta_rec();
+    if (m.u8(a2) & 0x10) return true;
+    const a0 = this._flag(T_AUTOPILOT);
+    if (!(m.u8(a0) & 0x20)) {
+      m.set8(a0, m.u8(a0) | 0x20);
+      m.set8(a2, m.u8(a2) | 1);
+      m.set8(a2 + 0x1c, 3);
+      this._message(m.u8(a2) & 2 ? "Autopilot on" : "Autopilot on - set course");
+    } else {
+      const mode = m.u8(a2 + 0x1c);
+      if (mode === 2 || mode === 6) {
+        m.set8(a2 + 0x33, 0xff);
+        return true;
+      }
+      if (mode !== 3) return true;
+      m.set8(a0, m.u8(a0) & 0xdf);
+      m.set8(a2, m.u8(a2) & 0xfe);
+    }
+    m.set8(a2, m.u8(a2) & 0x3f);
+    this._manta_icons();
+    return true;
+  }
+
+  /** $129E6: manual flight: +0 bit 7, the rudder self-centres. */
+  cmd_manta_centre_rudder(): boolean {
+    return this._manta_bit(0x80);
+  }
+
+  /** $129FE: manual flight: +0 bit 6, the pitch self-centres. */
+  cmd_manta_centre_pitch(): boolean {
+    return this._manta_bit(0x40);
+  }
+
+  _manta_bit(bit: number): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    const a2 = this._manta_rec();
+    if (!(m.u8(a2) & 1)) m.set8(a2, m.u8(a2) | bit);
+    return true;
+  }
+
+  /** $100A8: the instrument panel's page +$18 = (+1) mod 3 (display). */
+  cmd_manta_instruments(): boolean {
+    return this._instrument_page(this._manta_rec() + 0x18);
+  }
+
+  _instrument_page(a: number): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    const v = s16(m.u16(a) + 1);
+    m.set16(a, v > 2 ? 0 : v);
+    m.set16(0x962, 2);
+    m.set16(0x984, 1);
+    return true;
+  }
+
+  /** $FDDA, the throttle slider (x 288, y 158..197; repeats while held): manual flight:
+   * target speed +8 = (195 - y) * 7, clamped to 0..250. */
+  cmd_manta_throttle(y: number): boolean {
+    const m = this.mem;
+    if (!this._slider(y, VEHICLE_THROTTLE_Y)) return false;
+    const a0 = this._manta_rec();
+    if (!(m.u8(a0) & 1)) {
+      const v = s16(w16(s16(w16(0xc3 - y)) * 7));
+      m.set16(a0 + 8, v > 0xfa ? 0xfa : v < 0 ? 0 : v);
+    }
+    return true;
+  }
+
+  /** $10100 (type 104): controllable: toggle +$32 (the sight overlay *(guess)*), icons. */
+  cmd_manta_sight(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_SIGHT)) return false;
+    if (m.u16(0x70c)) {
+      const a2 = this._manta_rec();
+      m.set8(a2 + 0x32, ~m.u8(a2 + 0x32));
+      this._manta_icons();
+    }
+    return true;
+  }
+
+  /** $1015C (type 105): controllable: toggle the rear view $8F1 (no firing while set). */
+  cmd_manta_rear_view(): boolean {
+    return this._rear_view(0x70c);
+  }
+
+  _rear_view(controllable: number): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_REAR)) return false;
+    if (m.u16(controllable)) {
+      m.set16(this._flag(T_REAR), 0);
+      m.set8(0x8f1, ~m.u8(0x8f1));
+      if (m.u8(0x8f1)) m.set16(this._flag(T_REAR), 0x2000);
+    }
+    return true;
+  }
+
+  /** $13356 (135,117): a Manta landed on a runway (automatic, mode 5) is ordered to
+   * take off (+0 bit 5). */
+  cmd_manta_runway_take_off(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    const a0 = this._manta_rec();
+    if (m.u8(a0) & 1 && m.u8(a0 + 0x1c) === 5) m.set8(a0, m.u8(a0) | 0x20);
+    return true;
+  }
+
+  /** Mouse-steer input that makes the next manta_step set the selected Manta's rudder
+   * +2 and pitch +4 (each clamped to +-255): the mouse deltas are the differences. It
+   * applies when that Manta is the viewed one, manual, in mouse-steer mode ($457 clear). */
+  cmd_manta_steer_to(rudder: number, pitch: number): void {
+    const m = this.mem;
+    const a = this._manta_rec();
+    m.set16(MOUSE_DX, w16(Math.max(-255, Math.min(255, rudder)) - m.s16(a + 2)));
+    m.set16(MOUSE_DX + 2, w16(Math.max(-255, Math.min(255, pitch)) - m.s16(a + 4)));
+  }
+
+  /** A left click in mouse-steer mode: the new-press flag $881 that the viewed Manta or
+   * Walrus fires with on its next step (its selected weapon; not in the rear view). */
+  cmd_vehicle_fire(): void {
+    this.input_mouse_button(0, 1);
+    this.input_mouse_button(0, 0);
+  }
+
+  /** $172BC (screen 27): the Assassin lock timer $116C counts down (only here); the
+   * number keys select a Manta ($FE54); the screen is re-entered ($71A = 27) when the
+   * Manta's status crosses 8 (controllable $70C); gauge timers; automatic: the auto button
+   * follows bit 0; manual: a right click toggles mouse-steer mode. */
+  manta_control_input(): void {
+    const m = this.mem;
+    if (m.u16(0x116c)) m.set16(0x116c, m.u16(0x116c) - 1);
+    this.key_select(T_MANTA, (e, i) => this._manta_select(e, i));
+    if (this._vehicle_reenter(this._manta_rec(), 0x70c, 0x1b)) return;
+    for (const t of [0x954, 0x956, 0x958, 0x962]) if (m.u16(t)) m.set16(t, m.u16(t) - 1);
+    const a2 = this._manta_rec();
+    if (m.u8(a2) & 1) {
+      if (!(m.u8(this._flag(T_AUTOPILOT)) & 0x20)) this._manta_icons();
+      return;
+    }
+    if (this._bclr0(0x883)) m.set8(POINTER_MODE, ~m.u8(POINTER_MODE));
+    if (m.u8(this._flag(T_AUTOPILOT)) & 0x20) this._manta_icons();
+  }
+
+  /** The control screens re-enter themselves when the unit's status (signed) crosses 8
+   * relative to the controllable flag. True when the handler stops there. */
+  _vehicle_reenter(a0: number, controllable: number, screen: number): boolean {
+    const m = this.mem;
+    const out = s8(m.u8(a0 + 1)) >= 8;
+    if (!m.u16(controllable)) {
+      if (out) m.set16(SCREEN_SELECT, screen);
+      return true;
+    }
+    if (!out) {
+      m.set16(SCREEN_SELECT, screen);
+      return true;
+    }
+    return false;
+  }
+
+  // ---- Manta deck, screen 26 (input $1773C; panel $42B40) ---------------------------------
+  /** $11F92: the deck screen's own selection $DCC (records $48E/$492; $48C kept). */
+  _manta_deck_select(etype: number, i: number): void {
+    const m = this.mem;
+    const d0 = w16(m.u16(0xdcc) + T_MANTA_DECK);
+    if (etype === d0) return;
+    this._icon_clear(d0);
+    this._icon_set(etype);
+    const k = w16(etype - T_MANTA_DECK);
+    m.set16(0xdcc, k);
+    m.set32(0x492, this._bay_object(MANTA_OBJS, k));
+    m.set32(0x48e, this._bay_record(MANTA_RECS, k));
+    m.set16(0x95c, 2);
+  }
+
+  /** $11F92 (types 86-89): the Manta the deck commands act on (to deck, land). */
+  cmd_manta_deck_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_MANTA_DECK + bay))) return false;
+    this._manta_deck_select(T_MANTA_DECK + bay, bay);
+    return true;
+  }
+
+  /** $12360 (144,155): abort the landing of Manta [$DDC] while it is still in the
+   * approach (step +$1D <= 3): it flies on (mode 3); without a waypoint it gets one ahead
+   * of the carrier ($1207A). */
+  cmd_manta_abort_landing(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!m.u8(0x1232)) {
+      this._message("No aircraft is currently landing");
+      return true;
+    }
+    const d1 = m.u16(0xddc);
+    const a0 = this._bay_record(MANTA_RECS, d1);
+    if (m.u8(a0 + 0x1d) > 3) {
+      this._message("Too late to abort landing");
+      return true;
+    }
+    m.set8(0x1232, 0);
+    m.set8(a0 + 0x1c, 3);
+    m.set8(a0 + 0x1d, 0);
+    if (!(m.u8(a0) & 2)) {
+      m.set8(a0, (m.u8(a0) | 2) & 0xfb);
+      this._manta_waypoint_ahead(a0, d1);
+    }
+    m.set16(0x95c, 2);
+    this._unit_message("Manta", m.u16(0xddc), "- Landing aborted");
+    return true;
+  }
+
+  /** $1207A: cruise 60, height (bay + 1) * 300 + 500, 6000 ahead of the carrier. */
+  _manta_waypoint_ahead(a0: number, d1: number): void {
+    const m = this.mem;
+    const c = CARRIER;
+    m.set16(a0 + 0x2a, 0x3c);
+    m.set32(a0 + 0x22, s16(w16(w16(d1 + 1) * 0x12c + 0x1f4)));
+    this.set_matrix(m.u16(c + 6));
+    const [x, z] = this.matrix_rotate(0, 0xe890);
+    m.set32(a0 + 0x1e, s32(x + m.u32(c + 0x0a)));
+    m.set32(a0 + 0x26, s32(z + m.u32(c + 0x12)));
+  }
+
+  /** $1773C (screen 26): the number keys select ($11F92). */
+  manta_deck_input(): void {
+    this.key_select(T_MANTA_DECK, (e, i) => this._manta_deck_select(e, i));
+  }
+
+  // ---- Manta map, screen 25 (panels $41B50, $41CD6) ---------------------------------------
+  /** $FF1E: select Manta i ($48C, records); its icon lit already: recall its course. */
+  _manta_map_select(etype: number, i: number): void {
+    const m = this.mem;
+    if (m.u16(MAP_INFO)) return;
+    if (this._icon_set(etype)) {
+      this._manta_recall();
+      return;
+    }
+    this._icon_clear(m.u16(0x48c) + T_MANTA);
+    m.set16(0x48c, i);
+    this.select_manta();
+  }
+
+  /** $FF1E (types 58-61 on the Manta map): select Manta `bay`; clicking the selected
+   * one again recalls its course into the map's edit values ($12ECC). */
+  cmd_manta_map_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_MANTA + bay))) return false;
+    this._manta_map_select(T_MANTA + bay, bay);
+    return true;
+  }
+
+  /** $12ECC: the Manta's course (+$1E/+$22/+$26, cruise +$2A, announce bit 2) into the
+   * edit values $69E/$6A2/$6A6, $69C, $6AC; the map centred on it at zoom 0. */
+  _manta_recall(): void {
+    const m = this.mem;
+    const a0 = this._manta_rec();
+    const bay = m.u16(0x48c);
+    if (m.u8(a0 + 1) & 0x80) return this._unit_message("Manta", bay, "no longer exists");
+    if (!(m.u8(a0) & 2)) return this._unit_message("Manta", bay, "has no course to recall");
+    m.set32(0x69e, m.u32(a0 + 0x1e));
+    m.set32(MAP_X, m.u32(a0 + 0x1e));
+    m.set32(0x6a2, m.u32(a0 + 0x22));
+    m.set32(0x6a6, m.u32(a0 + 0x26));
+    m.set32(MAP_Z, m.u32(a0 + 0x26));
+    m.set16(0x69c, m.u16(a0 + 0x2a));
+    m.set8(0x6ac, m.u8(a0) & 4 ? 0xff : 0);
+    this._manta_map_icons();
+    this._map_zoom_set(0);
+    this._unit_message("Manta", bay, "course recalled");
+  }
+
+  /** $12D72: icons 91 (draw mode $6AA) and 92 (announce $6AC). */
+  _manta_map_icons(): void {
+    const m = this.mem;
+    this._icon(T_DRAW, m.u16(0x6aa));
+    this._icon(T_ANNOUNCE, m.u8(0x6ac));
+  }
+
+  /** $12E1E: icons 91 ($6B8) and 92 ($6BA). */
+  _walrus_map_icons(): void {
+    const m = this.mem;
+    this._icon(T_DRAW, m.u16(0x6b8));
+    this._icon(T_ANNOUNCE, m.u8(0x6ba));
+  }
+
+  /** $12FC4 (13,178). A fresh press gives the selected Manta the edited course: bit 1,
+   * bit 2 = announce $6AC, cruise +$2A = $69C, waypoint +$1E/+$22/+$26 = $69E/$6A2/$6A6
+   * ("course set", or "course set - engage autopilot" when manual). Held (auto-repeat),
+   * a Manta with a course becomes automatic ("autopilot engaged"; its mode isn't set). */
+  cmd_manta_set_course(held = 0): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    if (m.u16(MAP_INFO)) return true;
+    const a0 = this._manta_rec();
+    const bay = m.u16(0x48c);
+    let d0 = m.u8(a0);
+    if (held) {
+      if (!(d0 & 2) || d0 & 1) return true;
+      m.set8(a0, d0 | 1);
+      this._unit_message("Manta", bay, "autopilot engaged");
+      return true;
+    }
+    if (m.u8(a0 + 1) & 0x80) {
+      this._unit_message("Manta", bay, "no longer exists");
+      return true;
+    }
+    d0 = (d0 | 2) & 0xfb;
+    if (m.u8(0x6ac)) d0 |= 4;
+    m.set8(a0, d0);
+    m.set16(a0 + 0x2a, m.u16(0x69c));
+    m.set32(a0 + 0x1e, m.u32(0x69e));
+    m.set32(a0 + 0x22, m.u32(0x6a2));
+    m.set32(a0 + 0x26, m.u32(0x6a6));
+    this._unit_message("Manta", bay, d0 & 1 ? "course set" : "course set - engage autopilot");
+    return true;
+  }
+
+  /** $12F8E (57,178): the selected Manta's course cleared (bit 1). */
+  cmd_manta_clear_course(): boolean {
+    return this._clear_course(this._manta_rec(), "Manta", 0x48c);
+  }
+
+  _clear_course(a0: number, kind: string, sel: number): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    if (m.u16(MAP_INFO)) return true;
+    const bay = m.u16(sel);
+    if (m.u8(a0 + 1) & 0x80) {
+      this._unit_message(kind, bay, "no longer exists");
+    } else if (m.u8(a0) & 2) {
+      m.set8(a0, m.u8(a0) & 0xfd);
+      this._unit_message(kind, bay, "course cleared");
+    } else {
+      this._unit_message(kind, bay, "course already clear");
+    }
+    return true;
+  }
+
+  _edit(a: number, v: number, lo: number, hi: number): void {
+    v = s16(v);
+    this.mem.set16(a, v > hi ? hi : v < lo ? lo : v);
+  }
+
+  /** $12C90: the course's cruise speed $69C + 16 (50..250; repeats). */
+  cmd_manta_cruise_up(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._edit(0x69c, this.mem.u16(0x69c) + 0x10, 0x32, 0xfa);
+    return true;
+  }
+
+  /** $12CA2: $69C - 16. */
+  cmd_manta_cruise_down(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._edit(0x69c, this.mem.u16(0x69c) - 0x10, 0x32, 0xfa);
+    return true;
+  }
+
+  /** $12CB4, the cruise slider (x 288, y 159..195): $69C = (195 - y) * 7, 50..250. */
+  cmd_manta_cruise(y: number): boolean {
+    if (!this._slider(y, MAP_SLIDER_Y)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._edit(0x69c, s16(w16(0xc3 - y)) * 7, 0x32, 0xfa);
+    return true;
+  }
+
+  /** $12D1C: the course altitude $6A2 (long), 250..3500. */
+  _altitude(v: number): void {
+    v = s32(v);
+    this.mem.set32(0x6a2, v > 0xdac ? 0xdac : v < 0xfa ? 0xfa : v);
+  }
+
+  /** $12CE2: the course's altitude $6A2 + 230 (250..3500; repeats). */
+  cmd_manta_altitude_up(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._altitude(this.mem.u32(0x6a2) + 0xe6);
+    return true;
+  }
+
+  /** $12CF6: $6A2 - 230. */
+  cmd_manta_altitude_down(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._altitude(this.mem.u32(0x6a2) - 0xe6);
+    return true;
+  }
+
+  /** $12D0A, the altitude slider (x 244, y 159..195): $6A2 = (195 - y) * 97. */
+  cmd_manta_altitude(y: number): boolean {
+    if (!this._slider(y, MAP_SLIDER_Y)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._altitude(s16(w16(0xc3 - y)) * 0x61);
+    return true;
+  }
+
+  /** $12D40 (type 91): toggle $6AA (what the Manta map draws; display), icons. No
+   * fresh-press check: holding it toggles every pass. */
+  cmd_manta_map_draw_mode(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_DRAW)) return false;
+    if (!m.u16(MAP_INFO)) {
+      m.set8(0x6ab, m.u8(0x6ab) ^ 1);
+      this._manta_map_icons();
+    }
+    return true;
+  }
+
+  /** $12D50 (type 92): toggle $6AC, the next course's "report arrival" bit, icons. */
+  cmd_manta_toggle_announce(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_ANNOUNCE)) return false;
+    if (!m.u16(MAP_INFO)) {
+      m.set8(0x6ac, ~m.u8(0x6ac));
+      this._manta_map_icons();
+    }
+    return true;
+  }
+
+  /** The UI's "fly to (x, z)": the Manta map cursor $69E/$6A6 at world (x, z), as a map
+   * click writes it, then a fresh press of set course (altitude $6A2 and cruise $69C as
+   * edited). Engage with cmd_manta_set_course(1) or cmd_manta_autopilot(). */
+  cmd_set_manta_waypoint(x: number, z: number): boolean {
+    const m = this.mem;
+    if (!(this._clickable(T_BUTTON, [MAP_INFO, 0]) && this._clickable(T_BUTTON))) return false;
+    m.set32(0x69e, s32(x));
+    m.set32(0x6a6, s32(z));
+    return this.cmd_manta_set_course(0);
+  }
+
+  // ---- Manta arming, screen 24 (input $17610; panels $428A2, $42966, $429FE) ------------
+  /** $116C6: the arming screen's selection $DB4, record $48E, sub-panel $DC0. */
+  _manta_arming_select(etype: number, i: number): void {
+    const m = this.mem;
+    const d0 = w16(m.u16(0xdb4) + T_MANTA_ARMING);
+    if (etype === d0) return;
+    this._icon_clear(d0);
+    this._icon_set(etype);
+    const k = w16(etype - T_MANTA_ARMING);
+    m.set16(0xdb4, k);
+    const rec = this._bay_record(MANTA_RECS, k);
+    m.set32(0x48e, rec);
+    m.set16(0xdc0, this._subpanel(rec));
+    this._manta_panel();
+    m.set16(0x95c, 2);
+  }
+
+  /** $116C6 (types 74-77): the bay the hangar commands and loadout act on. */
+  cmd_manta_arming_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_MANTA_ARMING + bay))) return false;
+    this._manta_arming_select(T_MANTA_ARMING + bay, bay);
+    return true;
+  }
+
+  /** $17610 (screen 24): the number keys select ($116C6). */
+  manta_arming_input(): void {
+    this.key_select(T_MANTA_ARMING, (e, i) => this._manta_arming_select(e, i));
+  }
+
+  /** $11886 (12,178, type 78): send the arming screen's Manta ([$48E], bay [$DB4]) up
+   * the lift: the body of $11894 (cmd_manta_to_deck) with d1 = [$DB4]. */
+  cmd_manta_arming_to_deck(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_HANGAR)) return false;
+    const keep = m.u16(0xdcc);
+    m.set16(0xdcc, m.u16(0xdb4));
+    try {
+      this.cmd_manta_to_deck();
+    } finally {
+      m.set16(0xdcc, keep);
+    }
+    return true;
+  }
+
+  /** The Manta loadout panel's redraw ($B418 with $42966, callback $C580, while
+   * [$DC0] = 0): besides drawing, it marks the Manta [$48E] unbalanced (+$1C) when the
+   * wing loads differ by more than 80 ($C640, _manta_balance). */
+  _manta_panel(): void {
+    const m = this.mem;
+    if (m.u16(0xdc0)) return;
+    if (m.u16(LOADOUT_CURSOR) >= 6) {
+      throw new NotPorted(`loadout cursor ${m.u16(LOADOUT_CURSOR)} beyond the list $C770 (panel draw)`);
+    }
+    this._manta_balance(this._manta_rec());
+  }
+
+  /** The Walrus loadout panel's redraw ($B418 with $427B6, callback $BFE8, while
+   * [$DC2] = 0): with the list on the Harbinger, its entry's weight $CB7A = 100 + 150 n
+   * (n = [$CB80]) and the +/- buttons (type 81) patched to the Harbinger count
+   * ($11CE0/$11D0C); on the ACCB to its building type ($11D1C/$11D40). The buttons are
+   * shown (flag 0) only for those two, else hidden ($8000). */
+  _walrus_panel(): void {
+    const m = this.mem;
+    if (m.u16(0xdc2)) return;
+    const k = m.u16(LOADOUT_CURSOR + 2);
+    if (k >= 5) throw new NotPorted(`loadout cursor ${k} beyond the list $C242`);
+    const code = m.u16(WALRUS_CODES + 2 * k);
+    let d1 = 0x8000;
+    if (code === 7) {
+      d1 = 0;
+      m.set16(LOADOUT + 26 * 7, w16(m.u16(HARBINGERS) * 0x96 + 0x64));
+      m.set32(PLUS_HANDLER, 0x11ce0);
+      m.set32(MINUS_HANDLER, 0x11d0c);
+    }
+    if (code === 9) {
+      d1 = 0;
+      m.set32(PLUS_HANDLER, 0x11d1c);
+      m.set32(MINUS_HANDLER, 0x11d40);
+    }
+    m.set16(this._flag(T_HARBINGERS), d1);
+  }
+
+  /** $1132E/$11352, $11A30/$11A76: a list cursor + 1 (unsigned wrap at n) / - 1. */
+  _cursor_step(a: number, n: number, d: number): void {
+    const m = this.mem;
+    let v = w16(m.u16(a) + d);
+    if (d > 0) v = v < n ? v : 0;
+    else if (v & 0x8000) v = n - 1;
+    m.set16(a, v);
+  }
+
+  /** $1132E (142,84): the stores list cursor $DB8 + 1 (0..5: Assassin x1, x2, x3,
+   * Quaker, Quasar, comms pod; repeats). */
+  cmd_manta_loadout_next(): boolean {
+    if (!this._clickable(T_BUTTON, [0xdc0, 0])) return false;
+    this._cursor_step(LOADOUT_CURSOR, 6, 1);
+    this._manta_panel();
+    return true;
+  }
+
+  /** $11352 (142,108): $DB8 - 1. */
+  cmd_manta_loadout_prev(): boolean {
+    if (!this._clickable(T_BUTTON, [0xdc0, 0])) return false;
+    this._cursor_step(LOADOUT_CURSOR, 6, -1);
+    this._manta_panel();
+    return true;
+  }
+
+  _code(table: number, k: number, n: number): number {
+    if (k >= n) throw new NotPorted(`loadout cursor ${k} beyond the list $${table.toString(16).toUpperCase()}`);
+    return this.mem.u16(table + 2 * k);
+  }
+
+  /** mulu.w #$1A + adda.w: the loadout entry of a code. */
+  _entry(code: number): number {
+    if (code > 11) throw new NotPorted(`loadout code ${code} beyond the table $CAC4`);
+    return LOADOUT + s16(w16(code * 0x1a));
+  }
+
+  /** $F73C: the drop callback $468, modal mode $460 (the pointer clip is UI). */
+  _start_drag(callback: number): void {
+    this.mem.set32(DROP, callback);
+    this.mem.set8(MODAL, 0xff);
+  }
+
+  /** $1135E (123,85): pick up the stores item at the cursor to drag it onto a slot
+   * ("Stores unable to supply payload" if fewer are on board than it holds). Then
+   * cmd_drag_release(px, py) over a slot; the next ui_frame fits it (drop $113A4). */
+  cmd_manta_pick_loadout(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON, [0xdc0, 0])) return false;
+    const a1 = this._entry(this._code(MANTA_CODES, m.u16(LOADOUT_CURSOR), 6));
+    if (m.u16(a1 + 6) > m.u16(m.u32(a1 + 2))) {
+      this._message("Stores unable to supply payload");
+      return true;
+    }
+    this._start_drag(0x113a4);
+    return true;
+  }
+
+  /** $114C8 (slots 0 fuselage at 218,70, 1/2 wings at 195,90 / 240,90): pick up a
+   * fitted item to drag it back to the stores box (drop $11500). */
+  cmd_manta_pick_slot(k: number): boolean {
+    const m = this.mem;
+    if (!(0 <= k && k <= 2 && this._clickable(T_BUTTON, [0xdc0, 0]))) return false;
+    const off = m.u16(0x11448 + 2 * k);
+    if (m.u16(this._manta_rec() + off)) {
+      m.set32(DRAG_ELEMENT, MANTA_SLOTS[k]);
+      this._start_drag(0x11500);
+    }
+    return true;
+  }
+
+  /** $B52C over the slot elements: the first whose box holds the pointer. */
+  _slot_at(slots: number[], px: number, py: number): number | null {
+    for (const a of slots) {
+      const [k, x0, y0, x1, y1] = SLOT_ELEMENTS[a];
+      if (x0 <= px && px <= x1 && y0 <= py && py <= y1) return k;
+    }
+    return null;
+  }
+
+  _dragged_slot(): number {
+    const a = this.mem.u32(DRAG_ELEMENT);
+    if (!(a in SLOT_ELEMENTS)) throw new NotPorted(`dragged element $${a.toString(16).toUpperCase()} is not a slot`);
+    return SLOT_ELEMENTS[a][0];
+  }
+
+  _in_stores_box(px: number, py: number): boolean {
+    const [x0, y0, x1, y1] = STORES_BOX;
+    return x0 <= px && px <= x1 && y0 <= py && py <= y1;
+  }
+
+  /** $113A4: dropped on slot k: wings (k >= 1) take Assassins only (codes <= 2); the
+   * weight +$12 - old item + new must stay <= 750; the old item goes back to stock and
+   * the new one is taken from it. */
+  _manta_drop_loadout(px: number, py: number): void {
+    const m = this.mem;
+    const k = this._slot_at(MANTA_SLOTS, px, py);
+    if (k === null) return;
+    const a0 = this._manta_rec();
+    const d1 = this._code(MANTA_CODES, m.u16(LOADOUT_CURSOR), 6);
+    const a1 = this._entry(d1);
+    if (k && d1 > 2) return this._message("Payload cannot be wing mounted");
+    const off = m.u16(0x11448 + 2 * k);
+    const d3 = m.u16(a0 + off);
+    const a2 = this._entry(d3);
+    const d0 = w16(m.u16(a0 + 0x12) - m.u16(a2) + m.u16(a1));
+    if (s16(d0) > 0x2ee) return this._message("Payload capacity exceeded");
+    m.set16(a0 + 0x12, d0);
+    if (d3) {
+      const p = m.u32(a2 + 2);
+      m.set16(p, m.u16(p) + m.u16(a2 + 6));
+    }
+    m.set16(a0 + off, d1);
+    const p = m.u32(a1 + 2);
+    m.set16(p, m.u16(p) - m.u16(a1 + 6));
+    this._manta_panel();
+  }
+
+  /** $11500: dropped in the stores box: the slot emptied, its item back to stock, the
+   * weight reduced, "Payload returned to stores". */
+  _manta_drop_return(px: number, py: number): void {
+    const m = this.mem;
+    if (!this._in_stores_box(px, py)) return;
+    const a0 = this._manta_rec();
+    const off = m.u16(0x11448 + 2 * this._dragged_slot());
+    const d0 = m.u16(a0 + off);
+    m.set16(a0 + off, 0);
+    const a1 = this._entry(d0);
+    const p = m.u32(a1 + 2);
+    m.set16(p, m.u16(p) + m.u16(a1 + 6));
+    m.set16(a0 + 0x12, m.u16(a0 + 0x12) - m.u16(a1));
+    this._message("Payload returned to stores");
+    this._manta_panel();
+  }
+
+  /** The end of a drag: the pointer at (px, py) and the left button released; the next
+   * ui_frame runs the drop ($F6EA). */
+  cmd_drag_release(px: number, py: number): void {
+    this._set_pointer(px, py);
+    this.input_mouse_button(0, 0);
+  }
+
+  /** $F6EA, ui_frame during a drag: once the button is up, modal mode ends ($F712) and
+   * the drop callback [$468] runs with the pointer (the hit test it repeats only marks
+   * the element under the pointer, UI). */
+  drag_drop(): void {
+    const m = this.mem;
+    if (m.u8(0x880)) return;
+    m.set8(MODAL, 0);
+    const cb = m.u32(DROP);
+    const handler = DROPS[cb];
+    if (handler === undefined) throw new NotPorted(`drop callback $${cb.toString(16).toUpperCase()} ($F6EA: jmp [$468])`);
+    (this as any)[handler](m.u16(0x474), m.u16(0x476));
+  }
+
+  /** Cursor clicks until the list shows `code`, pick it up, drop it on `slot`. */
+  _fit(kind: string, slot: number, code: number): boolean {
+    const m = this.mem;
+    const manta = kind === "Manta";
+    const [codes, n, a] = manta ? [MANTA_CODES, 6, LOADOUT_CURSOR] : [WALRUS_CODES, 5, LOADOUT_CURSOR + 2];
+    const slots = manta ? MANTA_SLOTS : WALRUS_SLOTS;
+    if (!(0 <= slot && slot < slots.length)) return false;
+    const nxt = manta ? () => this.cmd_manta_loadout_next() : () => this.cmd_walrus_loadout_next();
+    const pick = manta ? () => this.cmd_manta_pick_loadout() : () => this.cmd_walrus_pick_loadout();
+    let found = false;
+    for (let j = 0; j < n + 1; j++) {
+      if (m.u16(a) < n && m.u16(codes + 2 * m.u16(a)) === code) {
+        found = true;
+        break;
+      }
+      if (!nxt()) return false;
+    }
+    if (!found) return false;
+    if (!pick() || !m.u8(MODAL)) return false;
+    const [, x0, y0, x1, y1] = SLOT_ELEMENTS[slots[slot]];
+    this.cmd_drag_release(pyDiv(x0 + x1, 2), pyDiv(y0 + y1, 2));
+    this.ui_frame();
+    return true;
+  }
+
+  _unfit(kind: string, slot: number): boolean {
+    const m = this.mem;
+    const ok = kind === "Manta" ? this.cmd_manta_pick_slot(slot) : this.cmd_walrus_pick_slot(slot);
+    if (!ok || !m.u8(MODAL)) return false;
+    const [x0, y0, x1, y1] = STORES_BOX;
+    this.cmd_drag_release(pyDiv(x0 + x1, 2), pyDiv(y0 + y1, 2));
+    this.ui_frame();
+    return true;
+  }
+
+  /** Load `code` (1-3 Assassins, 4 Quaker, 5 Quasar, 10 comms pod) into slot 0
+   * (fuselage) or 1/2 (wings) of the arming screen's Manta as a player does it: cursor
+   * clicks, pick up, drop on the slot (ui_frame runs the drop). False if a click wasn't
+   * possible; refusals are messages. */
+  cmd_manta_fit(slot: number, code: number): boolean {
+    return this._fit("Manta", slot, code);
+  }
+
+  /** Drag slot 0-2's item back to the stores box. */
+  cmd_manta_unfit(slot: number): boolean {
+    return this._unfit("Manta", slot);
+  }
+
+  // ---- Walrus control, screen 18 (input $17374; panels $42470, $4259C, $4255C, $4251C, $424DC)
+  /** $10016: select Walrus i in place: old icon off, the old object [$56C] visible;
+   * $566 = i, records ($14224); camera and viewed = it (invisible), camera mode 1;
+   * controllable / controlled and icons ($13F5A). */
+  _walrus_select(etype: number, i: number): void {
+    const m = this.mem;
+    if (this._icon_set(etype)) return;
+    this._icon_clear(m.u16(0x566) + T_WALRUS);
+    this._set_visible(m.u32(0x56c));
+    m.set16(0x566, i);
+    const [rec, o] = this.select_walrus();
+    m.set32(VIEWED, o);
+    m.set16(CAM_MODE, 1);
+    m.set32(CAMERA, o);
+    m.set8(o + 1, m.u8(o + 1) & 0xfd);
+    this.walrus_view_update(rec);
+  }
+
+  /** $10016 (types 70-73 on the control screen 18; number keys alike): drive Walrus
+   * `bay` from now on. */
+  cmd_walrus_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_WALRUS + bay))) return false;
+    this._walrus_select(T_WALRUS + bay, bay);
+    return true;
+  }
+
+  /** $FF7C (types 62-64): weapon +$18 = 0 Avatar laser, 1 Harbinger missile, 2 payload
+   * (virus bomb, ACCB, fuel pod); icons ($14004). */
+  cmd_walrus_weapon(w: number): boolean {
+    const m = this.mem;
+    if (!(0 <= w && w <= 2 && this._clickable(T_WEAPON + w))) return false;
+    if (!(m.u8(this._flag(T_WEAPON + w)) & 0x20)) {
+      m.set16(this._walrus_rec() + 0x18, w);
+      this._walrus_icons();
+    }
+    return true;
+  }
+
+  /** $12B00 (type 90): needs a controllable Walrus ($70E). Off: needs a course ("No
+   * course set"): automatic, mode 3, "Autopilot on". On: in launch mode 2 only +$33 is
+   * set; in mode 3 off. Then bits 5 and 7 cleared (turret mode, rudder centring). */
+  cmd_walrus_autopilot(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_AUTOPILOT)) return false;
+    if (!m.u16(0x70e)) return true;
+    const a2 = this._walrus_rec();
+    const a0 = this._flag(T_AUTOPILOT);
+    if (!(m.u8(a0) & 0x20)) {
+      if (!(m.u8(a2) & 2)) {
+        this._message("No course set");
+        return true;
+      }
+      m.set8(a0, m.u8(a0) | 0x20);
+      m.set8(a2, m.u8(a2) | 1);
+      m.set8(a2 + 0x1a, 3);
+      this._message("Autopilot on");
+    } else {
+      const mode = m.u8(a2 + 0x1a);
+      if (mode === 2) {
+        m.set8(a2 + 0x33, 0xff);
+        return true;
+      }
+      if (mode !== 3) return true;
+      m.set8(a0, m.u8(a0) & 0xdf);
+      m.set8(a2, m.u8(a2) & 0xfe);
+    }
+    m.set8(a2, m.u8(a2) & 0x5f);
+    this._walrus_icons();
+    this._turret_icon();
+    return true;
+  }
+
+  /** $12982 (100,155): manual: a fresh press sets bit 7 (the rudder self-centres);
+   * held, bit 6 and the rudder +2 = 0. */
+  cmd_walrus_centre_rudder(held = 0): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    const a2 = this._walrus_rec();
+    if (m.u8(a2) & 1) return true;
+    if (held) {
+      m.set8(a2, m.u8(a2) | 0x40);
+      m.set16(a2 + 2, 0);
+    } else {
+      m.set8(a2, m.u8(a2) | 0x80);
+    }
+    return true;
+  }
+
+  /** $129A2 (type 80): controllable and manual: toggle bit 5 (the mouse turns the
+   * turret, not the hull); off also clears bit 6. The rudder +2 = 0, bit 7 cleared. */
+  cmd_walrus_turret_mode(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_TURRET)) return false;
+    const a2 = this._walrus_rec();
+    if (!m.u16(0x70e) || m.u8(a2) & 1) return true;
+    let f = m.u8(a2) ^ 0x20;
+    if (!(f & 0x20)) f &= 0xbf;
+    m.set8(a2, f);
+    this._turret_icon();
+    m.set16(a2 + 2, 0);
+    m.set8(a2, m.u8(a2) & 0x7f);
+    return true;
+  }
+
+  /** $100D4: the instrument page +$16 = (+1) mod 3 (display). */
+  cmd_walrus_instruments(): boolean {
+    return this._instrument_page(this._walrus_rec() + 0x16);
+  }
+
+  /** $FE0A, the throttle slider (x 288, y 158..197; repeats): manual: target speed
+   * +6 = (195 - y) * $2AA >> 8 (asr), clamped to 0..96. */
+  cmd_walrus_throttle(y: number): boolean {
+    const m = this.mem;
+    if (!this._slider(y, VEHICLE_THROTTLE_Y)) return false;
+    const a0 = this._walrus_rec();
+    if (!(m.u8(a0) & 1)) {
+      const v = s16(w16(s16(w16(0xc3 - y)) * 0x2aa)) >> 8;
+      m.set16(a0 + 6, v > 0x60 ? 0x60 : v < 0 ? 0 : v);
+    }
+    return true;
+  }
+
+  /** $1012E (type 104): controllable: toggle +$32, icons. */
+  cmd_walrus_sight(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_SIGHT)) return false;
+    if (m.u16(0x70e)) {
+      const a2 = this._walrus_rec();
+      m.set8(a2 + 0x32, ~m.u8(a2 + 0x32));
+      this._walrus_icons();
+    }
+    return true;
+  }
+
+  /** $10190 (type 105): controllable: toggle the rear view $8F1. */
+  cmd_walrus_rear_view(): boolean {
+    return this._rear_view(0x70e);
+  }
+
+  /** Mouse-steer input that makes the next walrus_step set the selected Walrus's rudder
+   * +2 (clamped to +-255) when it is the viewed one, manual, in mouse-steer mode and not
+   * steering a missile. */
+  cmd_walrus_steer_to(rudder: number): void {
+    const m = this.mem;
+    const a = this._walrus_rec();
+    m.set16(MOUSE_DX, w16(Math.max(-255, Math.min(255, rudder)) - m.s16(a + 2)));
+  }
+
+  /** While the selected Walrus steers a Harbinger (bit 4), the mouse turns the missile:
+   * deltas that make its turn rates (missile +$1E / +$20) yaw and pitch (+-255) on the
+   * next walrus_step. False (nothing written) when it isn't steering one. */
+  cmd_walrus_missile_steer_to(yaw: number, pitch: number): boolean {
+    const m = this.mem;
+    const o = m.u32(m.u32(0x56c) + 0x20);
+    if (!(m.u8(this._walrus_rec()) & 0x10) || !(OBJECTS <= o && o < OBJECTS + 64 * OBJECT_SIZE)) return false;
+    m.set16(MOUSE_DX, w16(Math.max(-255, Math.min(255, yaw)) - m.s16(o + 0x1e)));
+    m.set16(MOUSE_DX + 2, w16(Math.max(-255, Math.min(255, pitch)) - m.s16(o + 0x20)));
+    return true;
+  }
+
+  /** $17374 (screen 18): number keys select ($10016); re-enter when the status crosses
+   * 8 ($70E); gauge timers; automatic: the auto button follows bit 0; manual: a right
+   * click toggles mouse-steer mode, except while steering a missile (bit 4). */
+  walrus_control_input(): void {
+    const m = this.mem;
+    this.key_select(T_WALRUS, (e, i) => this._walrus_select(e, i));
+    if (this._vehicle_reenter(this._walrus_rec(), 0x70e, 0x12)) return;
+    for (const t of [0x954, 0x958, 0x962]) if (m.u16(t)) m.set16(t, m.u16(t) - 1);
+    const a2 = this._walrus_rec();
+    if (m.u8(a2) & 1) {
+      if (!(m.u8(this._flag(T_AUTOPILOT)) & 0x20)) this._walrus_icons();
+      return;
+    }
+    if (this._bclr0(0x883)) {
+      if (m.u8(a2) & 0x10) return;
+      m.set8(POINTER_MODE, ~m.u8(POINTER_MODE));
+    }
+    if (m.u8(this._flag(T_AUTOPILOT)) & 0x20) this._walrus_icons();
+  }
+
+  // ---- Walrus dock, screen 19 (input $17782; panel $42C1A) --------------------------------
+  /** $1249E: the dock screen's own selection $DE4 (records $568/$56C; $566 kept). */
+  _walrus_dock_select(etype: number, i: number): void {
+    const m = this.mem;
+    const d0 = w16(m.u16(0xde4) + T_WALRUS_DOCK);
+    if (etype === d0) return;
+    this._icon_clear(d0);
+    this._icon_set(etype);
+    const k = w16(etype - T_WALRUS_DOCK);
+    m.set16(0xde4, k);
+    m.set32(0x56c, this._bay_object(WALRUS_OBJS, k));
+    m.set32(0x568, this._bay_record(WALRUS_RECS, k));
+    m.set16(0x95c, 2);
+  }
+
+  /** $1249E (types 93-96): the Walrus launch and dock act on. */
+  cmd_walrus_dock_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_WALRUS_DOCK + bay))) return false;
+    this._walrus_dock_select(T_WALRUS_DOCK + bay, bay);
+    return true;
+  }
+
+  /** $128AE (144,155): abort Walrus [$6E0]'s docking while it is still approaching
+   * (mode 0, step 0): it drives on (mode 3); without a waypoint it gets one astern of the
+   * carrier ($12786). */
+  cmd_walrus_abort_docking(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!m.u8(0x1233)) {
+      this._message("No AAV is currently docking");
+      return true;
+    }
+    const d0 = m.u16(0x6e0);
+    const a1 = this._bay_record(WALRUS_RECS, d0);
+    const a0 = this._bay_object(WALRUS_OBJS, d0);
+    if (m.u8(a1 + 0x1a)) {
+      this._message("No AAV is currently docking");
+      return true;
+    }
+    if (m.u8(a1 + 0x1b)) {
+      this._message("Too late to abort docking");
+      return true;
+    }
+    m.set8(0x1233, 0);
+    m.set8(a1 + 0x1a, 3);
+    m.set8(a1 + 0x1b, 0);
+    if (!(m.u8(a1) & 2)) {
+      m.set8(a1, (m.u8(a1) | 2) & 0xfb);
+      this._walrus_waypoint_astern(a0, a1);
+    }
+    m.set16(0x95c, 2);
+    this._unit_message("Walrus", m.u16(0x6e0), "- Docking aborted");
+    return true;
+  }
+
+  /** $12786: cruise 60, a waypoint astern of the carrier, by the bay's lane. */
+  _walrus_waypoint_astern(a0: number, a1: number): void {
+    const m = this.mem;
+    const c = CARRIER;
+    m.set16(a1 + 0x24, 0x3c);
+    this.set_matrix(m.u16(c + 6));
+    const [x, z] = this.matrix_rotate(w16(m.u16(a0 + 0x1a) * 0x7d0 - 0xbb8), 0xf060);
+    m.set32(a1 + 0x1c, s32(x + m.u32(c + 0x0a)));
+    m.set32(a1 + 0x20, s32(z + m.u32(c + 0x12)));
+  }
+
+  /** $17782 (screen 19): the number keys select ($1249E). */
+  walrus_dock_input(): void {
+    this.key_select(T_WALRUS_DOCK, (e, i) => this._walrus_dock_select(e, i));
+  }
+
+  // ---- Walrus map, screen 17 (panels $41C3E, $41DC6) --------------------------------------
+  /** $FFB8: select Walrus i ($566, records); selected already: recall its course. */
+  _walrus_map_select(etype: number, i: number): void {
+    const m = this.mem;
+    if (m.u16(MAP_INFO)) return;
+    if (this._icon_set(etype)) {
+      this._walrus_recall();
+      return;
+    }
+    this._icon_clear(m.u16(0x566) + T_WALRUS);
+    m.set16(0x566, i);
+    this.select_walrus();
+  }
+
+  /** $FFB8 (types 70-73 on the Walrus map): select Walrus `bay`; again: recall its
+   * course ($12F30). */
+  cmd_walrus_map_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_WALRUS + bay))) return false;
+    this._walrus_map_select(T_WALRUS + bay, bay);
+    return true;
+  }
+
+  /** $12F30: the course (+$1C/+$20, cruise +$24, bit 2) into $6B0/$6B4, $6AE, $6BA. */
+  _walrus_recall(): void {
+    const m = this.mem;
+    const a0 = this._walrus_rec();
+    const bay = m.u16(0x566);
+    if (m.u8(a0 + 1) & 0x80) return this._unit_message("Walrus", bay, "no longer exists");
+    if (!(m.u8(a0) & 2)) return this._unit_message("Walrus", bay, "has no course to recall");
+    m.set32(0x6b0, m.u32(a0 + 0x1c));
+    m.set32(MAP_X, m.u32(a0 + 0x1c));
+    m.set32(0x6b4, m.u32(a0 + 0x20));
+    m.set32(MAP_Z, m.u32(a0 + 0x20));
+    m.set16(0x6ae, m.u16(a0 + 0x24));
+    m.set8(0x6ba, m.u8(a0) & 4 ? 0xff : 0);
+    this._walrus_map_icons();
+    this._map_zoom_set(0);
+    this._unit_message("Walrus", bay, "course recalled");
+  }
+
+  /** $13122 (13,178): fresh: the edited course (bit 1, bit 2 = $6BA, cruise +$24 = $6AE,
+   * waypoint +$1C/+$20 = $6B0/$6B4); held: engage the autopilot (bit 0). */
+  cmd_walrus_set_course(held = 0): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON)) return false;
+    if (m.u16(MAP_INFO)) return true;
+    const a0 = this._walrus_rec();
+    const bay = m.u16(0x566);
+    let d0 = m.u8(a0);
+    if (held) {
+      if (!(d0 & 2) || d0 & 1) return true;
+      m.set8(a0, d0 | 1);
+      this._unit_message("Walrus", bay, "autopilot engaged");
+      return true;
+    }
+    if (m.u8(a0 + 1) & 0x80) {
+      this._unit_message("Walrus", bay, "no longer exists");
+      return true;
+    }
+    d0 = (d0 | 2) & 0xfb;
+    if (m.u8(0x6ba)) d0 |= 4;
+    m.set8(a0, d0);
+    m.set16(a0 + 0x24, m.u16(0x6ae));
+    m.set32(a0 + 0x1c, m.u32(0x6b0));
+    m.set32(a0 + 0x20, m.u32(0x6b4));
+    this._unit_message("Walrus", bay, d0 & 1 ? "course set" : "course set - engage autopilot");
+    return true;
+  }
+
+  /** $130EE (57,178): clear the selected Walrus's course. */
+  cmd_walrus_clear_course(): boolean {
+    return this._clear_course(this._walrus_rec(), "Walrus", 0x566);
+  }
+
+  /** $12D98: the course's cruise speed $6AE + 8 (0..96; repeats). */
+  cmd_walrus_cruise_up(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._edit(0x6ae, this.mem.u16(0x6ae) + 8, 0, 0x60);
+    return true;
+  }
+
+  /** $12DAA: $6AE - 8. */
+  cmd_walrus_cruise_down(): boolean {
+    if (!this._clickable(T_BUTTON)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._edit(0x6ae, this.mem.u16(0x6ae) - 8, 0, 0x60);
+    return true;
+  }
+
+  /** $12DBC, the slider (y 159..195): $6AE = (195 - y) * $2AA >> 8 (lsr.w), 0..96. */
+  cmd_walrus_cruise(y: number): boolean {
+    if (!this._slider(y, MAP_SLIDER_Y)) return false;
+    if (!this.mem.u16(MAP_INFO)) this._edit(0x6ae, w16(s16(w16(0xc3 - y)) * 0x2aa) >> 8, 0, 0x60);
+    return true;
+  }
+
+  /** $12DEC (type 91): toggle $6B8 (display), icons. */
+  cmd_walrus_map_draw_mode(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_DRAW)) return false;
+    if (!m.u16(MAP_INFO)) {
+      m.set8(0x6b9, m.u8(0x6b9) ^ 1);
+      this._walrus_map_icons();
+    }
+    return true;
+  }
+
+  /** $12DFC (type 92): toggle $6BA (report arrival for the next course), icons. */
+  cmd_walrus_toggle_announce(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_ANNOUNCE)) return false;
+    if (!m.u16(MAP_INFO)) {
+      m.set8(0x6ba, ~m.u8(0x6ba));
+      this._walrus_map_icons();
+    }
+    return true;
+  }
+
+  /** The UI's "drive to (x, z)": the Walrus map cursor $6B0/$6B4 at (x, z), then a
+   * fresh press of set course. */
+  cmd_set_walrus_waypoint(x: number, z: number): boolean {
+    const m = this.mem;
+    if (!(this._clickable(T_BUTTON, [MAP_INFO, 0]) && this._clickable(T_BUTTON))) return false;
+    m.set32(0x6b0, s32(x));
+    m.set32(0x6b4, s32(z));
+    return this.cmd_walrus_set_course(0);
+  }
+
+  // ---- Walrus arming, screen 16 (input $17748; panels $42708, $427B6, $42864) -------------
+  /** $11DEE: the arming selection $DB6, record $568, sub-panel $DC2. */
+  _walrus_arming_select(etype: number, i: number): void {
+    const m = this.mem;
+    const d0 = w16(m.u16(0xdb6) + T_WALRUS_ARMING);
+    if (etype === d0) return;
+    this._icon_clear(d0);
+    this._icon_set(etype);
+    const k = w16(etype - T_WALRUS_ARMING);
+    m.set16(0xdb6, k);
+    const rec = this._bay_record(WALRUS_RECS, k);
+    m.set32(0x568, rec);
+    m.set16(0xdc2, this._subpanel(rec));
+    this._walrus_panel();
+    m.set16(0x95c, 2);
+  }
+
+  /** $11DEE (types 82-85). */
+  cmd_walrus_arming_select(bay: number): boolean {
+    if (!(0 <= bay && bay <= 3 && this._clickable(T_WALRUS_ARMING + bay))) return false;
+    this._walrus_arming_select(T_WALRUS_ARMING + bay, bay);
+    return true;
+  }
+
+  /** $17748 (screen 16): the number keys select ($11DEE); the hangar animation $DC8
+   * bounces by $DCA between $6000 and $A000. */
+  walrus_arming_input(): void {
+    const m = this.mem;
+    this.key_select(T_WALRUS_ARMING, (e, i) => this._walrus_arming_select(e, i));
+    const d1 = m.u16(0xdca);
+    let d0 = w16(m.u16(0xdc8) + d1);
+    if (!(d1 & 0x8000)) {
+      if (d0 >= 0xa000) {
+        d0 = 0xa000;
+        m.set16(0xdca, w16(-d1));
+      }
+    } else if (d0 <= 0x6000) {
+      d0 = 0x6000;
+      m.set16(0xdca, w16(-d1));
+    }
+    m.set16(0xdc8, d0);
+  }
+
+  /** $11A30/$11A76: cursor $DBA (0..4: Avatar, Harbinger, virus bomb, ACCB, fuel pod);
+   * on the Harbinger, $CB80 = 1 if any are on board ($B98) else 0. */
+  _walrus_cursor_step(d: number): void {
+    const m = this.mem;
+    this._cursor_step(LOADOUT_CURSOR + 2, 5, d);
+    const k = m.u16(LOADOUT_CURSOR + 2);
+    if (k >= 5) throw new NotPorted(`loadout cursor ${k} beyond the list $C242`);
+    if (m.u16(WALRUS_CODES + 2 * k) === 7) m.set16(HARBINGERS, m.u16(0xb98) ? 1 : 0);
+    this._walrus_panel();
+  }
+
+  /** $11A30 (142,84): $DBA + 1 (repeats). */
+  cmd_walrus_loadout_next(): boolean {
+    if (!this._clickable(T_BUTTON, [0xdc2, 0])) return false;
+    this._walrus_cursor_step(1);
+    return true;
+  }
+
+  /** $11A76 (142,108): $DBA - 1. */
+  cmd_walrus_loadout_prev(): boolean {
+    if (!this._clickable(T_BUTTON, [0xdc2, 0])) return false;
+    this._walrus_cursor_step(-1);
+    return true;
+  }
+
+  /** The "+" button (type 81 at 114,86; repeats): whatever the panel draw installed
+   * ([$4281C]): $11CE0 the Harbingers to load $CB80 + 1 (at most the stock $B98 and 9),
+   * or $11D1C the ACCB's building type $DC6 + 1 (0..2). */
+  cmd_walrus_loadout_plus(): boolean {
+    return this._plus_minus(PLUS_HANDLER);
+  }
+
+  /** The "-" button (type 81 at 43,86): $11D0C Harbingers - 1 (at least 1) or $11D40
+   * the ACCB type - 1. */
+  cmd_walrus_loadout_minus(): boolean {
+    return this._plus_minus(MINUS_HANDLER);
+  }
+
+  _plus_minus(a: number): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_HARBINGERS, [0xdc2, 0])) return false;
+    const h = m.u32(a);
+    if (h === 0x11ce0) {
+      const d0 = w16(m.u16(HARBINGERS) + 1);
+      if (d0 > m.u16(0xb98) || d0 > 9) return true;
+      m.set16(HARBINGERS, d0);
+    } else if (h === 0x11d0c) {
+      const d0 = m.u16(HARBINGERS);
+      if (d0 <= 1) return true;
+      m.set16(HARBINGERS, d0 - 1);
+    } else if (h === 0x11d1c) {
+      const d0 = w16(m.u16(0xdc6) + 1);
+      m.set16(0xdc6, d0 === 3 ? 0 : d0);
+    } else if (h === 0x11d40) {
+      const d0 = w16(m.u16(0xdc6) - 1);
+      m.set16(0xdc6, d0 & 0x8000 ? 2 : d0);
+    } else {
+      throw new NotPorted(`arming +/- handler $${h.toString(16).toUpperCase()}`);
+    }
+    this._walrus_panel();
+    return true;
+  }
+
+  /** $11A82 (35,86): pick up the item at the cursor (none or too few on board: "Stores
+   * unable to supply payload"); drop $11ACE. */
+  cmd_walrus_pick_loadout(): boolean {
+    const m = this.mem;
+    if (!this._clickable(T_BUTTON, [0xdc2, 0])) return false;
+    const a1 = this._entry(this._code(WALRUS_CODES, m.u16(LOADOUT_CURSOR + 2), 5));
+    const stock = m.u16(m.u32(a1 + 2));
+    if (!stock || m.u16(a1 + 6) > stock) {
+      this._message("Stores unable to supply payload");
+      return true;
+    }
+    this._start_drag(0x11ace);
+    return true;
+  }
+
+  /** $11C16 (slot 0 payload at 173,96, slot 1 weapon at 201,96): pick up a fitted item
+   * to drag back to stores (drop $11C4E). */
+  cmd_walrus_pick_slot(k: number): boolean {
+    const m = this.mem;
+    if (!(0 <= k && k <= 1 && this._clickable(T_BUTTON, [0xdc2, 0]))) return false;
+    const off = m.u16(0x11c12 + 2 * k);
+    if (m.u16(this._walrus_rec() + off)) {
+      m.set32(DRAG_ELEMENT, WALRUS_SLOTS[k]);
+      this._start_drag(0x11c4e);
+    }
+    return true;
+  }
+
+  /** $11ACE: slot 0 (+$26) takes the payloads (entry +8 = 1: virus bomb, ACCB, fuel
+   * pod), slot 1 (+$28) the weapons (Avatar, Harbinger), else "Payload cannot be mounted
+   * here". Weight <= 2000; an old Harbinger load weighs 100 + 150 n (the entry $11BD2 is
+   * rewritten for it); stock exchanged. Harbingers: +$C = [$CB80] (then at most the
+   * stock left); ACCB: +$10 = the building type [$DC6]. */
+  _walrus_drop_loadout(px: number, py: number): void {
+    const m = this.mem;
+    const k = this._slot_at(WALRUS_SLOTS, px, py);
+    if (k === null) return;
+    const a0 = this._walrus_rec();
+    const d1 = this._code(WALRUS_CODES, m.u16(LOADOUT_CURSOR + 2), 5);
+    const a1 = this._entry(d1);
+    let off: number;
+    if (k) {
+      if (m.u16(a1 + 8) === 1) return this._message("Payload cannot be mounted here");
+      off = 0x28;
+    } else {
+      if (m.u16(a1 + 8) !== 1) return this._message("Payload cannot be mounted here");
+      off = 0x26;
+    }
+    const d3 = m.u16(a0 + off);
+    let a2: number;
+    if (d3 === 7) {
+      a2 = HARBINGER_LOAD;
+      const n = m.u16(a0 + 0x0c);
+      m.set16(a2 + 6, n);
+      m.set16(a2, w16(n * 0x96 + 0x64));
+    } else {
+      a2 = this._entry(d3);
+    }
+    const d0 = w16(m.u16(a0 + 0x12) - m.u16(a2) + m.u16(a1));
+    if (s16(d0) > 0x7d0) return this._message("Payload capacity exceeded");
+    m.set16(a0 + 0x12, d0);
+    if (d3) {
+      if (d3 === 7) m.set16(a0 + 0x0c, 0);
+      const p = m.u32(a2 + 2);
+      m.set16(p, m.u16(p) + m.u16(a2 + 6));
+    }
+    m.set16(a0 + off, d1);
+    const p = m.u32(a1 + 2);
+    m.set16(p, m.u16(p) - m.u16(a1 + 6));
+    if (d1 === 7) {
+      const h = m.u16(HARBINGERS);
+      m.set16(a0 + 0x0c, h);
+      if (h > m.u16(p)) m.set16(HARBINGERS, m.u16(p));
+    }
+    if (d1 === 9) m.set16(a0 + 0x10, m.u16(0xdc6));
+    this._walrus_panel();
+  }
+
+  /** $11C4E: dropped in the stores box: the slot emptied, the item back to stock (a
+   * Harbinger load: its count +$C to $B98, weight 100 + 150 n; +$C itself is kept). */
+  _walrus_drop_return(px: number, py: number): void {
+    const m = this.mem;
+    if (!this._in_stores_box(px, py)) return;
+    const a0 = this._walrus_rec();
+    const off = m.u16(0x11c12 + 2 * this._dragged_slot());
+    const d0 = m.u16(a0 + off);
+    m.set16(a0 + off, 0);
+    if (d0 === 7) {
+      const n = m.u16(a0 + 0x0c);
+      m.set16(0xb98, m.u16(0xb98) + n);
+      m.set16(a0 + 0x12, m.u16(a0 + 0x12) - w16(n * 0x96 + 0x64));
+    } else {
+      const a1 = this._entry(d0);
+      const p = m.u32(a1 + 2);
+      m.set16(p, m.u16(p) + m.u16(a1 + 6));
+      m.set16(a0 + 0x12, m.u16(a0 + 0x12) - m.u16(a1));
+    }
+    this._message("Payload returned to stores");
+    this._walrus_panel();
+  }
+
+  /** Load `code` (6 Avatar or 7 Harbingers into slot 1; 8 virus bomb, 9 ACCB, 11 fuel
+   * pod into slot 0) into the arming screen's Walrus as a player does it (cursor clicks,
+   * pick up, drop). Harbingers: stepping the cursor onto them resets the count $CB80 to
+   * 1, so move the cursor there first, set the count (cmd_walrus_loadout_plus/minus),
+   * then fit (the cursor isn't moved when it shows the code already). */
+  cmd_walrus_fit(slot: number, code: number): boolean {
+    return this._fit("Walrus", slot, code);
+  }
+
+  /** Drag slot 0/1's item back to the stores box. */
+  cmd_walrus_unfit(slot: number): boolean {
+    return this._unfit("Walrus", slot);
+  }
+
+  // ---- read helpers for the UI ---------------------------------------------------------------
+  /** What the vehicle screens show that isn't obvious from the records: the selections
+   * (control/map Manta $48C and Walrus $566; arming $DB4/$DB6; deck $DCC; dock $DE4),
+   * whether the selected unit can be controlled ($70C/$70E), the loadout list cursors and
+   * the codes they show, the Harbingers to load ($CB80), a drag in progress, and each
+   * bay's telemetry and status. */
+  vehicle_ui(): Record<string, number | boolean | number[]> {
+    const m = this.mem;
+    const mk = m.u16(LOADOUT_CURSOR);
+    const wk = m.u16(LOADOUT_CURSOR + 2);
+    return {
+      manta: m.u16(0x48c), walrus: m.u16(0x566),
+      manta_arming: m.u16(0xdb4), walrus_arming: m.u16(0xdb6),
+      manta_deck: m.u16(0xdcc), walrus_dock: m.u16(0xde4),
+      manta_controllable: m.u16(0x70c) !== 0, walrus_controllable: m.u16(0x70e) !== 0,
+      manta_loadout: mk < 6 ? m.u16(MANTA_CODES + 2 * mk) : -1,
+      walrus_loadout: wk < 5 ? m.u16(WALRUS_CODES + 2 * wk) : -1,
+      harbingers: m.u16(HARBINGERS),
+      dragging: m.u8(MODAL) ? m.u32(DROP) : 0,
+      lock_timer: m.u16(0x116c),
+      // telemetry per bay (0 OK, 1 weak, 2 lost) and status (+1: 0 ready ... 8 out, $FF destroyed)
+      manta_telemetry: [0, 1, 2, 3].map((k) => m.u16(MANTA_RECS + REC * k + 0x2e)),
+      walrus_telemetry: [0, 1, 2, 3].map((k) => m.u16(WALRUS_RECS + REC * k + 0x2c)),
+      manta_status: [0, 1, 2, 3].map((k) => m.u8(MANTA_RECS + REC * k + 1)),
+      walrus_status: [0, 1, 2, 3].map((k) => m.u8(WALRUS_RECS + REC * k + 1)),
+    };
   }
 }

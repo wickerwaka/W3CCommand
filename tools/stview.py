@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Reference model of the bridge 3D view (screen 0): camera, object transform, projection,
-horizon, sea dots and the visible-object collection, from a 512 KB RAM image.
+"""Reference model of the 3D views: the bridge (screen 0) and the vehicle and weapon screens
+(8 turret, 9 flares, 10 viewing drone, 18 Walrus, 19 Walrus dock, 26 Manta deck, 27 Manta):
+camera, object transform, projection, horizon, sea dots, the visible-object collection and
+the carrier's lift/dock attachments, from a 512 KB RAM image. docs/memory-map.md "Vehicle and
+weapon views" specifies the other screens' cameras (screen_views).
 
 The fixed-point functions follow the original exactly (word products, `swap` truncation,
 prescaled long rotations, `divs` truncation); the float functions are the same geometry for a
@@ -11,13 +14,17 @@ Camera space: X right, Y up, Z depth. Screen: sx = cx + trunc(X*2^shx/Z),
 sy = cy + trunc(-Y*2^shy/Z).
 
   uv run python tools/stview.py --check [captures...]
-      Runs the game's bridge render ($1460A) under Unicorn on each capture and compares, with
-      this model: the camera object, the depth-sorted draw list (object, Z, X, Y), the LOD
-      model, the horizon endpoints, the sea dots, and every projected model vertex. It also
-      compares the rendered frame with the displayed screen buffer in the capture and with the
-      Hatari screenshot (emu/out/play/shot_<label>.png, for pass_<label>_0_in.bin).
-      --fuzz N (default 40) adds N random viewpoints on the first two captures: carrier
-      heading/pitch/roll, position around the island, eye height, object angles.
+      Runs the screen's own render ([$718]: $1460A, $15A94, $165B2, $1638C, $15496, $14A40,
+      $14816, $15244) under Unicorn on each capture and compares, per $7BF6 call, with this
+      model: the camera object and pairs, the depth-sorted draw list (object, Z, X, Y), the LOD
+      models (and the lift/dock attachments), the horizon endpoints, the sea dots, every
+      projected model vertex and the turret's model 84 overlay. It also compares the rendered
+      frame with the displayed screen buffer in the capture and with the Hatari screenshot
+      (shot_<label>.png, for pass_<label>_0_in.bin). Default captures: emu/out/play and
+      emu/out/sim (bridge), emu/out/views (tools/capture_views.py).
+      --fuzz N (default 40) adds N random viewpoints on the first two bridge captures (carrier
+      heading/pitch/roll, position around the island, eye height, object angles) and N random
+      states on each other screen's capture (perturb_view).
       Unicorn's `trapv` traps even with V clear, so the two in the polygon clipper ($4CE2,
       $4D0A) are emulated by a hook.
 """
@@ -122,6 +129,21 @@ class Camera:
     yaw_sc: tuple = None    # camera pairs $A74/$A78/$A7C: (sin, cos) of the NEGATED angles
     pitch_sc: tuple = None
     roll_sc: tuple = None
+    cull_shx: int = None    # the frustum test's shx: [$6FE]'s ($8560), not always the viewport's
+    obj: int = WORLD_OBJECTS  # the camera object [$9FA]
+    screen: int = 0         # [$718]: the sea dots are one row lower on screen 27
+
+
+def object_camera(ram: Ram, obj: int, viewport: tuple, cull_shx: int | None = None) -> Camera:
+    """$7BF6's camera: the object at [$9FA] (position, angles, island +$3C) as it stands."""
+    pitch, yaw, roll = (ram.u16(obj + o) for o in (4, 6, 8))
+    cam = Camera(ram.s32(obj + 0xA), ram.s32(obj + 0xE), ram.s32(obj + 0x12), pitch, yaw, roll,
+                 ram.u32(obj + 0x3C), tuple(viewport[:8]), ram.s32(0xA8C),
+                 cull_shx=viewport[4] if cull_shx is None else cull_shx, obj=obj)
+    cam.pitch_sc = sincos(ram, -pitch)
+    cam.yaw_sc = sincos(ram, -yaw)
+    cam.roll_sc = sincos(ram, -roll)
+    return cam
 
 
 def bridge_camera(ram: Ram) -> Camera:
@@ -130,11 +152,153 @@ def bridge_camera(ram: Ram) -> Camera:
     dx, dz = rot_b(0, EYE_BACK, sincos(ram, yaw))
     vp = tuple(ram.s16(BRIDGE_VIEWPORT + 2 * i) for i in range(8))
     cam = Camera(ram.s32(CARRIER + 0xA) + dx, ram.s32(WORLD_OBJECTS + 0xE), ram.s32(CARRIER + 0x12) + dz,
-                 pitch, yaw, roll, ram.u32(CARRIER + 0x3C), vp, ram.s32(0xA8C))
+                 pitch, yaw, roll, ram.u32(CARRIER + 0x3C), vp, ram.s32(0xA8C), cull_shx=vp[4])
     cam.pitch_sc = sincos(ram, -pitch)
     cam.yaw_sc = sincos(ram, -yaw)
     cam.roll_sc = sincos(ram, -roll)
     return cam
+
+
+# --- the other 3D screens ------------------------------------------------------------------
+
+SCREEN_RENDER = {0: 0x1460A, 8: 0x15A94, 9: 0x165B2, 10: 0x1638C, 18: 0x15496, 19: 0x14A40,
+                 26: 0x14816, 27: 0x15244}
+VIEWPORT_PTR = 0x6FE
+TURRET_VIEWPORT, HALF_VIEWPORT, INSET_VIEWPORT, TURRET_OVERLAY = 0x4786, 0x4770, 0x4834, 0x479C
+TURRET_OVERLAY_POS = (0, -40, 1200)   # model 84 at this camera-space origin, viewport $479C
+MANTA_REC, MANTA_OBJ, WALRUS_REC, WALRUS_OBJ = 0x48E, 0x492, 0x568, 0x56C
+REAR_VIEW = 0x8F1
+
+
+@dataclass
+class View:
+    """One scene_collect_visible pass of a screen's render: the RAM as $7BF6 sees it (object
+    0 placed, visible bits changed) and its camera."""
+    ram: Ram
+    cam: Camera
+    label: str
+
+
+def viewport(ram: Ram, addr: int) -> tuple:
+    return tuple(ram.s16(addr + 2 * i) for i in range(10))
+
+
+def _w16(d: bytearray, a: int, v: int) -> None:
+    struct.pack_into(">H", d, a, v & 0xFFFF)
+
+
+def _w32(d: bytearray, a: int, v: int) -> None:
+    struct.pack_into(">I", d, a, v & 0xFFFFFFFF)
+
+
+def _carrier_eye(d: bytearray, ox: int, oz: int, yaw_offset: int) -> None:
+    """Deck/dock/flares: object 0 x, z = carrier + formB_yaw(ox, oz); yaw = carrier + offset;
+    +$3C = the carrier's. y, pitch and roll stay as the enter handler set them."""
+    r = Ram(bytes(d))
+    cyaw = r.u16(CARRIER + 6)
+    dx, dz = rot_b(ox, oz, sincos(r, cyaw))
+    _w32(d, WORLD_OBJECTS + 0xA, r.s32(CARRIER + 0xA) + dx)
+    _w32(d, WORLD_OBJECTS + 0x12, r.s32(CARRIER + 0x12) + dz)
+    _w16(d, WORLD_OBJECTS + 6, cyaw + yaw_offset)
+    _w32(d, WORLD_OBJECTS + 0x3C, r.u32(CARRIER + 0x3C))
+
+
+def screen_views(data: bytes, screen: int) -> list:
+    """What the screen's render routine does before each $7BF6 call -> [View] (empty when it
+    shows no 3D view: static, no telemetry, turret destroyed, not controllable)."""
+    d = bytearray(data)
+    r = Ram(data)
+    vp = viewport(r, r.u32(VIEWPORT_PTR))
+    obj0 = WORLD_OBJECTS
+
+    def view(label, cam_obj, port=None, cull=None):
+        rr = Ram(bytes(d))
+        p = port or vp
+        cam = object_camera(rr, cam_obj, p, cull if cull is not None else p[4])
+        cam.screen = screen
+        return View(rr, cam, label)
+
+    if screen == 0:
+        pitch, yaw, roll = (r.u16(CARRIER + o) for o in (4, 6, 8))
+        for o, v in ((4, pitch), (6, yaw), (8, roll)):
+            _w16(d, obj0 + o, v)
+        _carrier_eye(d, 0, EYE_BACK, 0)
+        return [view("bridge", obj0)]
+    if screen == 26:                 # $14816: Manta deck camera, turning with the lift crane $DDE
+        _carrier_eye(d, 0x1A4, 0x41A, r.u16(0xDDE))
+        return [view("deck", obj0)]
+    if screen == 19:                 # $14A40: Walrus dock camera, turning with the dock crane $DEA
+        _carrier_eye(d, -0x1A4, -0x41A, r.u16(0xDEA))
+        return [view("dock", obj0)]
+    if screen == 9:                  # $165B2: flare/observation turret 1000 astern, $1158/$115A
+        _carrier_eye(d, 0, -1000, 0)
+        _w16(d, obj0 + 6, r.u16(0x115A))
+        _w16(d, obj0 + 4, r.u16(0x1158))
+        return [view("flares", obj0)]
+    if screen == 10:                 # $1638C: the viewing drone (object 15) is the camera
+        drone = WORLD_OBJECTS + 15 * OBJ_SIZE
+        return [view("drone", drone)] if r.u8(drone + 1) & 1 else []
+    if screen == 8:                  # $15A94: laser turret
+        if not r.u8(0xB12):
+            return []
+        zoom = r.u16(0x6D2) + 8
+        _w16(d, TURRET_VIEWPORT + 8, zoom)
+        _w16(d, TURRET_VIEWPORT + 0xA, zoom)
+        heading, elev = r.u16(0x6CC), r.u16(0x6CA)
+        _w32(d, obj0 + 0x3C, r.u32(CARRIER + 0x3C))
+        _w16(d, obj0 + 4, elev)
+        _w16(d, obj0 + 6, heading + r.u16(CARRIER + 6))
+        _w16(d, obj0 + 8, r.u16(CARRIER + 8))
+        u, v = rot_a(30, 0, sincos(r, elev))
+        _w32(d, obj0 + 0xE, u + 0x140)
+        x, z = rot_a(0, v, sincos(r, -heading))
+        x, z = rot_b(x, s16(z - 350), sincos(r, r.u16(CARRIER + 6)))
+        _w32(d, obj0 + 0xA, r.s32(CARRIER + 0xA) + x)
+        _w32(d, obj0 + 0x12, r.s32(CARRIER + 0x12) + z)
+        return [view("turret", obj0, viewport(Ram(bytes(d)), TURRET_VIEWPORT))]
+    if screen == 27:                 # $15244: the Manta is the camera
+        rec, obj = r.u32(MANTA_REC), r.u32(MANTA_OBJ)
+        if (not r.u16(0x70C) or r.u8(rec + 1) & 0x80 or not r.u8(obj + 1) & 1
+                or r.u16(rec + 0x2E) == 2):
+            return []
+        if r.u8(REAR_VIEW):
+            _w16(d, obj + 6, r.u16(obj + 6) + 0x8000)
+            _w16(d, obj + 4, -r.u16(obj + 4))
+            _w16(d, obj + 8, -r.u16(obj + 8))
+        return [view("manta", obj)]
+    if screen == 18:                 # $15496: object 0 on the Walrus, facing its turret
+        rec, obj = r.u32(WALRUS_REC), r.u32(WALRUS_OBJ)
+        if not r.u16(0x70E) or not r.u8(obj + 1) & 1 or r.u16(rec + 0x2C) == 2:
+            return []
+        d[obj + 1] &= ~2
+        _w16(d, obj0 + 4, r.u16(obj + 4))
+        _w16(d, obj0 + 8, r.u16(obj + 8))
+        yaw = r.u16(obj + 6) + r.u16(obj + 0x26)
+        _w16(d, obj0 + 6, yaw)
+        _w32(d, obj0 + 0xA, r.u32(obj + 0xA))
+        _w32(d, obj0 + 0x12, r.u32(obj + 0x12))
+        _w32(d, obj0 + 0xE, r.s32(obj + 0xE) + 0x2D)
+        _w32(d, obj0 + 0x3C, r.u32(obj + 0x3C))
+        if r.u8(REAR_VIEW):          # yaw + $8000 and pitch negated (not roll), restored after
+            _w16(d, obj0 + 6, yaw + 0x8000)
+            _w16(d, obj0 + 4, -r.u16(obj + 4))
+        views = [view("walrus", obj0)]
+        if not r.u8(rec) & 0x10:
+            return views
+        # The guided missile's inset ($4834, y from the guidance hold +$2E): the missile is the
+        # camera and hidden, the Walrus is shown. Culling still uses [$6FE] = $4744 (shx 8).
+        d[obj + 1] |= 2
+        missile = r.u32(obj + 0x20)
+        d[missile + 1] &= ~2
+        y = r.u16(rec + 0x2E)
+        y0 = s16(y - 0x20)
+        y1 = min(s16(y0 + 0x3F), 0x85)
+        for o, val in ((0xE, y), (2, y0), (6, y1), (0x12, y1 - y0 + 1)):
+            _w16(d, INSET_VIEWPORT + o, val)
+        port = viewport(Ram(bytes(d)), INSET_VIEWPORT)
+        views.append(view("walrus missile inset", missile, port, cull=vp[4]))
+        return views
+    raise ValueError(f"screen {screen} has no 3D view in this model")
 
 
 def cam_xform_long(cam: Camera, dx: int, dy: int, dz: int) -> tuple:
@@ -315,7 +479,7 @@ def sea_dots(cam: Camera) -> list:
                 sx = -sx if s32(x << shx) < 0 else sx
                 sy = -sy if s32(y << shx) < 0 else sy
                 if -0x8000 <= sx < 0x8000 and -0x8000 <= sy < 0x8000:
-                    sx, sy = s16(sx + cx), s16(sy + cy)
+                    sx, sy = s16(sx + cx), s16(sy + cy + (cam.screen == 27))
                     if x0 <= sx <= x1 and y0 <= sy <= y1:
                         dots.append((sx, sy))
             q = tuple(a + b for a, b in zip(q, col))
@@ -344,7 +508,7 @@ def lod_model(ram: Ram, typ: int, z: int) -> int:
 def _in_frustum(cam: Camera, X: int, Y: int, Z: int, radius: int) -> bool:
     """$853A: |X| - r <= max(Z,0) * 2^(7-shx) and |Y| - r <= that / 2."""
     d = max(Z, 0)
-    sh = 7 - cam.viewport[4]
+    sh = 7 - (cam.viewport[4] if cam.cull_shx is None else cam.cull_shx)
     d = d << sh if sh >= 0 else d >> -sh
     if abs(X) - radius > d:
         return False
@@ -514,13 +678,29 @@ class _Game:
         uc.mem_map(0xFFFF0000, 0x10000)
         uc.mem_write(0, bytes(data))
         self.nodes, self.projs, self.dots, self.models = [], [], [], []
+        self.passes = []            # per $7BF6 call: dict(nodes, projs, dots, models)
         self.pending = None
         hooks = {0x7B48: self._node, 0x7BAC: self._model, 0x5912: self._proj_in,
-                 0x5902: self._proj_in, 0x599C: self._proj_out, 0x4B2C: self._dot}
+                 0x5902: self._proj_in, 0x599C: self._proj_out, 0x4B2C: self._dot,
+                 0x7BF6: self._collect, 0x7C14: self._pairs}
         # Unicorn's trapv (polygon clipper, after `divs`) traps even with V clear: emulate it.
         hooks[0x4CE2] = hooks[0x4D0A] = self._trapv
         for addr, fn in hooks.items():
             uc.hook_add(UC_HOOK_CODE, lambda u, a, s, d, fn=fn: fn(), begin=addr, end=addr)
+
+    def _collect(self):
+        self.nodes, self.projs, self.dots, self.models = [], [], [], []
+        c = self.r32(0x9FA, False)
+        rd = lambda a, n: int.from_bytes(self.uc.mem_read(a, n), "big", signed=n == 4)  # noqa: E731
+        vp = self.r32(0x6FE, False)
+        cam = (c, rd(c + 0xA, 4), rd(c + 0xE, 4), rd(c + 0x12, 4), rd(c + 4, 2), rd(c + 6, 2), rd(c + 8, 2),
+               rd(c + 0x3C, 4) & 0xFFFFFFFF, s16(rd(vp + 8, 2)))
+        self.passes.append(dict(nodes=self.nodes, projs=self.projs, dots=self.dots, models=self.models,
+                                cam=cam))
+
+    def _pairs(self):
+        self.passes[-1]["pairs"] = tuple(s16(int.from_bytes(self.uc.mem_read(0xA74 + 2 * i, 2), "big"))
+                                         for i in range(6))
 
     def _trapv(self):
         if self.reg("SR") & 2:
@@ -563,18 +743,18 @@ class _Game:
         if self.r32(self.reg("A7"), False) == 0x932C:          # called from draw_sea_dots
             self.dots.append((s16(self.reg("D4")), s16(self.reg("D5"))))
 
-    def render(self):
+    def render(self, addr: int = BRIDGE_RENDER):
         R, uc = self.R, self.uc
         stack, ret = 0x58600, 0x7FF00
         uc.reg_write(R.UC_M68K_REG_SR, 0x2700)
         uc.reg_write(R.UC_M68K_REG_A7, stack - 4)
         uc.mem_write(stack - 4, ret.to_bytes(4, "big"))
         try:
-            uc.emu_start(BRIDGE_RENDER, ret, count=50_000_000)
+            uc.emu_start(addr, ret, count=50_000_000)
         except Exception as e:
-            raise RuntimeError(f"bridge render: {e} at PC=${uc.reg_read(R.UC_M68K_REG_PC):05X}") from e
+            raise RuntimeError(f"render ${addr:05X}: {e} at PC=${uc.reg_read(R.UC_M68K_REG_PC):05X}") from e
         if uc.reg_read(R.UC_M68K_REG_PC) != ret:
-            raise RuntimeError("bridge render did not return")
+            raise RuntimeError(f"render ${addr:05X} did not return")
         return bytes(uc.mem_read(0, 0x80000))
 
 
@@ -618,143 +798,194 @@ def model_space_vertices(data: bytes, obj: int, rec: int) -> list:
 
 def check_capture(path: Path, verbose: bool = False) -> bool:
     data = path.read_bytes()
-    if Ram(data).u16(0x718) != 0:
-        print(f"{path.name}: screen {Ram(data).u16(0x718)}, not the bridge; skipped")
+    screen = Ram(data).u16(0x718)
+    if screen not in SCREEN_RENDER:
+        print(f"{path.name}: screen {screen} has no 3D view; skipped")
         return True
     lines, ok, stats = check_data(path.name, data, path, verbose)
     print("\n".join(lines))
     return ok
 
 
-def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool = False):
-    """Compare the model with the game's render on one RAM image -> (report lines, ok, stats)."""
+def attachments(ram: Ram, cam: Camera, items: list) -> list:
+    """$6346: the carrier models with attachment slots (2, 3) draw the vehicle on the lift
+    ([$6D6], slot 1) and in the dock ([$6DA], slot 2) inside their BSP, at the vehicle's own
+    world position (long camera transform), with the LOD model for its camera Z. No culling
+    and no flag test: the vehicles have +1 bit 2 set, so the world-object pass skips them."""
+    out = []
+    for item in items:
+        if item["model"] not in (2, 3):
+            continue
+        for slot in (0x6D6, 0x6DA):
+            o = ram.u32(slot)
+            if o:
+                X, Y, Z = cam_xform_long(cam, *(ram.s32(o + off) - c for off, c in
+                                                 ((0xA, cam.x), (0xE, cam.y), (0x12, cam.z))))
+                out.append(dict(obj=o, type=ram.u16(o + 2), X=X, Y=Y, Z=Z, carrier=item["obj"],
+                                model=lod_model(ram, ram.u16(o + 2), Z)))
+    return out
+
+
+def object_cam_pos(ram: Ram, cam: Camera, obj: int):
+    """Camera-space origin of a world object or island entry, as the game computes it."""
+    if WORLD_OBJECTS <= obj < WORLD_OBJECTS + 64 * OBJ_SIZE:
+        return cam_xform_long(cam, *(ram.s32(obj + o) - c for o, c in ((0xA, cam.x), (0xE, cam.y), (0x12, cam.z))))
+    buf = island_buffer_of(obj)
+    oc = cam_xform_long(cam, *(ram.s32(buf + 2 + 4 * i) - c for i, c in enumerate((cam.x, cam.y, cam.z))))
+    if obj == buf + 0x12:
+        return oc
+    lc = cam_xform_word(cam, *(ram.s16(obj + 0xA + 2 * i) for i in range(3)))
+    return tuple(a + b for a, b in zip(oc, lc))
+
+
+def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool = False,
+               screen: int | None = None):
+    """Compare the model with the screen's render on one RAM image -> (report lines, ok, stats)."""
     out = []
     print = out.append           # noqa: A001 - collect the report
-    ram = Ram(data)
-    ok = True
-    cam = bridge_camera(ram)
+    ram0 = Ram(data)
+    screen = ram0.u16(0x718) if screen is None else screen
+    views = screen_views(data, screen)
     game = _Game(data)
-    after = Ram(game.render())
-    gcam = (after.s32(WORLD_OBJECTS + 0xA), after.s32(WORLD_OBJECTS + 0xE), after.s32(WORLD_OBJECTS + 0x12),
-            *(after.u16(WORLD_OBJECTS + o) for o in (4, 6, 8)))
-    mine = (cam.x, cam.y, cam.z, cam.pitch, cam.yaw, cam.roll)
-    pairs = tuple(after.s16(0xA74 + 2 * i) for i in range(6))
-    print(f"{name}: camera {mine} {'OK' if gcam == mine else f'MISMATCH game {gcam}'}; "
-          f"pairs {'OK' if pairs == cam.pitch_sc + cam.yaw_sc + cam.roll_sc else 'MISMATCH'}")
-    ok &= gcam == mine and pairs == cam.pitch_sc + cam.yaw_sc + cam.roll_sc
-
-    # Draw list: the game's in-order node walk (world objects and individually sorted entries).
-    items = collect_visible(ram, cam)
-    sorted_items = [(i["obj"], i["Z"], i["X"], i["Y"]) for i in items if not i.get("flat")]
-    same = sorted_items == game.nodes
-    print(f"  draw list: {len(game.nodes)} nodes {'OK' if same else 'MISMATCH'}")
-    if not same or verbose:
-        for g, m in zip(game.nodes + [None] * 99, sorted_items + [None] * 99):
-            if g is None and m is None:
-                break
-            print(f"    game {g and (hex(g[0]),) + g[1:]}  model {m and (hex(m[0]),) + m[1:]}")
-    ok &= same
-    index = _model_index(ram)
-    gmodels = [(o, index.get(r)) for o, r in game.models]
-    mmodels = [(i["obj"], i["model"]) for i in items]
-    top = [m for m in gmodels if m[0] in {i[0] for i in mmodels}]
-    same = top[:len(mmodels)] == mmodels
-    print(f"  LOD models: {'OK' if same else 'MISMATCH'} {[(hex(o), m) for o, m in mmodels]}")
-    ok &= same
-
-    # Horizon and sea dots.
-    kind, pts = horizon(cam)
-    hz = [p for p in game.projs if p["caller"] == 0x6490]
-    if kind == "line":
-        same = bool(hz) and hz[0]["screen"] == list(pts)
-        print(f"  horizon {pts} {'OK' if same else 'MISMATCH ' + str(hz and hz[0]['screen'])}")
+    after = Ram(game.render(SCREEN_RENDER[screen]))
+    ok = len(views) == len(game.passes)
+    print(f"{name}: screen {screen}, {len(views)} view(s) {[v.label for v in views]}"
+          f"{'' if ok else f' MISMATCH: the game made {len(game.passes)} pass(es)'}")
+    stats = dict(nodes=0, vertices=0, worst_rot=0.0, worst_rel=0.0, worst_far=0.0, worst_float=0.0, dots=0)
+    if not ok:
+        return out, ok, stats
+    index = _model_index(ram0)
+    for view, gp in zip(views, game.passes):
+        ram, cam = view.ram, view.cam
+        mine = (cam.obj, cam.x, cam.y, cam.z, cam.pitch, cam.yaw, cam.roll, cam.island, cam.cull_shx)
+        same = gp["cam"] == mine and gp["pairs"] == cam.pitch_sc + cam.yaw_sc + cam.roll_sc
+        print(f"  [{view.label}] camera ${cam.obj:05X} {mine[1:]} {'OK' if same else f'MISMATCH game {gp}'}")
         ok &= same
-    dots = sea_dots(cam) if not ram.u8(0x1246) else []
-    same = dots == game.dots
-    print(f"  sea dots: {len(dots)} {'OK' if same else 'MISMATCH game ' + str(game.dots)}")
-    ok &= same
 
-    # Every projected model vertex: model-space vertices (identity build) -> float rotation ->
-    # integer projection, and a fully float pipeline, against the game's projected output.
-    total = proj_exact = 0
-    worst_rot = worst_rel = worst_fp = worst_float = worst_far = 0.0
-    pos_ok = True
-    for p in game.projs:
-        if p["caller"] == 0x6490 or p["model"] is None:
-            continue
-        obj = p["obj"]
-        if WORLD_OBJECTS <= obj < WORLD_OBJECTS + 64 * OBJ_SIZE:
-            d = [ram.s32(obj + o) - c for o, c in ((0xA, cam.x), (0xE, cam.y), (0x12, cam.z))]
-            pos = cam_xform_long(cam, *d)
-        else:
+        # Draw list: the game's in-order node walk (world objects and individually sorted entries).
+        items = collect_visible(ram, cam)
+        sorted_items = [(i["obj"], i["Z"], i["X"], i["Y"]) for i in items if not i.get("flat")]
+        same = sorted_items == gp["nodes"]
+        print(f"  draw list: {len(gp['nodes'])} nodes {'OK' if same else 'MISMATCH'}")
+        if not same or verbose:
+            for g, m in zip(gp["nodes"] + [None] * 99, sorted_items + [None] * 99):
+                if g is None and m is None:
+                    break
+                print(f"    game {g and (hex(g[0]),) + g[1:]}  model {m and (hex(m[0]),) + m[1:]}")
+        ok &= same
+        att = attachments(ram, cam, items)
+        gmodels = [(o, index.get(r)) for o, r in gp["models"]]
+        mmodels = [(i["obj"], i["model"]) for i in items]
+        top = [m for m in gmodels if m[0] in {i[0] for i in mmodels}]
+        amodels = sorted((a["obj"], a["model"]) for a in att)
+        gatt = sorted(m for m in gmodels if m[0] in {a["obj"] for a in att} and m not in mmodels)
+        same = top[:len(mmodels)] == mmodels and gatt == amodels
+        print(f"  LOD models: {'OK' if same else 'MISMATCH'} {[(hex(o), m) for o, m in mmodels]}"
+              + (f"; attachments {[(hex(o), m) for o, m in amodels]}" if att else ""))
+        ok &= same
+
+        # Horizon and sea dots.
+        kind, pts = horizon(cam)
+        hz = [p for p in gp["projs"] if p["caller"] == 0x6490]
+        if kind == "line":
+            same = bool(hz) and hz[0]["screen"] == list(pts)
+            print(f"  horizon {pts} {'OK' if same else 'MISMATCH ' + str(hz and hz[0]['screen'])}")
+            ok &= same
+        dots = sea_dots(cam) if not ram.u8(0x1246) else []
+        same = dots == gp["dots"]
+        print(f"  sea dots: {len(dots)} {'OK' if same else 'MISMATCH game ' + str(gp['dots'])}")
+        ok &= same
+        stats["dots"] += len(dots)
+        stats["nodes"] += len(gp["nodes"])
+
+        # Every projected model vertex: model-space vertices (identity build) -> float rotation ->
+        # integer projection, and a fully float pipeline, against the game's projected output.
+        total = proj_exact = 0
+        worst_rot = worst_rel = worst_fp = worst_float = worst_far = 0.0
+        pos_ok = True
+        for p in gp["projs"]:
+            if p["caller"] == 0x6490 or p["model"] is None:
+                continue
+            obj = p["obj"]
+            if screen == 8 and p["caller"] == 0x94AE and p["pos"] == TURRET_OVERLAY_POS:
+                # Model 84 (the turret wireframe) in the $479C window: its basis ($ABE8) turns
+                # it by the turret's angles only (no camera pass), at a fixed origin.
+                port = viewport(ram, TURRET_OVERLAY)
+                ocam = Camera(0, 0, 0, 0, 0, 0, 0, port[:8], cam.near)
+                verts, _ = model_space_vertices(ram.d, WORLD_OBJECTS, ram.u32(MODEL_TABLE + 4 * 84))
+                good = True
+                for i, v in enumerate(verts[:p["n"]]):
+                    gv = p["verts"][i]
+                    good &= v is None or tuple(v) == tuple(gv)
+                    good &= project_cam(ocam, *(a + b for a, b in zip(TURRET_OVERLAY_POS, gv))) == p["screen"][i]
+                print(f"  turret overlay: model 84 at {TURRET_OVERLAY_POS} in "
+                      f"${TURRET_OVERLAY:04X}, {p['n']} vertices {'OK' if good else 'MISMATCH'}")
+                ok &= good
+                continue
             try:
-                buf = island_buffer_of(obj)
+                pos = object_cam_pos(ram, cam, obj)
             except ValueError:
                 continue
-            o = [ram.s32(buf + 2 + 4 * i) - c for i, c in enumerate((cam.x, cam.y, cam.z))]
-            oc = cam_xform_long(cam, *o)
-            if obj == buf + 0x12:
-                pos = oc
-            else:
-                lc = cam_xform_word(cam, *(ram.s16(obj + 0xA + 2 * i) for i in range(3)))
-                pos = tuple(a + b for a, b in zip(oc, lc))
-        if pos != p["pos"]:
-            pos_ok = False
-            print(f"  object ${obj:05X}: position {pos} MISMATCH game {p['pos']}")
-            continue
-        verts, basis = model_space_vertices(data, obj, p["model"])
-        billboard = basis == 0xAA24
-        rc = game_rotation(cam, *(ram.u16(obj + o) for o in (4, 6, 8)), billboard)
-        wverts = object_world_vertices(ram, obj, verts, billboard, cam)
-        for i, v in enumerate(verts[:p["n"]]):
-            g, gv = p["screen"][i], p["verts"][i]
-            # 1. The projection itself, on the game's own camera-space vertex: must be exact.
-            gp = project_cam(cam, pos[0] + gv[0], pos[1] + gv[1], pos[2] + gv[2])
-            if gp != g:
+            if pos != p["pos"]:
                 pos_ok = False
-                print(f"  object ${obj:05X} vertex {i}: projection {gp} MISMATCH game {g}")
-            if v is None or g is None:
+                print(f"  object ${obj:05X}: position {pos} MISMATCH game {p['pos']}")
                 continue
-            total += 1
-            proj_exact += gp == g
-            # 2. The rotation: float R_cam * R_obj * v against the game's fixed-point vertex.
-            vf = _apply(rc, v)
-            err = max(abs(a - b) for a, b in zip(vf, gv))
-            if verbose and err > 8:
-                print(f"    ${obj:05X} model {_model_index(ram).get(p['model'])} basis ${basis:05X} v{i} {v} "
-                      f"float {tuple(round(c, 1) for c in vf)} game {gv} angles "
-                      f"{[hex(ram.u16(obj + o)) for o in (4, 6, 8)]}")
-            worst_rot = max(worst_rot, err)
-            worst_rel = max(worst_rel, err / max(1.0, math.dist(v, (0, 0, 0))))
-            # 3. Screen error of the model pipeline (fixed-point position + float rotation, and
-            #    all float): only rotation rounding, magnified near the camera.
-            vc = [round(c) for c in vf]
-            mine = project_cam(cam, pos[0] + vc[0], pos[1] + vc[1], pos[2] + vc[2])
-            f = project_float(cam, wverts[i])
-            vx0, vy0, vx1, vy1 = cam.viewport[:4]
-            for got, which in ((mine, "fp"), (f, "float")):
-                if got is None or not (vx0 <= g[0] <= vx1 and vy0 <= g[1] <= vy1):
+            verts, basis = model_space_vertices(ram.d, obj, p["model"])
+            billboard = basis == 0xAA24
+            rc = game_rotation(cam, *(ram.u16(obj + o) for o in (4, 6, 8)), billboard)
+            wverts = object_world_vertices(ram, obj, verts, billboard, cam)
+            for i, v in enumerate(verts[:p["n"]]):
+                g, gv = p["screen"][i], p["verts"][i]
+                # 1. The projection itself, on the game's own camera-space vertex: must be exact.
+                gpj = project_cam(cam, pos[0] + gv[0], pos[1] + gv[1], pos[2] + gv[2])
+                if gpj != g:
+                    pos_ok = False
+                    print(f"  object ${obj:05X} vertex {i}: projection {gpj} MISMATCH game {g}")
+                if v is None or g is None:
                     continue
-                e = max(abs(a - b) for a, b in zip(got, g))
-                if which == "fp":
-                    worst_fp = max(worst_fp, e)
-                else:
-                    worst_float = max(worst_float, e)
-                if pos[2] + gv[2] >= 4096:
-                    worst_far = max(worst_far, e)
-    print(f"  vertices: {total} projected; projection of the game's camera-space vertices "
-          f"{'exact' if proj_exact == total else 'MISMATCH'}; rotation error max {worst_rot:.2f} units "
-          f"({100 * worst_rel:.2f}% of |v|); screen error max {worst_fp:.0f} px (fixed position + float "
-          f"rotation), {worst_float:.2f} px (all float), {worst_far:.2f} px at Z >= 4096 (on-screen vertices); "
-          f"object positions {'OK' if pos_ok else 'MISMATCH'}")
-    ok &= pos_ok and proj_exact == total and worst_rot <= 8
-    stats = dict(nodes=len(game.nodes), vertices=total, worst_rot=worst_rot, worst_rel=worst_rel,
-                 worst_far=worst_far, worst_float=worst_float, dots=len(dots))
-    if path is None:
+                total += 1
+                proj_exact += gpj == g
+                # 2. The rotation: float R_cam * R_obj * v against the game's fixed-point vertex.
+                vf = _apply(rc, v)
+                err = max(abs(a - b) for a, b in zip(vf, gv))
+                if verbose and err > 8:
+                    print(f"    ${obj:05X} model {index.get(p['model'])} basis ${basis:05X} v{i} {v} "
+                          f"float {tuple(round(c, 1) for c in vf)} game {gv} angles "
+                          f"{[hex(ram.u16(obj + o)) for o in (4, 6, 8)]}")
+                worst_rot = max(worst_rot, err)
+                worst_rel = max(worst_rel, err / max(1.0, math.dist(v, (0, 0, 0))))
+                # 3. Screen error of the model pipeline (fixed-point position + float rotation, and
+                #    all float): only rotation rounding, magnified near the camera.
+                vc = [round(c) for c in vf]
+                mine = project_cam(cam, pos[0] + vc[0], pos[1] + vc[1], pos[2] + vc[2])
+                f = project_float(cam, wverts[i])
+                vx0, vy0, vx1, vy1 = cam.viewport[:4]
+                for got, which in ((mine, "fp"), (f, "float")):
+                    if got is None or not (vx0 <= g[0] <= vx1 and vy0 <= g[1] <= vy1):
+                        continue
+                    e = max(abs(a - b) for a, b in zip(got, g))
+                    if which == "fp":
+                        worst_fp = max(worst_fp, e)
+                    else:
+                        worst_float = max(worst_float, e)
+                    if pos[2] + gv[2] >= 4096:
+                        worst_far = max(worst_far, e)
+        print(f"  vertices: {total} projected; projection of the game's camera-space vertices "
+              f"{'exact' if proj_exact == total else 'MISMATCH'}; rotation error max {worst_rot:.2f} units "
+              f"({100 * worst_rel:.2f}% of |v|); screen error max {worst_fp:.0f} px (fixed position + float "
+              f"rotation), {worst_float:.2f} px (all float), {worst_far:.2f} px at Z >= 4096 (on-screen "
+              f"vertices); object positions {'OK' if pos_ok else 'MISMATCH'}")
+        ok &= pos_ok and proj_exact == total and worst_rot <= 8
+        stats["vertices"] += total
+        for k, v in (("worst_rot", worst_rot), ("worst_rel", worst_rel), ("worst_far", worst_far),
+                     ("worst_float", worst_float)):
+            stats[k] = max(stats[k], v)
+    if path is None or not views:
         return out, ok, stats
 
     # The rendered frame against the frame on display in the capture, and the screenshot.
-    draw = ram.u32(0x124E)
+    cam = views[0].cam
+    draw = ram0.u32(0x124E)
     shown = 0x78000 if draw == 0x70000 else 0x70000
     a = decode_screen(after.d, draw)
     b = decode_screen(data, shown)
@@ -854,10 +1085,128 @@ def compare_screenshot(shot: Path, frame: list, vp: tuple) -> str:
             f"{bad} of {(x1 - x0 + 1) * (y1 - y0 + 1)} viewport pixels differ")
 
 
+def perturb_view(data: bytes, screen: int, rng) -> bytes:
+    """Random state for one screen's camera: the carrier's attitude and place around its island
+    and the screen's own inputs (vehicle attitude and height, turret angles and zoom, crane
+    angles, observation turret, rear view, the Walrus missile inset, the no-view cases)."""
+    d = bytearray(data)
+    r = Ram(data)
+    buf = r.u32(CARRIER + 0x3C)
+    ox, oz = (r.s32(buf + 2), r.s32(buf + 0xA)) if buf else (r.s32(CARRIER + 0xA), r.s32(CARRIER + 0x12))
+    hx, hz = (r.u16(buf + 0x12 + 0x1E), r.u16(buf + 0x12 + 0x20)) if buf else (20000, 20000)
+
+    def angles(a, tilt):
+        struct.pack_into(">HHH", d, a + 4, rng.randint(-tilt, tilt) & 0xFFFF, rng.randrange(0x10000),
+                         rng.randint(-tilt, tilt) & 0xFFFF)
+
+    def place(a, spread, y=None):
+        dx, dz = (int(rng.uniform(-spread, spread) * h) for h in (hx, hz))
+        _w32(d, a + 0xA, ox + dx)
+        _w32(d, a + 0x12, oz + dz)
+        if y is not None:
+            _w32(d, a + 0xE, y)
+    angles(CARRIER, rng.choice([0, 0x100, 0x400]))
+    while True:                      # the carrier stays off the plateau
+        place(CARRIER, rng.choice([1.2, 1.5, 3.0]))
+        rr = Ram(bytes(d))
+        if abs(rr.s32(CARRIER + 0xA) - ox) > hx + 300 or abs(rr.s32(CARRIER + 0x12) - oz) > hz + 300:
+            break
+    for i in range(1, 64):
+        a = WORLD_OBJECTS + OBJ_SIZE * i
+        if i != 10 and r.u8(a + 1) & 1 and rng.random() < 0.3:
+            struct.pack_into(">HHH", d, a + 4, *(rng.randrange(0x10000) for _ in range(3)))
+    d[REAR_VIEW] = rng.choice([0, 0, 0xFF])
+    if screen in (26, 19):
+        _w16(d, 0xDDE if screen == 26 else 0xDEA, rng.randrange(0x10000))
+        _w16(d, CARRIER + 2, rng.choice([1, 2, 3]))
+    elif screen == 9:
+        _w16(d, 0x1158, rng.randint(-0x3000, 0x1000))
+        _w16(d, 0x115A, rng.randrange(0x10000))
+    elif screen == 8:
+        zoom = rng.randrange(4)
+        _w16(d, 0x6D2, zoom)
+        _w32(d, 0xA94, zoom * 10000)
+        _w32(d, 0xA98, zoom * 14142)
+        _w16(d, 0x6CA, rng.randint(-0x2000, 0x400))
+        _w16(d, 0x6CC, rng.randrange(0x10000))
+        d[0xB12] = rng.choice([0xFF, 0xFF, 0xFF, 0])
+    elif screen == 10:
+        drone = WORLD_OBJECTS + 15 * OBJ_SIZE
+        angles(drone, rng.choice([0, 0x800, 0x4000]))
+        place(drone, rng.choice([0.5, 1.5, 3.0]), rng.choice([300, 1500, 4000, 12000]))
+    elif screen == 27:
+        rec, obj = r.u32(MANTA_REC), r.u32(MANTA_OBJ)
+        angles(obj, rng.choice([0, 0x400, 0x1000, 0x4000]))
+        place(obj, rng.choice([0.5, 1.2, 2.0]), rng.choice([100, 300, 800, 2000]))
+        d[rec + 1] = rng.choice([8] * 8 + [0xFF])
+        _w16(d, rec + 0x2E, rng.choice([0] * 6 + [1, 2]))
+    elif screen == 18:
+        rec, obj = r.u32(WALRUS_REC), r.u32(WALRUS_OBJ)
+        angles(obj, rng.choice([0, 0x200, 0x800]))
+        place(obj, rng.choice([1.1, 1.5]), rng.choice([-15, 30, 80]))
+        _w16(d, obj + 0x26, rng.randrange(0x10000))
+        _w16(d, rec + 0x2C, rng.choice([0] * 6 + [1, 2]))
+        if rng.random() < 0.6:       # steering a guided missile: the inset view
+            m = WORLD_OBJECTS + OBJ_SIZE * rng.randrange(24, 64)
+            d[m:m + 0x40] = bytes(0x40)
+            _w16(d, m, 0x0403)
+            _w16(d, m + 2, 19)
+            angles(m, 0x800)
+            rw = Ram(bytes(d))
+            for o in (0xA, 0x12):
+                _w32(d, m + o, rw.s32(obj + o) + rng.randint(-3000, 3000))
+            _w32(d, m + 0xE, rng.choice([60, 200, 900]))
+            _w32(d, m + 0x3C, rw.u32(obj + 0x3C))
+            _w32(d, obj + 0x20, m)
+            d[rec] |= 0x10
+            _w16(d, rec + 0x2E, rng.randrange(0x20, 0x86))
+        else:
+            d[rec] &= ~0x10
+    return bytes(d)
+
+
+def fuzz_view(path: Path, count: int, seed: int, verbose: bool = False) -> bool:
+    """Random states (perturb_view) on one capture of a non-bridge 3D screen."""
+    import random
+    rng = random.Random(seed)
+    base = path.read_bytes()
+    screen = Ram(base).u16(0x718)
+    ok = True
+    tot = dict(nodes=0, vertices=0, dots=0, worst_rot=0.0, worst_float=0.0)
+    trapped = views = 0
+    for k in range(count):
+        d = perturb_view(base, screen, rng)
+        try:
+            lines, good, st = check_data(f"{path.name} fuzz {k}", d, verbose=verbose)
+        except RuntimeError as e:
+            if "TRAPV" not in str(e):
+                raise
+            trapped += 1
+            continue
+        views += len(screen_views(d, screen))
+        for key in ("nodes", "vertices", "dots"):
+            tot[key] += st[key]
+        for key in ("worst_rot", "worst_float"):
+            tot[key] = max(tot[key], st[key])
+        if not good or verbose:
+            print("\n".join(lines))
+        ok &= good
+    print(f"{path.name}: screen {screen}, {count} fuzzed states ({trapped} trapped in the game's clipper), "
+          f"{views} views, {tot['nodes']} draw-list nodes, {tot['dots']} sea dots, {tot['vertices']} vertices: "
+          f"rotation error max {tot['worst_rot']:.2f} units, on-screen all-float error max "
+          f"{tot['worst_float']:.2f} px: {'OK' if ok else 'MISMATCH'}")
+    return ok
+
+
 DEFAULT_CAPTURES = ["emu/out/play/pass_quiet_0_in.bin", "emu/out/play/pass_flight_0_in.bin",
                     "emu/out/play/pass_combat_0_in.bin", "emu/out/play/pass_late_0_in.bin",
                     "emu/out/play/pass_late_30_in.bin", "emu/out/sim/ai_3000_0_in.bin",
                     "emu/out/sim/ai_120000_0_in.bin"]
+# tools/capture_views.py: one capture per vehicle/weapon screen (fuzzed with fuzz_view).
+VIEW_CAPTURES = ["emu/out/views/pass_decklift_0_in.bin", "emu/out/views/pass_docklaunch_0_in.bin",
+                 "emu/out/views/pass_dock_0_in.bin", "emu/out/views/pass_manta_0_in.bin",
+                 "emu/out/views/pass_walrus_0_in.bin", "emu/out/views/pass_turret_0_in.bin",
+                 "emu/out/views/pass_flares_0_in.bin", "emu/out/views/pass_drone_0_in.bin"]
 
 
 def main() -> int:
@@ -870,14 +1219,17 @@ def main() -> int:
     if not args.check:
         ap.print_help()
         return 0
-    paths = [Path(c) for c in args.captures] or [ROOT / c for c in DEFAULT_CAPTURES]
+    paths = [Path(c) for c in args.captures] or [ROOT / c for c in DEFAULT_CAPTURES + VIEW_CAPTURES]
     ok = True
     for p in paths:
         if p.exists():
             ok &= check_capture(p, args.verbose)
-    for p in paths[:2] if args.fuzz else []:
-        if p.exists():
-            ok &= fuzz(p, args.fuzz, seed=1, verbose=args.verbose)
+    bridge = [p for p in paths if p.exists() and Ram(p.read_bytes()[:0x800]).u16(0x718) == 0]
+    for p in bridge[:2] if args.fuzz else []:
+        ok &= fuzz(p, args.fuzz, seed=1, verbose=args.verbose)
+    for p in paths if args.fuzz else []:
+        if p.exists() and Ram(p.read_bytes()[:0x800]).u16(0x718) in SCREEN_RENDER.keys() - {0}:
+            ok &= fuzz_view(p, args.fuzz, seed=2, verbose=args.verbose)
     print("OK" if ok else "MISMATCH")
     return 0 if ok else 1
 

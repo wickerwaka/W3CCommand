@@ -1761,8 +1761,17 @@ export abstract class UnitCore extends WorldState {
     m.set16(e + 0x0c, w16(m.u32(SLOT_ENTRY + 8 * t + 4) + 0x50));
   }
 
+  /** $18B50 (find_free_island_spot, slot k already cleared): on a loaded island the
+   * tree's buffer entry ([$8CC] + $12 + $40k) throws its debris ($1C6D6, origin = the
+   * buffer's, copied to $A4A) and is removed. */
   tree_cut(isl: Island, k: number): void {
-    if (this.mem.u8(isl.a)) throw new NotPorted("tree cut on a loaded island (debris)");
+    const m = this.mem;
+    if (!m.u8(isl.a)) return;
+    const buf = m.u32(G_BUFFER_PTR);
+    for (let j = 0; j < 3; j++) m.set32(0xa4a + 4 * j, m.u32(buf + 2 + 4 * j));
+    const e = buf + 0x12 + 0x40 * k;
+    this.spawn_debris_entry(e);
+    m.set16(e, 0);
   }
 
   // ---- shared helpers for island AI ---------------------------------------------------

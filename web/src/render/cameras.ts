@@ -17,32 +17,118 @@ export interface ViewCamera {
 
 const s32 = (b: Uint8Array, a: number) => (b[a] << 24) | (b[a + 1] << 16) | (b[a + 2] << 8) | b[a + 3];
 const u16 = (b: Uint8Array, a: number) => (b[a] << 8) | b[a + 1];
+const s16 = (b: Uint8Array, a: number) => (u16(b, a) << 16) >> 16;
 
-/** The bridge view (screen 0), as the game sets up its camera, object 0:
- * - entering the screen ($13C24) puts the eye at world y = 240 (hulls sit at 160);
- * - every frame ($1460A) it takes the carrier's pitch, yaw and roll, and x/z 100 units behind
- *   the carrier's origin along its heading;
- * - projection ($5912, viewport $4744): 256 x 128 pixels, focal length 256, near plane 64.
- * See docs/memory-map.md, "Bridge view camera and projection". */
-export class CarrierCamera implements ViewCamera {
-  readonly name = "Carrier bridge";
-  readonly frustum = { tanX: 128 / 256, tanY: 64 / 256, near: 64 };
-  static EYE_Y = 240;
-  static BEHIND = 100;
+const SCREEN = 0x718, VIEWPORT = 0x6fe, CAMERA = 0x9fa, VIEWED = 0x9fe, REAR_VIEW = 0x8f1;
+const ANG = (a: number) => (a * 2 * Math.PI) / 0x10000;
+
+/** The game's own camera on every 3D screen: where the screen's render routine puts its camera
+ * object, and the projection of its viewport record. Spec: docs/memory-map.md, "Bridge view
+ * camera and projection" and "Vehicle and weapon views"; tools/stview.py is the reference,
+ * checked against each screen's render under Unicorn.
+ *   0 bridge      carrier + formB(0, -100), y 240; the carrier's angles
+ *   26 Manta deck carrier + formB(420, 1050), y 230; yaw carrier + [$DDE]
+ *   19 dock       carrier + formB(-420, -1050), y 50; yaw carrier + [$DEA]
+ *   9 flares      carrier + formB(0, -1000), y 300; pitch [$1158], yaw [$115A]
+ *   8 turret      pivot (0, 320, -350) in the carrier frame, 30 out along the gun; pitch [$6CA],
+ *                 yaw carrier + [$6CC], carrier roll; focal 256 * 2^[$6D2]
+ *   10 drone      object 15 itself;  27 Manta: the Manta itself (rear view $8F1: yaw + $8000,
+ *                 pitch and roll negated);  18 Walrus: Walrus y + 45, yaw + turret +$26 (rear
+ *                 view: yaw + $8000, pitch negated). */
+export class GameCamera implements ViewCamera {
+  name = "Carrier bridge";
+  frustum = { tanX: 128 / 256, tanY: 64 / 256, near: 64 };
+  /** False when the screen shows no 3D picture (2D screens, no telemetry, ...). */
+  live = true;
   private pos: Eye = { x: 0, y: 0, z: 0 };
   private rot = gameRotation(0, 0, 0);
-  yaw = 0;
 
   update(ram: Uint8Array): void {
-    const o = CARRIER;
-    this.yaw = u16(ram, o + 6);
-    this.rot = gameRotation(u16(ram, o + 4), this.yaw, u16(ram, o + 8));
-    const a = (this.yaw * 2 * Math.PI) / 0x10000;
-    this.pos = {
-      x: s32(ram, o + 0x0a) - CarrierCamera.BEHIND * Math.sin(a),
-      y: CarrierCamera.EYE_Y,
-      z: s32(ram, o + 0x12) - CarrierCamera.BEHIND * Math.cos(a),
+    const screen = u16(ram, SCREEN), c = CARRIER;
+    const cx = s32(ram, c + 0x0a), cz = s32(ram, c + 0x12);
+    const cp = u16(ram, c + 4), cyaw = u16(ram, c + 6), croll = u16(ram, c + 8);
+    /** carrier position + formB(carrier yaw)(x, z) */
+    const local = (x: number, z: number, y: number): Eye => {
+      const a = ANG(cyaw), co = Math.cos(a), si = Math.sin(a);
+      return { x: cx + x * co + z * si, y, z: cz + z * co - x * si };
     };
+    const obj = (a: number) => ({
+      x: s32(ram, a + 0x0a), y: s32(ram, a + 0x0e), z: s32(ram, a + 0x12),
+      p: u16(ram, a + 4), w: u16(ram, a + 6), r: u16(ram, a + 8),
+    });
+    let p = 0, w = 0, r = 0;
+    this.live = true;
+    switch (screen) {
+      case 26:
+        this.name = "Manta deck";
+        this.pos = local(420, 1050, 230);
+        w = cyaw + u16(ram, 0xdde);
+        break;
+      case 19:
+        this.name = "Walrus dock";
+        this.pos = local(-420, -1050, 50);
+        w = cyaw + u16(ram, 0xdea);
+        break;
+      case 9:
+        this.name = "Flares";
+        this.pos = local(0, -1000, 300);
+        p = u16(ram, 0x1158);
+        w = u16(ram, 0x115a);
+        break;
+      case 8: {
+        this.name = "Laser turret";
+        const e = ANG(u16(ram, 0x6ca)), h = ANG(u16(ram, 0x6cc));
+        const u = 30 * Math.cos(e), v = 30 * Math.sin(e);
+        this.pos = local(v * Math.sin(h), v * Math.cos(h) - 350, 320 + u);
+        p = u16(ram, 0x6ca);
+        w = cyaw + u16(ram, 0x6cc);
+        r = croll;
+        this.live = ram[0xb12] !== 0;            // observation turret system working
+        break;
+      }
+      case 10:
+      case 27: {
+        this.name = screen === 10 ? "Viewing drone" : "Manta";
+        const a = s32(ram, screen === 10 ? CAMERA : VIEWED) >>> 0;
+        if (!a) {
+          this.live = false;
+          break;
+        }
+        const o = obj(a);
+        this.pos = { x: o.x, y: o.y, z: o.z };
+        [p, w, r] = [o.p, o.w, o.r];
+        if (screen === 27 && ram[REAR_VIEW]) [p, w, r] = [-p, w + 0x8000, -r];
+        break;
+      }
+      case 18: {
+        this.name = "Walrus";
+        const a = s32(ram, VIEWED) >>> 0;
+        if (!a) {
+          this.live = false;
+          break;
+        }
+        const o = obj(a), bay = u16(ram, a + 0x1a) & 3;
+        this.pos = { x: o.x, y: o.y + 45, z: o.z };
+        [p, w, r] = [o.p, o.w + u16(ram, 0x570 + 0x34 * bay + 0x26), o.r];
+        if (ram[REAR_VIEW]) [p, w] = [-p, w + 0x8000];
+        break;
+      }
+      default:
+        this.name = "Carrier bridge";
+        this.pos = local(0, -100, CarrierCamera.EYE_Y);
+        [p, w, r] = [cp, cyaw, croll];
+        this.live = screen === 0;
+    }
+    this.rot = gameRotation(p & 0xffff, w & 0xffff, r & 0xffff);
+    // the projection from the viewport record [$6FE]: x0 y0 x1 y1 shx shy cx cy ...
+    const vp = s32(ram, VIEWPORT) >>> 0;
+    if (vp) {
+      const x0 = s16(ram, vp), y0 = s16(ram, vp + 2), x1 = s16(ram, vp + 4), y1 = s16(ram, vp + 6);
+      let shx = s16(ram, vp + 8), shy = s16(ram, vp + 10);
+      if (screen === 8) shx = shy = 8 + u16(ram, 0x6d2);
+      if (x1 > x0 && y1 > y0 && shx > 0 && shx < 16)
+        this.frustum = { tanX: (x1 - x0 + 1) / 2 / 2 ** shx, tanY: (y1 - y0 + 1) / 2 / 2 ** shy, near: 64 };
+    }
   }
 
   eye(): Eye {
@@ -52,6 +138,11 @@ export class CarrierCamera implements ViewCamera {
   orientation(out: THREE.Quaternion): void {
     toThreeQuaternion(this.rot, out);
   }
+}
+
+/** Constants of the bridge camera, kept for reference. */
+export class CarrierCamera {
+  static EYE_Y = 240;
 }
 
 /** A free-flying camera: drag to look, WASD / arrows to move, R/F (or Q/E) up and down, Shift

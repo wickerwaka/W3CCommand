@@ -1518,8 +1518,18 @@ class UnitCore(WorldState):
         m.set16(e + 0x0C, w16(m.u32(SLOT_ENTRY + 8 * t + 4) + 0x50))
 
     def tree_cut(self, isl, k: int) -> None:
-        if self.mem.u8(isl.a):
-            raise NotImplementedError("tree cut on a loaded island (debris)")
+        """$18B50 (find_free_island_spot, slot k already cleared): on a loaded island the
+        tree's buffer entry ([$8CC] + $12 + $40k) throws its debris ($1C6D6, origin = the
+        buffer's, copied to $A4A) and is removed."""
+        m = self.mem
+        if not m.u8(isl.a):
+            return
+        buf = m.u32(stsim.G_BUFFER_PTR)
+        for j in range(3):
+            m.set32(0xA4A + 4 * j, m.u32(buf + 2 + 4 * j))
+        e = buf + 0x12 + 0x40 * k
+        self.spawn_debris_entry(e)
+        m.set16(e, 0)
 
 
     # ---- shared helpers for island AI ---------------------------------------------------

@@ -97,9 +97,13 @@ class IslandCache {
 
 export function gatherDrawables(ram: Uint8Array, islands: IslandCache | null): Drawable[] {
   const out: Drawable[] = [];
+  // Units on the lift or in the dock (byte +1 bit 2) are skipped by the world pass and drawn as
+  // the carrier's attachments instead: [$6D6] and [$6DA] (BSP slots of carrier models 2/3).
+  const attached = new Set([u32(ram, 0x6d6), u32(ram, 0x6da)]);
   for (let k = 0; k < 64; k++) {
     const o = OBJECTS + OBJECT_SIZE * k;
     if ((ram[o + 1] & 3) !== 3) continue;
+    if (ram[o + 1] & 4 && !attached.has(o)) continue;
     out.push({
       key: `obj${k}`,
       type: u16(ram, o + 2),

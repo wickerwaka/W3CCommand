@@ -121,3 +121,55 @@ export function systems(ram: Uint8Array): SystemInfo[] {
 export function islandCounts(ram: Uint8Array): { player: number; enemy: number } {
   return { player: u16(ram, COUNT_PLAYER), enemy: u16(ram, COUNT_ENEMY) };
 }
+
+// ---- vehicles (docs/units.md §6.1) ---------------------------------------------------------
+export const MANTA_RECS = 0x496, WALRUS_RECS = 0x570, REC_SIZE = 0x34;
+
+export type VehicleKind = "manta" | "walrus";
+
+export const STATUS_NAMES: Record<number, string> = {
+  0: "Ready", 1: "Repairing", 2: "Preparing", 3: "On the lift", 8: "Out", 0xff: "Destroyed",
+};
+
+export interface VehicleInfo {
+  kind: VehicleKind;
+  bay: number;              // 0-3 (shown as 1-4)
+  obj: number;              // world object index
+  status: number;           // +1: 0 ready, 1 repair, 2 preparing, 3 lift/launching, 8 out, $FF destroyed
+  fuel: number;             // fraction 0..1
+  health: number;           // fraction 0..1 (max 4000)
+  speed: number;
+  targetSpeed: number;
+  automatic: boolean;
+  weapon: number;           // selected weapon: 0 laser, 1 missile, 2 payload
+  missiles: number;
+  payload: number;          // payload code
+  telemetry: number;        // 0 OK, 1 weak, 2 lost
+  x: number;
+  y: number;
+  z: number;
+  heading: number;          // 16-bit angle
+}
+
+export function vehicle(ram: Uint8Array, kind: VehicleKind, bay: number): VehicleInfo {
+  const manta = kind === "manta";
+  const r = (manta ? MANTA_RECS : WALRUS_RECS) + REC_SIZE * bay;
+  const objIndex = (manta ? 2 : 6) + bay;
+  const o = OBJECTS + OBJECT_SIZE * objIndex;
+  const fuelMax = manta ? 0x7fff : 0x7fff;
+  return {
+    kind, bay, obj: objIndex,
+    status: ram[r + 1],
+    fuel: Math.min(1, u16(ram, r + (manta ? 0x0a : 0x08)) / fuelMax),
+    health: Math.min(1, u16(ram, r + 0x14) / 4000),
+    speed: s16(ram, r + (manta ? 6 : 4)),
+    targetSpeed: s16(ram, r + (manta ? 8 : 6)),
+    automatic: (ram[r] & 1) !== 0,
+    weapon: u16(ram, r + (manta ? 0x1a : 0x18)),
+    missiles: u16(ram, r + 0x0c),
+    payload: u16(ram, r + 0x0e),
+    telemetry: u16(ram, r + (manta ? 0x2e : 0x2c)),
+    x: s32(ram, o + 0x0a), y: s32(ram, o + 0x0e), z: s32(ram, o + 0x12),
+    heading: u16(ram, o + 6),
+  };
+}

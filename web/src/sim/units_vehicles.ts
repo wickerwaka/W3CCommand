@@ -24,7 +24,7 @@
  * to waypoint. UI-only side effects (gauges $7A1A/$7A46/$7A56, redraw flags, panels $B418,
  * sounds $20B90) are left out; messages go to self.events.
  */
-import { NotPorted, s16, s32, u32, w16, shr, pyDiv } from "./mem.ts";
+import { NotPorted, s16, s32, u32, w16, shr, shl, pyDiv } from "./mem.ts";
 import type { Region } from "./mem.ts";
 import {
   OWNERS, ISLAND_TABLE, ISLAND_SIZE, G_ISLAND_PTR, G_ECONOMY_PTR, G_BUFFER_PTR, ECONOMY, ECONOMY_SIZE,
@@ -33,7 +33,7 @@ import {
 } from "./world.ts";
 import {
   UnitCore, UNIT_REGIONS, UNIT_INPUT_REGIONS, OBJECTS, OBJECT_SIZE, C_NEAR_UNIT, C_SPEED, SLOW_TICK, SCREEN,
-  DOOR_STATE, DOOR_POS, DOCKED_WALRUS, LIFT_STATE, NEW_INDEX, SLOT_ENTRY,
+  DOOR_STATE, DOOR_POS, DOCKED_WALRUS, LIFT_STATE, NEW_INDEX, SLOT_ENTRY, DEBRIS,
 } from "./units_core.ts";
 import { EnemyUnits } from "./units_enemy.ts";
 
@@ -69,6 +69,23 @@ for (const _name of ["hangar selection $48E", "fire inhibit $8F1", "loadout tabl
   UNIT_INPUT_REGIONS.add(_name);
 }
 
+// The Manta missile lock-on (manta_lock_scan): the 3D view's culling and the patched callback.
+export const LOCK_REGIONS: Region[] = [
+  ["viewport $6FE", 0x6FE, 4],
+  ["turret zoom view $A94", 0xA94, 8],           // $A98: range bias
+  ["viewport records $4744", 0x4744, 0x4860 - 0x4744],
+  ["object cull table $8598", 0x8598, 84 * 16],
+  ["lock scan callback $62B6", 0x62B6, 4],
+];
+for (const _region of LOCK_REGIONS) {
+  if (!UNIT_REGIONS.some(([n]: Region) => n === _region[0])) {
+    UNIT_REGIONS.push(_region);
+  }
+}
+for (const _name of ["viewport records $4744", "object cull table $8598"]) {
+  UNIT_INPUT_REGIONS.add(_name);
+}
+
 export const LOADOUT_HANDLERS: Map<number, string | null> = new Map<number, string | null>([
   [0x1ED5A, "missiles 1"], [0x1ED60, "missiles 2"], [0x1ED66, "missiles 3"],
   [0x1ED6C, "bomb"], [0x1ED74, "laser"], [0x1ED7A, "avatar"], [0x1ED82, "payload"],
@@ -79,6 +96,22 @@ export function _clamp255(v: number): number {
   v = s16(v);
   return v > 0xFF ? 0xFF : v < -0xFF ? w16(-0xFF) : w16(v);
 }
+
+/** $A4B4/$A518/$A57C: halve both longs until within +-$4844, rotate, shift back. */
+export function _rot_long(rotate: (x: number, y: number, angle: number) => [number, number],
+  x: number, y: number, angle: number): [number, number] {
+  let k = 0;
+  while (!(-0x4844 <= x && x <= 0x4844 && -0x4844 <= y && y <= 0x4844)) {
+    x = shr(x, 1);
+    y = shr(y, 1);
+    k += 1;
+  }
+  const [a, b] = rotate(x, y, angle);
+  return [s32(shl(a, k)), s32(shl(b, k))];
+}
+
+/** A depth-tree node: camera-space Z, X, Y and the object. */
+export type ViewNode = [number, number, number, number];
 
 /** divs.w quotient (truncates towards zero); the callers never overflow. */
 export function _divs(n: number, d: number): number {
@@ -737,7 +770,8 @@ export class UnitState extends EnemyUnits {
   _runway(a4: number): [number, number] {
     const buf = this.mem.u32(a4 + 0x3C);
     if (!buf) {
-      throw new NotPorted("Manta runway mode without an island buffer");
+      throw new NotPorted("Manta runway mode without an island buffer (unreachable: modes 4-6 start " +
+        "from the attached island's runway)");
     }
     return [buf, buf + 0x52];
   }
@@ -947,10 +981,12 @@ export class UnitState extends EnemyUnits {
 
   /** $1FFEA: the second press fires at the locked target ($1168) from alternating wings
    * (the first press scans the 3D view, $6290, which isn't modelled). */
+  /** $1FFEA: the first press locks on (manta_lock_scan); the second fires at the locked
+   * target ($1168) from alternating wings. */
   _manta_missile(a1: number, a4: number): void {
     const m = this.mem;
     if (m.u16(LOCK_TIMER) === 0) {
-      throw new NotPorted("Manta missile lock-on scan ($6290, the 3D view)");
+      return this.manta_lock_scan();
     }
     m.set16(LOCK_TIMER, 0);
     const b = this._new_object(0x11);
@@ -966,6 +1002,256 @@ export class UnitState extends EnemyUnits {
     m.set16(0x940, m.s16(a1 + 6) < 0x78 ? 4 : 0x0A);
     m.set16(a1 + 0x0C, m.u16(a1 + 0x0C) - 1);
     m.set16(a1 + 0x12, m.u16(a1 + 0x12) - 0x37);
+  }
+
+  // ---- Manta missile lock-on ($1FFEA first press) ------------------------------------------
+  /** $1FFEA's first press: patch the depth-tree walk's callback ($62B6 = $200F6), clear the
+   * target's high byte and the best distance ($1166 = $7FFF), walk the 3D view's draw list
+   * front to back ($6290) and lock on ($116C = 25, a sound) when the best lockable object
+   * lies within 24 px of the sight ($1162/$1164, written by the screen 27 render).
+   *
+   * The original walks the depth tree its last render built. The model rebuilds that draw
+   * list from the state (view_draw_list); the two agree when the last render was screen
+   * 27's 3D view on this state (always, except on the pass right after entering the
+   * screen and after a frame of static from lost telemetry). */
+  manta_lock_scan(): void {
+    const m = this.mem;
+    m.set32(0x62B6, 0x200F6);
+    m.set8(LOCK_TARGET, 0xFF);
+    m.set16(0x1166, 0x7FFF);
+    for (const node of this.view_draw_list()) {
+      this._lock_candidate(...node);
+    }
+    if (m.s16(0x1166) > 0x18 || m.u32(LOCK_TARGET) >= 0x80000000) {
+      return;
+    }
+    m.set16(LOCK_TIMER, 0x19);
+  }
+
+  /** $200F6, for one depth-tree node (camera-space Z, X, Y of the object at obj): a
+   * lockable object (flags bits 0 and 12) at Z >= 500 projects (X, -Y) * 2^shx / Z with
+   * divs.w (divisor: the low word of Z; overflow skips) within +-256 of the centre; the
+   * nearest to the sight by the larger axis distance (signed words) wins, later ties too. */
+  _lock_candidate(z: number, x: number, y: number, obj: number): void {
+    const m = this.mem;
+    const f = m.u16(obj);
+    if (!(f & 1) || !(f & 0x1000) || z < 0x1F4) {
+      return;
+    }
+    const shx = m.u16(m.u32(0x6FE) + 8) & 63;
+    const d = s16(z);
+    if (d === 0) {
+      throw new NotPorted("Manta lock-on: divs by a zero low word of Z (divide-by-zero trap)");
+    }
+    const q: number[] = [];
+    for (const n of [s32(shl(x, shx)), s32(shl(-y, shx))]) {
+      let v = pyDiv(Math.abs(n), Math.abs(d));
+      v = (n < 0) !== (d < 0) ? -v : v;
+      if (!(-0x8000 <= v && v < 0x8000)) {
+        return;
+      }
+      q.push(v);
+    }
+    for (const v of q) {
+      if (s16(v < 0 ? -v : v) > 0x100) {
+        return;
+      }
+    }
+    let d2 = s16(m.u16(0x1162) - q[0]);
+    d2 = d2 < 0 ? s16(-d2) : d2;
+    let d3 = s16(m.u16(0x1164) - q[1]);
+    d3 = d3 < 0 ? s16(-d3) : d3;
+    if (!(d3 > d2)) {
+      d3 = d2;
+    }
+    if (d3 > m.s16(0x1166)) {
+      return;
+    }
+    m.set16(0x1166, d3);
+    m.set32(LOCK_TARGET, obj);
+  }
+
+  /** scene_collect_visible ($7BF6) for the camera [$9FA], as the depth-tree walk $6290
+   * visits it (front to back: near side, node, far side): [(Z, X, Y, object)], camera
+   * space. tools/stview.py collect_visible is the checked reference (docs/memory-map.md,
+   * "Bridge view camera and projection"). Debris shards (the lists at $11D8) are left out:
+   * their flag word is 0, so the lock scan never takes them, and they only add nodes. */
+  view_draw_list(): ViewNode[] {
+    const m = this.mem;
+    const cam = m.u32(0x9FA);
+    const [cx, cy, cz] = [0x0A, 0x0E, 0x12].map((o) => s32(m.u32(cam + o)));
+    const neg = [4, 6, 8].map((o) => w16(-m.u16(cam + o)));     // pairs $A74/$A78/$A7C: -pitch, -yaw, -roll
+    const shx = m.s16(m.u32(0x6FE) + 8);
+    const a98 = m.u32(0xA98);
+    for (let b = 0; b < 4; b++) {
+      const a = DEBRIS + 0x12 * b;
+      let sh = m.u8(a) & 1 ? m.u32(a + 0x0E) : 0;
+      while (sh) {
+        if ((m.u16(sh) & 0x1001) === 0x1001) {
+          throw new NotPorted("Manta lock-on: a lockable debris shard");
+        }
+        sh = m.u32(sh + 0x16);
+      }
+    }
+    type TreeNode = [number, number | null, number | null, ViewNode];   // key, far (+6), near (+4), node
+    const tree: TreeNode[] = [];
+
+    const insert = (key: number, node: ViewNode, start: string | null = null): void => {
+      tree.push([key, null, null, node]);
+      const n = tree.length - 1;
+      if (n > 0x80) {
+        throw new NotPorted("Manta lock-on: more than 128 depth-tree nodes (trap #12)");
+      }
+      if (n === 0) {
+        return;
+      }
+      let cur: number;
+      if (start === null) {
+        cur = 0;
+      } else {                               // $622E far side of the root / $623A near side
+        const side = start === "behind" ? 1 : 2;
+        const child = tree[0][side];
+        if (child === null) {
+          tree[0][side] = n;
+          return;
+        }
+        cur = child;
+      }
+      for (;;) {
+        const side = key <= tree[cur][0] ? 2 : 1;
+        const child = tree[cur][side];
+        if (child === null) {
+          tree[cur][side] = n;
+          return;
+        }
+        cur = child;
+      }
+    };
+
+    const cull = (t: number): [number, number, number] => {
+      const b = 0x8598 + 16 * t;
+      return [m.u32(b), s32(m.u32(b + 8)), s32(m.u32(b + 12))];
+    };
+
+    const in_range = (t: number, dx: number, dz: number): boolean => {
+      const r = u32(cull(t)[0] + a98);
+      return u32(this.absl(dx)) <= r && u32(this.absl(dz)) <= r;
+    };
+
+    const visible = (t: number, x: number, y: number, z: number): boolean => {
+      const [, min_z, radius] = cull(t);
+      if (z < min_z) {
+        return false;
+      }
+      let d = z > 0 ? z : 0;
+      const sh = 7 - shx;
+      d = sh >= 0 ? s32(shl(d, sh)) : shr(d, -sh);
+      if (s32(this.absl(x) - radius) > d) {
+        return false;
+      }
+      return s32(this.absl(y) - radius) <= shr(d, 1);
+    };
+
+    const live = (a: number): boolean => (m.u8(a + 1) & 3) === 3;
+    const yaw = (x: number, y: number, angle: number): [number, number] => this.rotate_yaw(x, y, angle);
+    const pitch = (x: number, y: number, angle: number): [number, number] => this.rotate_pitch(x, y, angle);
+
+    const xform_long = (dx: number, dy: number, dz: number): [number, number, number] => {   // $A518, $A4B4, $A57C
+      let x: number, y: number, z: number;
+      [x, z] = _rot_long(yaw, dx, dz, neg[1]);
+      [y, z] = _rot_long(pitch, dy, z, neg[0]);
+      [x, y] = _rot_long(pitch, x, y, neg[2]);
+      return [x, y, z];
+    };
+
+    const xform_word = (x: number, y: number, z: number): [number, number, number] => {     // $A54E, $A4EA, $A5B2
+      [x, z] = this.rotate_yaw(x, z, neg[1]);
+      [y, z] = this.rotate_pitch(y, z, neg[0]);
+      [x, y] = this.rotate_pitch(x, y, neg[2]);
+      return [x, y, z];
+    };
+
+    type Outcode = (x: number, z: number) => number;
+    let forced: [Outcode, number, string] | null = null;
+    const buf = m.u32(cam + 0x3C);
+    if (buf) {
+      const origin = [0, 1, 2].map((i) => s32(m.u32(buf + 2 + 4 * i)));
+      const n_flat = m.u16(buf + 0x10), count = m.u16(buf + 0x0E);
+      const rel = [s32(origin[0] - cx), s32(origin[1] - cy), s32(origin[2] - cz)];
+      const [ox, oy, oz] = xform_long(rel[0], rel[1], rel[2]);
+      const e0 = buf + 0x12;
+      let entries: number[] = [];
+      for (let k = 0; k < count; k++) entries.push(e0 + 0x40 * k);
+
+      const entry_cam = (e: number): [number, number, number] | null => {
+        const [lx, ly, lz] = [0, 1, 2].map((i) => m.s16(e + 0x0A + 2 * i));
+        if (!in_range(m.u16(e + 2), s32(lx + rel[0]), s32(lz + rel[2]))) {
+          return null;
+        }
+        const [x, y, z] = xform_word(lx, ly, lz);
+        return [s32(x + ox), s32(y + oy), s32(z + oz)];
+      };
+      if (m.u8(buf + 1) & 0x80 || !count) {
+        // all entries, sorted plainly
+      } else if (!(live(e0) && in_range(8, rel[0], rel[2]) && visible(8, ox, oy, oz))) {
+        entries = entries.slice(1 + n_flat);
+      } else {
+        insert(oz, [oz, ox, oy, e0]);
+        const hx = w16(m.u16(e0 + 0x1E) - 0x50), hz = w16(m.u16(e0 + 0x20) - 0x50);
+        const rect = [rel[0] - hx, rel[0] + hx, rel[2] - hz, rel[2] + hz];
+        entries = entries.slice(1 + n_flat);    // high camera: the runway slots are drawn unsorted
+        const outcode: Outcode = (x, z) =>
+          (x < rect[0] ? 1 : 0) | (x > rect[1] ? 2 : 0) | (z < rect[2] ? 4 : 0) | (z > rect[3] ? 8 : 0);
+        const cam_out = outcode(0, 0);
+        forced = [outcode, cam_out, cam_out ? (cy >= 0x50 ? "front" : "behind") : "front"];
+      }
+      for (const e of entries) {
+        if (!live(e)) continue;
+        const p = entry_cam(e);
+        if (p && visible(m.u16(e + 2), p[0], p[1], p[2])) {
+          insert(p[2], [p[2], p[0], p[1], e], forced ? forced[2] : null);
+        }
+      }
+    }
+    if (!m.u8(0xA46)) {
+      for (let i = 0; i < m.u16(0xA48); i++) {
+        const a = OBJECTS + OBJECT_SIZE * i;
+        if (!live(a) || m.u8(a + 1) & 4) {
+          continue;
+        }
+        const t = m.u16(a + 2);
+        const d = [s32(m.u32(a + 0x0A) - cx), s32(m.u32(a + 0x0E) - cy), s32(m.u32(a + 0x12) - cz)];
+        if (!in_range(t, d[0], d[2])) {
+          continue;
+        }
+        let side: string | null = null;
+        if (forced) {
+          const [outcode, cam_out, entry_side] = forced;
+          const oc = outcode(d[0], d[2]);
+          if (cam_out) {
+            side = oc === 0 ? entry_side : (oc & cam_out ? "front" : "behind");
+          } else {
+            side = oc === 0 ? "front" : "behind";
+          }
+        }
+        const [x, y, z] = xform_long(d[0], d[1], d[2]);
+        if (visible(t, x, y, z)) {
+          insert(z, [z, x, y, a], side);
+        }
+      }
+    }
+    const out: ViewNode[] = [];
+    const walk = (i: number | null): void => {     // $6290: near side, node, far side
+      while (i !== null) {
+        walk(tree[i][2]);
+        out.push(tree[i][3]);
+        i = tree[i][1];
+      }
+    };
+    if (tree.length) {
+      walk(0);
+    }
+    return out;
   }
 
   // ---- Walrus -------------------------------------------------------------------------------
@@ -988,10 +1274,12 @@ export class UnitState extends EnemyUnits {
     if (a4 === m.u32(VIEWED)) {
       if (m.u8(a1) & 0x10) {
         const a0 = m.u32(a4 + 0x20);
-        if (!(OBJECTS <= a0 && a0 < OBJECTS + 64 * OBJECT_SIZE)) {
+        // 0 (a Walrus launched with bit 4 still set; $1250E clears +$00-$3F): byte 1 of
+        // the address space is the ROM header's bra.s offset $2E, so "not live".
+        if (a0 && !(OBJECTS <= a0 && a0 < OBJECTS + 64 * OBJECT_SIZE)) {
           throw new NotPorted(`Walrus guided missile pointer $${hex(a0)}`);
         }
-        if (!(m.u8(a0 + 1) & 1) || w16(m.u16(a0 + 0x1A) - 4) !== m.u16(a4 + 0x1A)) {
+        if (!a0 || !(m.u8(a0 + 1) & 1) || w16(m.u16(a0 + 0x1A) - 4) !== m.u16(a4 + 0x1A)) {
           m.set8(a1, m.u8(a1) & ~0x10);
           this._walrus_fire_check(a1, a4);
         } else if (!m.u8(POINTER_MODE)) {
@@ -1222,7 +1510,11 @@ export class UnitState extends EnemyUnits {
     if (mode === 3) {
       return this._walrus_waypoint(a1, a4);
     }
-    throw new NotPorted(`Walrus auto mode ${mode} (the original corrupts its stack)`);
+    // Deliberate deviation (docs/units.md §12): the original's `bsr` to the loop end pops
+    // half its return address as the bay counter and later returns to $E07C000x, so the
+    // ST crashes (address/bus error into a dead TOS). No code sets a mode above 3; here
+    // the bay just idles, like mode 1.
+    this.events.push(["deviation", `Walrus auto mode ${mode}`]);
   }
 
   /** Mode 0: steer to the stern ramp (local (0, -1500)), enter, door open, drive in to
@@ -1293,7 +1585,7 @@ export class UnitState extends EnemyUnits {
     const code = m.s16(a1 + 0x0E);
     if (code > 0) {
       if (code > 11) {
-        throw new NotPorted(`Walrus payload code ${code}`);
+        throw new NotPorted(`Walrus payload code ${code} (unreachable: only loadouts 8, 9, 11 set it)`);
       }
       const stock = m.u32(LOADOUT + 26 * code + 2);
       m.set16(stock, m.u16(stock) + 1);
@@ -1447,7 +1739,12 @@ export class UnitState extends EnemyUnits {
     m.set16(0x942, 0x0F);
     const b = this._new_object(0x12);
     if (b === null) {
-      throw new NotPorted("Walrus missile with no free object (the original returns through the saved a1)");
+      // Deliberate deviation (docs/units.md §12): the original's `beq` goes to an `rts`
+      // that pops the saved a1, so the CPU runs the Walrus record as code and crashes
+      // (illegal instruction into a dead TOS). Here nothing is fired, as for the other
+      // weapons; the cooldown stays set.
+      this.events.push(["deviation", "Walrus missile with no free object"]);
+      return;
     }
     this._copy_angles(a4, b);
     const [h, x, z] = this._turret_offset(a4);
@@ -1620,7 +1917,7 @@ export class UnitState extends EnemyUnits {
       return;
     }
     if (state > 3) {
-      throw new NotPorted(`lift state ${state}`);
+      throw new NotPorted(`lift state ${state} (unreachable: only 0-3 are written)`);
     }
     if (state === 1) {
       let p = w16(m.u16(LIFT_POS) - 0x668);
@@ -1660,7 +1957,7 @@ export class UnitState extends EnemyUnits {
       const a1 = MANTA_RECS + REC * bay;
       const lift = m.u32(0x6D6);
       if (!lift) {
-        throw new NotPorted("lift stow with no lift object");
+        throw new NotPorted("lift stow with no lift object (unreachable: $DD0 changes are followed by $1DC6C)");
       }
       m.set16(lift, 0);
       m.set16(0xB7E, m.u16(0xB7E) + m.u16(a1 + 0x0C));
@@ -1719,7 +2016,7 @@ export class UnitState extends EnemyUnits {
   _lift_object_height(a: number): void {
     const m = this.mem;
     if (!a) {
-      throw new NotPorted("lift object pointer is 0");
+      throw new NotPorted("lift object pointer is 0 (unreachable: $DD0 changes are followed by $1DC6C)");
     }
     const p = u32(0x140 * m.s16(LIFT_POS) * 2);
     m.set32(a + 0x0E, s16(shr(p, 16) + 0xB4));
@@ -1731,12 +2028,12 @@ export class UnitState extends EnemyUnits {
   loadout_fit(code: number, rec: number, obj: number): void {
     const m = this.mem;
     if (code > 11) {
-      throw new NotPorted(`loadout code ${code}`);
+      throw new NotPorted(`loadout code ${code} (unreachable: the arming screens store codes 0-11)`);
     }
     const h = m.u32(LOADOUT + 26 * code + 0x16);
     const kind = LOADOUT_HANDLERS.has(h) ? LOADOUT_HANDLERS.get(h)! : "?";
     if (kind === "?") {
-      throw new NotPorted(`loadout handler $${hex(h)}`);
+      throw new NotPorted(`loadout handler $${hex(h)} (unreachable: the item table is constant)`);
     }
     if (kind === null) {
       return;
@@ -1844,7 +2141,7 @@ export class UnitState extends EnemyUnits {
       return;
     }
     if (Math.max(m.u16(a1 + 0x0C), m.u16(a1 + 0x0E), m.u16(a1 + 0x10)) > 11) {
-      throw new NotPorted("loadout code beyond the item table");
+      throw new NotPorted("loadout code beyond the item table (unreachable: codes 0-11)");
     }
     const d = w16(m.u16(LOADOUT + 26 * m.u16(a1 + 0x0C)) - m.u16(LOADOUT + 26 * m.u16(a1 + 0x0E)));
     m.set8(a1 + 0x1C, w16(UnitCore.absw(d)) > 0x50 ? 0xFF : 0);
@@ -1869,16 +2166,16 @@ export class UnitState extends EnemyUnits {
   /** $11D4C. */
   cmd_walrus_refuel(bay: number | null = null): void {
     const a0 = this._walrus_selected(bay);
-    if (!this.mem.u8(a0 + 1)) {
-      this._refuel(a0 + 8, FUEL_WALRUS);
+    if (!this.mem.u8(a0 + 1) && this._refuel(a0 + 8, FUEL_WALRUS)) {
+      this._walrus_panel(); // the panel redraw $427B6 (units_controls)
     }
   }
 
   /** $11DA4. */
   cmd_walrus_defuel(bay: number | null = null): void {
     const a0 = this._walrus_selected(bay);
-    if (!this.mem.u8(a0 + 1)) {
-      this._defuel(a0 + 8, FUEL_WALRUS);
+    if (!this.mem.u8(a0 + 1) && this._defuel(a0 + 8, FUEL_WALRUS)) {
+      this._walrus_panel(); // the panel redraw $427B6 (units_controls)
     }
   }
 

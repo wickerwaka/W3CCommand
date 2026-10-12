@@ -651,6 +651,9 @@ def run_scenarios(files: list, runs: int, passes: int = 800) -> bool:
                 state.mem.set8(0x8FD, 0xFF)
             try:
                 state.sim_pass()
+                dev = [e for e in state.events if e[0] == "deviation"]
+                if dev:                         # the original crashes here (docs/units.md §12)
+                    raise NotImplementedError(f"deviation: {dev[0][1]}")
             except (NotImplementedError, stsim.TacticalMode, stsim.EnemyDestroyed) as e:
                 frontier[str(e) or type(e).__name__] = frontier.get(str(e) or type(e).__name__, 0) + 1
                 break

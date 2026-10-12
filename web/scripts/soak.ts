@@ -20,6 +20,31 @@ const rnd = () => {
   return seed / 2 ** 32;
 };
 
+/** A random Manta/Walrus command, as the vehicle screens offer them. */
+function vehicleCommand(s: UnitState, bay: number, rnd: () => number): void {
+  const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
+  const cmds: (() => unknown)[] = [
+    () => s.cmd_manta_to_deck(bay), () => s.cmd_manta_take_off(), () => s.cmd_manta_land(bay), () => s.cmd_manta_to_hangar(),
+    () => s.cmd_manta_refuel(bay), () => s.cmd_manta_repair(bay), () => s.cmd_manta_replace(bay), () => s.cmd_manta_prepare(bay),
+    () => s.cmd_walrus_launch(bay), () => s.cmd_walrus_dock(bay), () => s.cmd_walrus_refuel(bay), () => s.cmd_walrus_repair(bay),
+    () => s.cmd_walrus_replace(bay), () => s.cmd_walrus_prepare(bay),
+    () => s.cmd_manta_select(bay), () => s.cmd_walrus_select(bay), () => s.cmd_manta_weapon(Math.floor(rnd() * 3)),
+    () => s.cmd_walrus_weapon(Math.floor(rnd() * 3)), () => s.cmd_manta_autopilot(), () => s.cmd_walrus_autopilot(),
+    () => s.cmd_vehicle_fire(), () => s.cmd_manta_steer_to(Math.floor(rnd() * 511) - 255, Math.floor(rnd() * 511) - 255),
+    () => s.cmd_walrus_steer_to(Math.floor(rnd() * 511) - 255), () => s.cmd_manta_throttle(158 + Math.floor(rnd() * 40)),
+    () => s.cmd_walrus_throttle(158 + Math.floor(rnd() * 40)), () => s.cmd_toggle_mouse_steer(),
+    () => s.cmd_manta_arming_select(bay), () => s.cmd_walrus_arming_select(bay),
+    () => s.cmd_manta_fit(Math.floor(rnd() * 3), pick([1, 2, 3, 4, 5, 10])), () => s.cmd_walrus_fit(Math.floor(rnd() * 2), pick([6, 7, 8, 9, 11])),
+    () => s.cmd_manta_arming_to_deck(), () => s.cmd_walrus_loadout_plus(), () => s.cmd_manta_rear_view(), () => s.cmd_walrus_turret_mode(),
+    () => {
+      const i = Math.floor(rnd() * 64), isl = 0x69b80 + 0x192 * i;
+      if (rnd() < 0.5) s.cmd_set_manta_waypoint(s.mem.s32(isl + 2), s.mem.s32(isl + 6));
+      else s.cmd_set_walrus_waypoint(s.mem.s32(isl + 2), s.mem.s32(isl + 6) - s.mem.u16(isl + 0x0c));
+    },
+  ];
+  pick(cmds)();
+}
+
 const title = new Uint8Array(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "public", "data", "title.bin")));
 const ISLAND_TABLE = 0x69b80, ISLAND_SIZE = 0x192;
 let failed = 0;
@@ -48,7 +73,8 @@ for (let g = 0; g < GAMES; g++) {
         if (s.mem.u8(0x457)) s.cmd_toggle_mouse_steer();
         s.cmd_steer_to(Math.floor(rnd() * 511) - 255);
       } else if (r < 0.061) s.cmd_set_repair_priority(Math.floor(rnd() * 10), Math.floor(rnd() * 3));
-      else if (r < 0.0625) s.cmd_switch_screen([0, 0, 1, 2][Math.floor(rnd() * 4)]);
+      else if (r < 0.0625) s.cmd_switch_screen([0, 0, 1, 2, 16, 17, 18, 19, 24, 25, 26, 27][Math.floor(rnd() * 12)]);
+      else if (r < 0.075) vehicleCommand(s, Math.floor(rnd() * 4), rnd);
       if (frame % 8 === 0) {
         s.mem.set8(0x8fc, 0xff);
         s.mem.set8(0x8fd, 0xff);

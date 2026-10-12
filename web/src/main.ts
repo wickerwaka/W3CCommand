@@ -4,26 +4,31 @@
 // UI (src/ui) that acts only through the model's own commands.
 import * as THREE from "three";
 import "./style.css";
-import { Controls } from "./app/controls.ts";
+import { Controls, type Held } from "./app/controls.ts";
 import { Game, SCREENS } from "./app/game.ts";
 import { islandNames } from "./app/readout.ts";
 import { readStateFile, writeStateFile } from "./app/state_file.ts";
 import { loadState, saveState, type Slot } from "./app/store.ts";
-import { CarrierCamera, FreeCamera, type ViewCamera } from "./render/cameras.ts";
+import { FreeCamera, GameCamera, type ViewCamera } from "./render/cameras.ts";
 import { WorldView } from "./render/world_view.ts";
 import { MapView } from "./ui/map.ts";
 import { Menu } from "./ui/menu.ts";
 import { BridgeHud, DamagePanel } from "./ui/panels.ts";
+import { Gunsight } from "./ui/gunsight.ts";
 import { Shell } from "./ui/shell.ts";
+import { VEHICLE_SCREENS, VehiclePanel } from "./ui/vehicles.ts";
 
 const canvas = document.getElementById("view") as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const camera = new THREE.PerspectiveCamera(50, 1, 5, 3e6);
-const carrierCam = new CarrierCamera();
+const carrierCam = new GameCamera();
 const freeCam = new FreeCamera(canvas);
 
 const AUTOSAVE_SECONDS = 30;
+const MAP_SCREENS = new Set<number>([SCREENS.map, SCREENS.mantaMap, SCREENS.walrusMap]);
+/** The hangar arming screens: their 3D hangar view isn't modelled; the panel stands alone. */
+const ARMING_SCREENS = new Set<number>([SCREENS.mantaArming, SCREENS.walrusArming]);
 
 let title: Uint8Array | null = null;
 let game: Game | null = null;
@@ -44,6 +49,7 @@ const shell = new Shell(document.getElementById("ui")!, {
 
 const controls = new Controls();
 let bridge = new BridgeHud(names, controls);
+const vehicles = new VehiclePanel(controls);
 const damage = new DamagePanel((k, cls) => controls.repairPriority(k, cls));
 const map = new MapView(names, {
   onWaypoint: (x, z) => setWaypoint(x, z),
@@ -66,6 +72,14 @@ const menu = new Menu({
   ],
 });
 document.body.append(menu.el);
+/** Shown over 3D screens that have no picture (lost telemetry, no vehicle, damaged turret). */
+const noSignal = document.createElement("div");
+noSignal.className = "no-signal";
+noSignal.textContent = "NO PICTURE";
+noSignal.hidden = true;
+document.body.append(noSignal);
+const gunsight = new Gunsight();
+document.body.append(gunsight.el);
 
 function setNotice(text: string | null): void {
   notice = text;
@@ -157,11 +171,13 @@ function showScreen(): void {
   const id = game?.screen ?? SCREENS.bridge;
   shell.showScreen(id);
   const panels: HTMLElement[] = [];
-  if (id === SCREENS.map) panels.push(map.el);
+  if (MAP_SCREENS.has(id)) panels.push(map.el);
+  if (id === SCREENS.mantaMap || id === SCREENS.walrusMap) panels.push(vehicles.el);
   else if (id === SCREENS.damage) panels.push(damage.el);
   else if (id === SCREENS.bridge && !freeCamera) panels.push(bridge.el);
+  else if (VEHICLE_SCREENS.has(id) && !MAP_SCREENS.has(id) && !freeCamera) panels.push(vehicles.el);
   shell.content.replaceChildren(...panels);
-  shell.content.classList.toggle("opaque", id === SCREENS.map);
+  shell.content.classList.toggle("opaque", MAP_SCREENS.has(id) || ARMING_SCREENS.has(id));
 }
 
 function setFreeCamera(on: boolean): void {
@@ -182,9 +198,9 @@ const clockText = () => {
 };
 
 // ---- input -------------------------------------------------------------------------------
-const HELD: Record<string, "faster" | "slower" | "left" | "right"> = {
-  KeyW: "faster", ArrowUp: "faster", KeyS: "slower", ArrowDown: "slower",
-  KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right",
+const HELD: Record<string, Held> = {
+  KeyW: "faster", KeyS: "slower", ArrowUp: "up", ArrowDown: "down",
+  KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right", KeyF: "fire", Enter: "fire",
 };
 addEventListener("keyup", (e) => {
   if (HELD[e.code]) controls.hold(HELD[e.code], false);
@@ -263,7 +279,11 @@ function frame(now = performance.now()): void {
   }
   const r = game.runner;
   r.advance(dt);
-  for (const ev of r.state.events.splice(0)) if (ev[0] === "message") shell.message(String(ev[1]), clockText());
+  for (const ev of r.state.events.splice(0)) {
+    if (ev[0] === "message") shell.message(String(ev[1]), clockText());
+    // where the original would crash the ST, the model does something safe (docs/units.md §12)
+    else if (ev[0] === "deviation") shell.message(`[port] ${ev[1]}`, clockText());
+  }
   if (r.stopReason && r.stopReason !== notice) setNotice(r.stopReason);
   if (r.status === "running" && (sinceAutosave += dt) > AUTOSAVE_SECONDS) {
     sinceAutosave = 0;
@@ -272,11 +292,21 @@ function frame(now = performance.now()): void {
   shell.setStatus(clockText(), r.status === "running", r.status === "stopped");
 
   const screen = game.screen;
-  if (screen === SCREENS.map) map.draw(game.ram);
-  else {
+  noSignal.hidden = true;
+  if (MAP_SCREENS.has(screen) || ARMING_SCREENS.has(screen)) {
+    gunsight.update(game.ram, -1, 0, 1);
+    if (MAP_SCREENS.has(screen)) map.draw(game.ram, screen);
+    else {
+      renderer.setClearColor(0x0b1220);
+      renderer.clear();
+    }
+    if (VEHICLE_SCREENS.has(screen)) vehicles.update(game.ram, screen);
+  } else {
     if (screen === SCREENS.bridge) bridge.update(game.ram, names);
     if (screen === SCREENS.damage) damage.update(game.ram);
+    if (VEHICLE_SCREENS.has(screen)) vehicles.update(game.ram, screen);
     carrierCam.update(game.ram);
+    noSignal.hidden = freeCamera || carrierCam.live || screen === SCREENS.damage;
     const cam: ViewCamera = freeCamera ? freeCam : carrierCam;
     cam.update(game.ram, dt);
     cam.orientation(q);
@@ -284,6 +314,7 @@ function frame(now = performance.now()): void {
     camera.quaternion.copy(q);
     fitFrustum(cam);
     renderer.render(view.scene, camera);
+    gunsight.update(game.ram, freeCamera || !carrierCam.live ? -1 : screen, camera.fov, camera.aspect);
   }
 }
 renderer.setAnimationLoop(frame);
@@ -312,5 +343,13 @@ void (async () => {
 
 if (import.meta.env.DEV)
   (window as unknown as { app: unknown }).app = {
-    get game() { return game; }, get view() { return view; }, camera, renderer, frame, freeCam, carrierCam, setScreen, newGame,
+    get game() { return game; }, get view() { return view; }, camera, renderer, frame, freeCam, carrierCam, setScreen, newGame, openLocal,
+    /** Render at the game's 256x128 viewport shape, scaled 2x, for comparing with Hatari. */
+    gameSize() {
+      Object.assign(canvas.style, { width: "512px", height: "256px", top: "60px", left: "20px" });
+      renderer.setPixelRatio(1);
+      renderer.setSize(512, 256, false);
+      camera.aspect = 2;
+      camera.updateProjectionMatrix();
+    },
   };

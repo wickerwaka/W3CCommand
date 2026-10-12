@@ -59,6 +59,17 @@ for _region in (("aircraft and AAV fuel", 0xD00, 8),
 stunits.UNIT_INPUT_REGIONS |= {"hangar selection $48E", "fire inhibit $8F1", "loadout table $CAC4",
                                "walrus ramp tables"}
 
+# The Manta missile lock-on (manta_lock_scan): the 3D view's culling and the patched callback.
+LOCK_REGIONS = (("viewport $6FE", 0x6FE, 4),
+                ("turret zoom view $A94", 0xA94, 8),           # $A98: range bias
+                ("viewport records $4744", 0x4744, 0x4860 - 0x4744),
+                ("object cull table $8598", 0x8598, 84 * 16),
+                ("lock scan callback $62B6", 0x62B6, 4))
+for _region in LOCK_REGIONS:
+    if _region[0] not in {r[0] for r in stunits.UNIT_REGIONS}:
+        stunits.UNIT_REGIONS.append(_region)
+stunits.UNIT_INPUT_REGIONS |= {"viewport records $4744", "object cull table $8598"}
+
 LOADOUT_HANDLERS = {0x1ED5A: "missiles 1", 0x1ED60: "missiles 2", 0x1ED66: "missiles 3",
                     0x1ED6C: "bomb", 0x1ED74: "laser", 0x1ED7A: "avatar", 0x1ED82: "payload",
                     0x1ED88: "comms pod", 0xCBFC: None}
@@ -67,6 +78,15 @@ LOADOUT_HANDLERS = {0x1ED5A: "missiles 1", 0x1ED60: "missiles 2", 0x1ED66: "miss
 def _clamp255(v: int) -> int:
     v = s16(v)
     return 0xFF if v > 0xFF else w16(-0xFF) if v < -0xFF else w16(v)
+
+
+def _rot_long(rotate, x: int, y: int, angle: int) -> tuple:
+    """$A4B4/$A518/$A57C: halve both longs until within +-$4844, rotate, shift back."""
+    k = 0
+    while not (-0x4844 <= x <= 0x4844 and -0x4844 <= y <= 0x4844):
+        x, y, k = x >> 1, y >> 1, k + 1
+    a, b = rotate(x, y, angle)
+    return s32(a << k), s32(b << k)
 
 
 def _divs(n: int, d: int) -> int:
@@ -598,7 +618,8 @@ class VehicleMixin:
     def _runway(self, a4: int):
         buf = self.mem.u32(a4 + 0x3C)
         if not buf:
-            raise NotImplementedError("Manta runway mode without an island buffer")
+            raise NotImplementedError("Manta runway mode without an island buffer (unreachable: modes 4-6 start "
+                                      "from the attached island's runway)")
         return buf, buf + 0x52
 
     def _runway_target(self, a4: int, a5: int, a6: int, px: int, pz: int):
@@ -767,11 +788,11 @@ class VehicleMixin:
         m.set8(b + 0x1B, 0x14)
 
     def _manta_missile(self, a1: int, a4: int) -> None:
-        """$1FFEA: the second press fires at the locked target ($1168) from alternating wings
-        (the first press scans the 3D view, $6290, which isn't modelled)."""
+        """$1FFEA: the first press locks on (manta_lock_scan); the second fires at the locked
+        target ($1168) from alternating wings."""
         m = self.mem
         if m.u16(LOCK_TIMER) == 0:
-            raise NotImplementedError("Manta missile lock-on scan ($6290, the 3D view)")
+            return self.manta_lock_scan()
         m.set16(LOCK_TIMER, 0)
         b = self._new_object(0x11)
         if b is None:
@@ -785,6 +806,202 @@ class VehicleMixin:
         m.set16(0x940, 4 if m.s16(a1 + 6) < 0x78 else 0x0A)
         m.set16(a1 + 0x0C, m.u16(a1 + 0x0C) - 1)
         m.set16(a1 + 0x12, m.u16(a1 + 0x12) - 0x37)
+
+    # ---- Manta missile lock-on ($1FFEA first press) ------------------------------------------
+    def manta_lock_scan(self) -> None:
+        """$1FFEA's first press: patch the depth-tree walk's callback ($62B6 = $200F6), clear the
+        target's high byte and the best distance ($1166 = $7FFF), walk the 3D view's draw list
+        front to back ($6290) and lock on ($116C = 25, a sound) when the best lockable object
+        lies within 24 px of the sight ($1162/$1164, written by the screen 27 render).
+
+        The original walks the depth tree its last render built. The model rebuilds that draw
+        list from the state (view_draw_list); the two agree when the last render was screen
+        27's 3D view on this state (always, except on the pass right after entering the
+        screen and after a frame of static from lost telemetry)."""
+        m = self.mem
+        m.set32(0x62B6, 0x200F6)
+        m.set8(LOCK_TARGET, 0xFF)
+        m.set16(0x1166, 0x7FFF)
+        for node in self.view_draw_list():
+            self._lock_candidate(*node)
+        if m.s16(0x1166) > 0x18 or m.u32(LOCK_TARGET) & 0x80000000:
+            return
+        m.set16(LOCK_TIMER, 0x19)
+
+    def _lock_candidate(self, z: int, x: int, y: int, obj: int) -> None:
+        """$200F6, for one depth-tree node (camera-space Z, X, Y of the object at obj): a
+        lockable object (flags bits 0 and 12) at Z >= 500 projects (X, -Y) * 2^shx / Z with
+        divs.w (divisor: the low word of Z; overflow skips) within +-256 of the centre; the
+        nearest to the sight by the larger axis distance (signed words) wins, later ties too."""
+        m = self.mem
+        f = m.u16(obj)
+        if not f & 1 or not f & 0x1000 or z < 0x1F4:
+            return
+        shx = m.u16(m.u32(0x6FE) + 8) & 63
+        d = s16(z)
+        if d == 0:
+            raise NotImplementedError("Manta lock-on: divs by a zero low word of Z (divide-by-zero trap)")
+        q = []
+        for n in (s32(x << shx), s32(-y << shx)):
+            v = abs(n) // abs(d)
+            v = -v if (n < 0) != (d < 0) else v
+            if not -0x8000 <= v < 0x8000:
+                return
+            q.append(v)
+        for v in q:
+            if s16(-v if v < 0 else v) > 0x100:
+                return
+        d2 = s16(m.u16(0x1162) - q[0])
+        d2 = s16(-d2) if d2 < 0 else d2
+        d3 = s16(m.u16(0x1164) - q[1])
+        d3 = s16(-d3) if d3 < 0 else d3
+        if not d3 > d2:
+            d3 = d2
+        if d3 > m.s16(0x1166):
+            return
+        m.set16(0x1166, d3)
+        m.set32(LOCK_TARGET, obj)
+
+    def view_draw_list(self) -> list:
+        """scene_collect_visible ($7BF6) for the camera [$9FA], as the depth-tree walk $6290
+        visits it (front to back: near side, node, far side): [(Z, X, Y, object)], camera
+        space. tools/stview.py collect_visible is the checked reference (docs/memory-map.md,
+        "Bridge view camera and projection"). Debris shards (the lists at $11D8) are left out:
+        their flag word is 0, so the lock scan never takes them, and they only add nodes."""
+        m = self.mem
+        cam = m.u32(0x9FA)
+        cx, cy, cz = (s32(m.u32(cam + o)) for o in (0x0A, 0x0E, 0x12))
+        neg = tuple(w16(-m.u16(cam + o)) for o in (4, 6, 8))     # pairs $A74/$A78/$A7C: -pitch, -yaw, -roll
+        shx = m.s16(m.u32(0x6FE) + 8)
+        a98 = m.u32(0xA98)
+        for b in range(4):
+            a = stunits.DEBRIS + 0x12 * b
+            sh = m.u32(a + 0x0E) if m.u8(a) & 1 else 0
+            while sh:
+                if m.u16(sh) & 0x1001 == 0x1001:
+                    raise NotImplementedError("Manta lock-on: a lockable debris shard")
+                sh = m.u32(sh + 0x16)
+        tree = []                            # [key, far (+6), near (+4), (Z, X, Y, obj)]
+
+        def insert(key, node, start=None):
+            tree.append([key, None, None, node])
+            n = len(tree) - 1
+            if n > 0x80:
+                raise NotImplementedError("Manta lock-on: more than 128 depth-tree nodes (trap #12)")
+            if n == 0:
+                return
+            if start is None:
+                cur = 0
+            else:                            # $622E far side of the root / $623A near side
+                side = 1 if start == "behind" else 2
+                if tree[0][side] is None:
+                    tree[0][side] = n
+                    return
+                cur = tree[0][side]
+            while True:
+                side = 2 if key <= tree[cur][0] else 1
+                if tree[cur][side] is None:
+                    tree[cur][side] = n
+                    return
+                cur = tree[cur][side]
+
+        def cull(t):
+            b = 0x8598 + 16 * t
+            return m.u32(b), s32(m.u32(b + 8)), s32(m.u32(b + 12))
+
+        def in_range(t, dx, dz):
+            r = (cull(t)[0] + a98) & 0xFFFFFFFF
+            return self.absl(dx) & 0xFFFFFFFF <= r and self.absl(dz) & 0xFFFFFFFF <= r
+
+        def visible(t, x, y, z):
+            _, min_z, radius = cull(t)
+            if z < min_z:
+                return False
+            d = z if z > 0 else 0
+            sh = 7 - shx
+            d = s32(d << sh) if sh >= 0 else d >> -sh
+            if s32(self.absl(x) - radius) > d:
+                return False
+            return s32(self.absl(y) - radius) <= d >> 1
+
+        def live(a):
+            return m.u8(a + 1) & 3 == 3
+
+        def xform_long(dx, dy, dz):          # $A518, $A4B4, $A57C: yaw, pitch, roll
+            x, z = _rot_long(self.rotate_yaw, dx, dz, neg[1])
+            y, z = _rot_long(self.rotate_pitch, dy, z, neg[0])
+            x, y = _rot_long(self.rotate_pitch, x, y, neg[2])
+            return x, y, z
+
+        def xform_word(x, y, z):             # $A54E, $A4EA, $A5B2
+            x, z = self.rotate_yaw(x, z, neg[1])
+            y, z = self.rotate_pitch(y, z, neg[0])
+            x, y = self.rotate_pitch(x, y, neg[2])
+            return x, y, z
+
+        forced = None
+        buf = m.u32(cam + 0x3C)
+        if buf:
+            origin = tuple(s32(m.u32(buf + 2 + 4 * i)) for i in range(3))
+            n_flat, count = m.u16(buf + 0x10), m.u16(buf + 0x0E)
+            rel = (s32(origin[0] - cx), s32(origin[1] - cy), s32(origin[2] - cz))
+            ox, oy, oz = xform_long(*rel)
+            e0 = buf + 0x12
+            entries = [e0 + 0x40 * k for k in range(count)]
+
+            def entry_cam(e):
+                lx, ly, lz = (m.s16(e + 0x0A + 2 * i) for i in range(3))
+                if not in_range(m.u16(e + 2), s32(lx + rel[0]), s32(lz + rel[2])):
+                    return None
+                x, y, z = xform_word(lx, ly, lz)
+                return s32(x + ox), s32(y + oy), s32(z + oz)
+            if m.u8(buf + 1) & 0x80 or not count:
+                pass
+            elif not (live(e0) and in_range(8, rel[0], rel[2]) and visible(8, ox, oy, oz)):
+                entries = entries[1 + n_flat:]
+            else:
+                insert(oz, (oz, ox, oy, e0))
+                hx, hz = w16(m.u16(e0 + 0x1E) - 0x50), w16(m.u16(e0 + 0x20) - 0x50)
+                rect = (rel[0] - hx, rel[0] + hx, rel[2] - hz, rel[2] + hz)
+                entries = entries[1 + n_flat:]   # high camera: the runway slots are drawn unsorted
+
+                def outcode(x, z):
+                    return (x < rect[0]) | (x > rect[1]) << 1 | (z < rect[2]) << 2 | (z > rect[3]) << 3
+                cam_out = outcode(0, 0)
+                forced = (outcode, cam_out, ("front" if cy >= 0x50 else "behind") if cam_out else "front")
+            for e in entries:
+                if live(e) and (p := entry_cam(e)) and visible(m.u16(e + 2), *p):
+                    insert(p[2], (p[2], p[0], p[1], e), forced[2] if forced else None)
+        if not m.u8(0xA46):
+            for i in range(m.u16(0xA48)):
+                a = stunits.OBJECTS + stunits.OBJECT_SIZE * i
+                if not live(a) or m.u8(a + 1) & 4:
+                    continue
+                t = m.u16(a + 2)
+                d = tuple(s32(m.u32(a + o) - c) for o, c in ((0x0A, cx), (0x0E, cy), (0x12, cz)))
+                if not in_range(t, d[0], d[2]):
+                    continue
+                side = None
+                if forced:
+                    outcode, cam_out, entry_side = forced
+                    oc = outcode(d[0], d[2])
+                    if cam_out:
+                        side = entry_side if oc == 0 else ("front" if oc & cam_out else "behind")
+                    else:
+                        side = "front" if oc == 0 else "behind"
+                x, y, z = xform_long(*d)
+                if visible(t, x, y, z):
+                    insert(z, (z, x, y, a), side)
+        out = []
+
+        def walk(i):                         # $6290: near side, node, far side
+            while i is not None:
+                walk(tree[i][2])
+                out.append(tree[i][3])
+                i = tree[i][1]
+        if tree:
+            walk(0)
+        return out
 
     # ---- Walrus -------------------------------------------------------------------------------
     def _walrus_step(self, a1: int, a4: int) -> None:
@@ -802,9 +1019,11 @@ class VehicleMixin:
         if a4 == m.u32(VIEWED):
             if m.u8(a1) & 0x10:
                 a0 = m.u32(a4 + 0x20)
-                if not stunits.OBJECTS <= a0 < stunits.OBJECTS + 64 * stunits.OBJECT_SIZE:
+                # 0 (a Walrus launched with bit 4 still set; $1250E clears +$00-$3F): byte 1 of
+                # the address space is the ROM header's bra.s offset $2E, so "not live".
+                if a0 and not stunits.OBJECTS <= a0 < stunits.OBJECTS + 64 * stunits.OBJECT_SIZE:
                     raise NotImplementedError(f"Walrus guided missile pointer ${a0:X}")
-                if not m.u8(a0 + 1) & 1 or w16(m.u16(a0 + 0x1A) - 4) != m.u16(a4 + 0x1A):
+                if not a0 or not m.u8(a0 + 1) & 1 or w16(m.u16(a0 + 0x1A) - 4) != m.u16(a4 + 0x1A):
                     m.set8(a1, m.u8(a1) & ~0x10)
                     self._walrus_fire_check(a1, a4)
                 elif not m.u8(POINTER_MODE):
@@ -988,7 +1207,11 @@ class VehicleMixin:
             return self._walrus_launch(a1, a4)
         if mode == 3:
             return self._walrus_waypoint(a1, a4)
-        raise NotImplementedError(f"Walrus auto mode {mode} (the original corrupts its stack)")
+        # Deliberate deviation (docs/units.md §12): the original's `bsr` to the loop end pops
+        # half its return address as the bay counter and later returns to $E07C000x, so the
+        # ST crashes (address/bus error into a dead TOS). No code sets a mode above 3; here
+        # the bay just idles, like mode 1.
+        self.events.append(("deviation", f"Walrus auto mode {mode}"))
 
     def _walrus_dock(self, a1: int, a4: int) -> None:
         """Mode 0: steer to the stern ramp (local (0, -1500)), enter, door open, drive in to
@@ -1048,7 +1271,7 @@ class VehicleMixin:
         code = m.s16(a1 + 0x0E)
         if code > 0:
             if code > 11:
-                raise NotImplementedError(f"Walrus payload code {code}")
+                raise NotImplementedError(f"Walrus payload code {code} (unreachable: only loadouts 8, 9, 11 set it)")
             stock = m.u32(LOADOUT + 26 * code + 2)
             m.set16(stock, m.u16(stock) + 1)
         for o in (0x26, 0x28, 0x12):
@@ -1172,7 +1395,12 @@ class VehicleMixin:
         m.set16(0x942, 0x0F)
         b = self._new_object(0x12)
         if b is None:
-            raise NotImplementedError("Walrus missile with no free object (the original returns through the saved a1)")
+            # Deliberate deviation (docs/units.md §12): the original's `beq` goes to an `rts`
+            # that pops the saved a1, so the CPU runs the Walrus record as code and crashes
+            # (illegal instruction into a dead TOS). Here nothing is fired, as for the other
+            # weapons; the cooldown stays set.
+            self.events.append(("deviation", "Walrus missile with no free object"))
+            return
         self._copy_angles(a4, b)
         h, x, z = self._turret_offset(a4)
         m.set16(b + 6, h)
@@ -1315,7 +1543,7 @@ class VehicleMixin:
         if state == 0:
             return
         if state > 3:
-            raise NotImplementedError(f"lift state {state}")
+            raise NotImplementedError(f"lift state {state} (unreachable: only 0-3 are written)")
         if state == 1:
             p = w16(m.u16(LIFT_POS) - 0x668)
             if s16(p) <= -0x4000:
@@ -1346,7 +1574,7 @@ class VehicleMixin:
             a1 = MANTA_RECS + REC * bay
             lift = m.u32(0x6D6)
             if not lift:
-                raise NotImplementedError("lift stow with no lift object")
+                raise NotImplementedError("lift stow with no lift object (unreachable: $DD0 changes are followed by $1DC6C)")
             m.set16(lift, 0)
             m.set16(0xB7E, m.u16(0xB7E) + m.u16(a1 + 0x0C))
             if m.u16(a1 + 0x0E) == 4:
@@ -1395,7 +1623,7 @@ class VehicleMixin:
     def _lift_object_height(self, a: int) -> None:
         m = self.mem
         if not a:
-            raise NotImplementedError("lift object pointer is 0")
+            raise NotImplementedError("lift object pointer is 0 (unreachable: $DD0 changes are followed by $1DC6C)")
         p = (0x140 * m.s16(LIFT_POS) * 2) & 0xFFFFFFFF
         m.set32(a + 0x0E, s16((p >> 16) + 0xB4))
 
@@ -1405,11 +1633,11 @@ class VehicleMixin:
         becomes the relay [$DE0]."""
         m = self.mem
         if code > 11:
-            raise NotImplementedError(f"loadout code {code}")
+            raise NotImplementedError(f"loadout code {code} (unreachable: the arming screens store codes 0-11)")
         h = m.u32(LOADOUT + 26 * code + 0x16)
         kind = LOADOUT_HANDLERS.get(h, "?")
         if kind == "?":
-            raise NotImplementedError(f"loadout handler ${h:X}")
+            raise NotImplementedError(f"loadout handler ${h:X} (unreachable: the item table is constant)")
         if kind is None:
             return
         if kind.startswith("missiles"):
@@ -1494,7 +1722,7 @@ class VehicleMixin:
         if m.u16(0xDC0):
             return
         if max(m.u16(a1 + 0x0C), m.u16(a1 + 0x0E), m.u16(a1 + 0x10)) > 11:
-            raise NotImplementedError("loadout code beyond the item table")
+            raise NotImplementedError("loadout code beyond the item table (unreachable: codes 0-11)")
         d = w16(m.u16(LOADOUT + 26 * m.u16(a1 + 0x0C)) - m.u16(LOADOUT + 26 * m.u16(a1 + 0x0E)))
         m.set8(a1 + 0x1C, 0xFF if w16(self.absw(d)) > 0x50 else 0)
 
@@ -1513,14 +1741,14 @@ class VehicleMixin:
     def cmd_walrus_refuel(self, bay: int = None) -> None:
         """$11D4C."""
         a0 = self._walrus_selected(bay)
-        if not self.mem.u8(a0 + 1):
-            self._refuel(a0 + 8, FUEL_WALRUS)
+        if not self.mem.u8(a0 + 1) and self._refuel(a0 + 8, FUEL_WALRUS):
+            self._walrus_panel()                     # the panel redraw $427B6 (stunits_controls)
 
     def cmd_walrus_defuel(self, bay: int = None) -> None:
         """$11DA4."""
         a0 = self._walrus_selected(bay)
-        if not self.mem.u8(a0 + 1):
-            self._defuel(a0 + 8, FUEL_WALRUS)
+        if not self.mem.u8(a0 + 1) and self._defuel(a0 + 8, FUEL_WALRUS):
+            self._walrus_panel()                     # the panel redraw $427B6 (stunits_controls)
 
     def _repair(self, a0: int, kind: str) -> None:
         m = self.mem
@@ -2116,7 +2344,7 @@ def scenario_walrus(m, rnd):
         _put(m, mis, m.u32(o + 0x0A), 100, m.u32(o + 0x12), m.u32(o + 0x3C))
         m.set16(mis + 0x1A, w16(m.u16(o + 0x1A) + rnd.choice((4, 4, 5))))
         m.set8(mis + 0x1C, 0x78)
-        m.set32(o + 0x20, mis)
+        m.set32(o + 0x20, mis if rnd.random() < 0.8 else 0)     # 0: launched with bit 4 still set
         m.set8(rec, (m.u8(rec) | 0x10) & 0xFE)
         m.set16(rec + 0x2E, rnd.choice((0x50, 0xA3)))
 
@@ -2130,6 +2358,8 @@ def scenario_walrus_dock(m, rnd):
     sub = rnd.choice((0, 0, 1, 2, 3)) if mode == 0 else rnd.choice((0, 1, 2))
     if rnd.random() < 0.08:
         sub = rnd.choice((4, 9))
+    if rnd.random() < 0.04:                             # no code sets these (a deviation: §12)
+        mode = rnd.choice((4, 5, 0xFF))
     m.set8(rec, rnd.choice((1, 3, 0x41, 7)))
     m.set8(rec + 0x1A, mode)
     m.set8(rec + 0x1B, sub)
@@ -2243,8 +2473,167 @@ def scenario_walrus_weapons(m, rnd):
     _fill_objects(m, rnd)
 
 
+def _make_neutral(m, i: int) -> None:
+    """Island i loses its command centre (as when it is destroyed, $1C324): owner 0, the
+    centre's slot and 3D entry cleared, the network refiltered (by the model's verified
+    network_invalidate, applied to the image both sides start from)."""
+    isl = stsim.Island(m, i)
+    buf = stsim.OBJ_BUFFERS[1 if m.u8(isl.a + 1) else 0]
+    for j, s in enumerate(isl.slots):
+        if s.type in (stsim.T_COMMAND_CENTRE, stsim.T_COMMAND_CENTRE_CONSTRUCTION):
+            s.type = 0
+            if m.u8(isl.a):
+                m.set16(buf + 0x12 + 0x40 * j, 0)
+    m.set8(stsim.OWNERS + i, 0)
+    st = stunits.UnitState.from_ram(bytes(m.buf))
+    st.network_invalidate()
+    st.to_ram(m.buf)
+
+
+def _accb_spot(m, rnd, i: int):
+    """Island-local (x, z) for a drop: on a tree (so the builder cuts it down) when there is
+    one, else anywhere 3000 inside the coast."""
+    isl = stsim.Island(m, i)
+    trees = [s for s in isl.slots if stsim.T_TREE_FIRST <= s.type <= stsim.T_TREE_LAST]
+    hx, hz = isl.half_x, isl.half_z
+    if trees and rnd.random() < 0.7:
+        t = rnd.choice(trees)
+        x, z = t.x + rnd.randrange(-600, 600), t.z + rnd.randrange(-600, 600)
+    else:
+        x, z = rnd.randrange(-hx + 3000, hx - 3000), rnd.randrange(-hz + 3000, hz - 3000)
+    return max(-hx + 3000, min(hx - 3000, x)), max(-hz + 3000, min(hz - 3000, z))
+
+
+def _walrus_at_drop(m, o, buf, x, z, h):
+    """Put the Walrus so that its ACCB lands at local (x, z): 1000 ahead of the spot."""
+    st = stunits.UnitState.from_ram(bytes(m.buf))
+    vx, vz = st.rotate_yaw(0, 0x3E8, h)
+    _put(m, o, m.u32(buf + 2) + x + vx, 15, m.u32(buf + 0x0A) + z + vz, buf)
+    m.set16(o + 6, h)
+
+
+def scenario_accb(m, rnd):
+    """A Walrus ashore on the loaded island, made neutral, dropping an ACCB (often onto
+    trees, which are cut down with debris): the builder then grows on the island."""
+    buf = m.u32(CARRIER_OBJ + 0x3C)
+    if not buf:
+        return
+    i = m.u8(buf + 1)
+    _make_neutral(m, i)
+    eco = stsim.Economy(m, i)
+    eco.raw_stock = rnd.choice((0, 300, 2000, eco.raw_stock))
+    bay = rnd.randrange(4)
+    o, rec = _vehicle(m, "Walrus", bay)
+    x, z = _accb_spot(m, rnd, i)
+    _walrus_at_drop(m, o, buf, x, z, rnd.randrange(0x10000))
+    m.set8(rec + 0x1A, 3)
+    m.set16(rec + 8, 3000)
+    m.set16(rec + 0x0A, 0xFFFF)
+    m.set16(rec + 0x18, 2)
+    m.set16(rec + 0x0E, 9)
+    m.set16(rec + 0x10, rnd.choice((0, 1, 2)))
+    _controls(m, rnd, o, rec, "Walrus")
+    m.set8(POINTER_MODE, 0)
+    m.set8(FIRE_KEYS, m.u8(FIRE_KEYS) | 1)
+    m.set8(FIRE_INHIBIT, 0)
+    m.set16(stsim.G_ISLAND, (i - rnd.randrange(1, 4)) & 63)    # its island step comes soon
+
+
 SCENARIOS = [scenario_manta_weapons, scenario_walrus_weapons, scenario_manta_flight, scenario_manta_carrier, scenario_manta_runway, scenario_lift,
-             scenario_walrus, scenario_walrus_dock]
+             scenario_walrus, scenario_walrus_dock, scenario_accb]
+
+
+# ---- check_units: capturing an island ----------------------------------------------------------
+CAPTURE_START = "pass_flight_0_in.bin"          # tools/capture_play.py: Walrus 1 out off island 27
+
+
+def check_accb_capture(files) -> bool:
+    """End to end, model against the original pass by pass (screen input stubbed, the
+    one-second flag every 8 passes), from the play session: island 27 has lost its command
+    centre (neutral); Walrus 1, armed with an ACCB (code +$10 = 0, 1, 2), drives on autopilot
+    up the beach to a spot inland; on arrival the player takes over and fires (the drop cuts
+    down a tree planted there); then the builder grows in the island steps until the island
+    is the player's. Each run must capture it with the matching kind."""
+    import random
+    import check_sim
+    import check_units
+    from stgfx import ROOT
+    start = ROOT / "emu" / "out" / "play" / CAPTURE_START
+    if not start.exists():
+        print(f"accb capture: SKIPPED (no {start}; run tools/capture_play.py)")
+        return True
+    rnd = random.Random(5)
+    ok = True
+    i, rec, o = 27, WALRUS_RECS, _objaddr(WALRUS_OBJ)
+    for code in (0, 1, 2):
+        m = stsim.Mem(bytearray(start.read_bytes()))
+        _make_neutral(m, i)
+        stsim.Economy(m, i).raw_stock = 2000
+        isl = stsim.Island(m, i)
+        buf = m.u32(o + 0x3C)
+        x, z = rnd.randrange(-3000, -1000), rnd.randrange(-9000, -5000)    # clear of the buildings
+        j = next(k for k, s in enumerate(isl.slots) if s.type == 0)      # a tree on the spot
+        s = isl.slots[j]
+        s.type, s.heading, s.value, s.word6 = 0x18 + code, 0, 0, 0
+        s.x, s.z = x + rnd.randrange(-300, 300), z - 1000 + rnd.randrange(-300, 300)
+        st = stunits.UnitState.from_ram(bytes(m.buf))
+        st._slot_create_at(isl.a, s.a, buf, j)
+        st.to_ram(m.buf)
+        m.set8(rec, 0x07)                                               # auto, waypoint, report
+        m.set16(rec + 0x14, 4000)
+        m.set32(o + 0x0A, m.u32(buf + 2) - 6000)                       # out of the carrier's way
+        m.set32(o + 0x12, m.u32(buf + 0x0A) - 30000)
+        m.set16(o + 6, 0)
+        m.set8(rec + 0x1A, 3)
+        m.set32(rec + 0x1C, m.u32(buf + 2) + x)
+        m.set32(rec + 0x20, m.u32(buf + 0x0A) + z)
+        m.set16(rec + 0x24, 0x3C)
+        m.set16(rec + 0x18, 2)
+        m.set16(rec + 0x0E, 9)
+        m.set16(rec + 0x10, code)
+        ram = bytes(m.buf)
+        oracle = check_sim.Oracle(ram)
+        oracle.uc.mem_write(0x17094, b"\x4e\x75")
+        state = stunits.UnitState.from_ram(ram)
+        arrived = dropped = done = None
+        p = 0
+        while p < 3000 and (done is None or p < done + 100):
+            if p % 8 == 0:
+                oracle.uc.mem_write(0x8FD, b"\xff")
+                state.mem.set8(0x8FD, 0xFF)
+            if arrived is None and not state.mem.u8(rec) & 2:           # arrived: take over, fire
+                arrived = p
+                for a, v in ((rec, state.mem.u8(rec) & ~1), (VIEWED, None), (POINTER_MODE, 0),
+                             (FIRE_KEYS, state.mem.u8(FIRE_KEYS) | 1), (FIRE_INHIBIT, 0)):
+                    data = o.to_bytes(4, "big") if v is None else bytes([v & 0xFF])
+                    oracle.uc.mem_write(a, data)
+                    state.mem.buf[a:a + len(data)] = data
+            n = len(state.events)
+            state.sim_pass()
+            check_units.run_pass(oracle)
+            ref = oracle.ram()
+            mine = bytearray(ref)
+            state.to_ram(mine)
+            lines = check_units.diff(mine, ref)
+            if lines:
+                print(f"accb capture (code {code}): MISMATCH at pass {p}")
+                for line in lines:
+                    print("  " + line)
+                return False
+            if ("message", "ACCB dropped successfully") in state.events[n:]:
+                dropped = p
+            if done is None and state.mem.u8(stsim.OWNERS + i):
+                done = p
+            p += 1
+        captured = [e for e in state.events if e[0] == "captured" and e[1] == i]
+        tree_cut = stsim.Island(state.mem, i).slots[j].type == 0 and not state.mem.u16(buf + 0x12 + 0x40 * j)
+        good = (dropped is not None and captured == [("captured", i, 1)] and tree_cut
+                and stsim.Economy(state.mem, i).kind == code + 1)
+        print(f"accb capture (code {code}): {'OK' if good else 'FAILED'} ({p} passes: arrived at {arrived}, "
+              f"dropped at {dropped}{', tree cut' if tree_cut else ''}, island {i} the player's at {done})")
+        ok &= good
+    return ok
+
 
 
 # ---- check_units: hangar commands -----------------------------------------------------------------
@@ -2352,4 +2741,148 @@ def check_commands(files) -> bool:
     return ok
 
 
-CHECKS = [check_commands]
+CHECKS = [check_commands, check_accb_capture]
+
+
+# ---- check_units: the Manta missile lock-on ---------------------------------------------------
+LOCK_CAPTURES = "emu/out/views"     # tools/capture_views.py: screen 27 with a Manta flying
+
+
+def _perturb_lock(m, rnd) -> None:
+    """A Manta in view of 0-5 lockable objects (enemy fighters, enemy carrier, defence drones,
+    and the island's buildings) placed around its sight: near and far (Z < 500, Z >= $8000 where
+    divs takes a negative low word), in and out of the 24 px window, exact ties; random sight
+    (rudder/pitch: the render writes $1162/$1164 from them), weapon and stock."""
+    import math
+    rec, o = m.u32(0x48E), m.u32(0x492)
+    m.set16(o + 4, rnd.choice((0, 0, rnd.randint(-0x800, 0x800))))
+    m.set16(o + 8, rnd.choice((0, 0, rnd.randint(-0x800, 0x800))))
+    m.set16(o + 6, rnd.choice((m.u16(o + 6), rnd.randrange(0x10000))))
+    m.set32(o + 0x0E, rnd.choice((m.u32(o + 0x0E), 300, 1500)))
+    m.set16(rec + 2, rnd.randint(-255, 255))
+    m.set16(rec + 4, rnd.randint(-255, 255))
+    m.set16(rec + 0x1A, rnd.choice((1, 1, 1, 0)))
+    m.set16(rec + 0x0C, rnd.choice((0, 2, 2, 2)))
+    m.set8(rec, m.u8(rec) & 0xFE)            # manual
+    m.set16(LOCK_TIMER, rnd.choice((0, 0, 0, 25)))
+    m.set16(0x940, rnd.choice((0, 0, 0, 3)))
+    m.set8(FIRE_INHIBIT, 0)
+    m.set8(POINTER_MODE, 0)
+    m.set8(FIRE_KEYS, m.u8(FIRE_KEYS) | 1)
+    yaw = (m.u16(o + 6) & 0xFFF0) * math.pi / 0x8000
+    sight = (s16(m.u16(rec + 2)) >> 3, -s16(m.u16(rec + 4)) >> 3)
+    placed = []
+    for k in rnd.sample((19, 20, 21, 22, 23, 11, 12, 13, 14), rnd.randrange(6)):
+        a = _objaddr(k)
+        t = {19: 4, 11: 10, 12: 11, 13: 12, 14: 13}.get(k, 33)
+        if placed and rnd.random() < 0.25:
+            x, y, z = rnd.choice(placed)     # an exact tie with an earlier one
+        else:
+            dist = rnd.choice((300, 450, 600, 2000, 6000, 15000, 30000, 34000, 40000))
+            px = sight[0] + rnd.randint(-40, 40)
+            py = sight[1] + rnd.randint(-40, 40)
+            lat, up = px * dist / 256, -py * dist / 256
+            x = int(m.u32(o + 0x0A) - 0x100000000 * (m.u32(o + 0x0A) >> 31) + lat * math.cos(yaw)
+                    + dist * math.sin(yaw))
+            z = int(s32(m.u32(o + 0x12)) - lat * math.sin(yaw) + dist * math.cos(yaw))
+            y = int(s32(m.u32(o + 0x0E)) + up)
+        placed.append((x, y, z))
+        if not m.u8(a + 1) & 1 or m.u16(a + 2) != t:
+            m.buf[a:a + 0x40] = bytes(0x40)
+            m.set16(a + 2, t)
+        m.set16(a, m.u16(stunits.OBJ_FLAGS + 2 * t) | 3)
+        _put(m, a, x, y, z)
+        m.set16(a + 6, rnd.randrange(0x10000))
+
+
+def _trapv_hook(oracle) -> None:
+    """Unicorn's trapv (the polygon clipper, $4CE2/$4D0A) traps even with V clear."""
+    from unicorn import UC_HOOK_CODE
+    from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
+
+    def skip(uc, addr, size, data):
+        if uc.reg_read(UC_M68K_REG_SR) & 2:
+            raise RuntimeError("TRAPV")
+        uc.reg_write(UC_M68K_REG_PC, addr + 2)
+    for a in (0x4CE2, 0x4D0A):
+        oracle.uc.hook_add(UC_HOOK_CODE, skip, begin=a, end=a)
+
+
+def check_lock_on(files) -> bool:
+    """The first missile press against the original on screen 27 captures: the screen's render
+    ($15244, which builds the depth tree and the sight $1162) runs on the original, then
+    $1FFEA (a1 = record, a4 = object) and the model's _manta_missile on that state; and a whole
+    pass (sim_pass / $40B0) from the same rendered state with the fire key down."""
+    import random
+    import check_sim
+    import check_units
+    from stgfx import ROOT
+    from unicorn.m68k_const import UC_M68K_REG_A1, UC_M68K_REG_A4, UC_M68K_REG_PC as _PC
+    caps = sorted((ROOT / LOCK_CAPTURES).glob("pass_*_in.bin"))
+    caps = [f for f in caps if (lambda d: d[0x718 + 1] == 27 and d[0x70C + 1] and d[0x496 + 1] == 8)(f.read_bytes())]
+    if not caps:
+        print("manta lock-on: no screen 27 captures (tools/capture_views.py); skipped")
+        return True
+    rnd = random.Random(27)
+    ok = True
+    stats = dict(calls=0, passes=0, locks=0, scans=0, candidates=0, skipped=0)
+    for n in range(400):
+        f = caps[n % len(caps)]
+        m = stsim.Mem(bytearray(f.read_bytes()))
+        _perturb_lock(m, rnd)
+        oracle = check_sim.Oracle(bytes(m.buf))
+        _trapv_hook(oracle)
+        try:
+            oracle.call(0x15244)
+        except RuntimeError:
+            stats["skipped"] += 1
+            continue
+        ram = bytes(oracle.ram())
+        whole = n % 2 == 1
+        state = stunits.UnitState.from_ram(ram)
+        rec, o = state.mem.u32(0x48E), state.mem.u32(0x492)
+        first = state.mem.u16(LOCK_TIMER) == 0
+        try:
+            if whole:
+                state.sim_pass()
+            else:
+                state._manta_missile(rec, o)
+        except NotImplementedError:
+            stats["skipped"] += 1
+            continue
+        try:
+            if whole:
+                oracle.uc.mem_write(0x17094, b"\x4e\x75")        # screen input stubbed
+                check_units.run_pass(oracle)
+            else:
+                oracle.uc.reg_write(UC_M68K_REG_A1, rec)
+                oracle.uc.reg_write(UC_M68K_REG_A4, o)
+                oracle.call(0x1FFEA)
+        except Exception as e:           # noqa: BLE001 - a trap in the original
+            if stats["skipped"] < 3:
+                print(f"  (trial {n}: the original stopped: {e} at PC=${oracle.uc.reg_read(_PC):05X})")
+            stats["skipped"] += 1
+            continue
+        ref = oracle.ram()
+        mine = bytearray(ref)
+        state.to_ram(mine)
+        lines = check_units.diff(mine, ref)
+        stats["passes" if whole else "calls"] += 1
+        if first and ref[0x1162:0x116E] != ram[0x1162:0x116E]:
+            stats["scans"] += 1
+            stats["locks"] += int.from_bytes(ref[LOCK_TIMER:LOCK_TIMER + 2], "big") == 0x19
+        stats["candidates"] += sum(1 for z, x, y, a in stunits.UnitState.from_ram(ram).view_draw_list()
+                                   if int.from_bytes(ram[a:a + 2], "big") & 0x1001 == 0x1001)
+        if lines:
+            print(f"manta lock-on: MISMATCH ({'pass' if whole else '$1FFEA'}) from {f.name}, trial {n}")
+            for line in lines:
+                print("  " + line)
+            ok = False
+            break
+    print(f"manta lock-on: {'OK' if ok else 'MISMATCH'} ({stats['calls']} calls of $1FFEA, {stats['passes']} "
+          f"whole passes, {stats['scans']} scans, {stats['locks']} locks, {stats['candidates']} lockable "
+          f"nodes in view, {stats['skipped']} skipped)")
+    return ok
+
+
+CHECKS.append(check_lock_on)

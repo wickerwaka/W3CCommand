@@ -118,7 +118,8 @@ export class MapView {
     this.cz = z;
   }
 
-  draw(ram: Uint8Array): void {
+  /** screen: 2 carrier map, 25 Manta map, 17 Walrus map (which unit's course is shown). */
+  draw(ram: Uint8Array, screen = 2): void {
     const dpr = Math.min(devicePixelRatio, 2);
     const w = this.el.clientWidth, h = this.el.clientHeight;
     if (!w || !h) return;
@@ -157,8 +158,19 @@ export class MapView {
     }
 
     const car = carrier(ram);
-    const [wx, wy] = this.toScreen(car.waypoint.x, car.waypoint.z);
-    const [px, py] = this.toScreen(car.x, car.z);
+    // the course shown: the carrier's, or the selected vehicle's ([$48C] Manta, [$566] Walrus;
+    // waypoint longs Manta +$1E/+$26, Walrus +$1C/+$20)
+    let from = { x: car.x, z: car.z }, to = car.waypoint;
+    if (screen === 25 || screen === 17) {
+      const manta = screen === 25, bay = ((ram[manta ? 0x48c : 0x566] << 8) | ram[(manta ? 0x48c : 0x566) + 1]) & 3;
+      const rec = (manta ? 0x496 : 0x570) + 0x34 * bay;
+      const s32 = (a: number) => (ram[a] << 24) | (ram[a + 1] << 16) | (ram[a + 2] << 8) | ram[a + 3];
+      const u = unit(ram, (manta ? 2 : 6) + bay);
+      if (u) from = { x: u.x, z: u.z };
+      to = { x: s32(rec + (manta ? 0x1e : 0x1c)), z: s32(rec + (manta ? 0x26 : 0x20)) };
+    }
+    const [wx, wy] = this.toScreen(to.x, to.z);
+    const [px, py] = this.toScreen(from.x, from.z);
     c.strokeStyle = "rgba(255,220,90,0.8)";
     c.setLineDash([4, 4]);
     c.beginPath();
