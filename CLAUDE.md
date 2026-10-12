@@ -34,6 +34,7 @@ The Python tooling is a uv project. The dependencies are in `pyproject.toml` and
 - `uv run python tools/capture_sim.py` starts a strategy game in Hatari headless (it pokes the menu mouse variables) and saves RAM before and after the warm-up, single sim steps, logistics ticks and enemy-AI calls to `emu/out/sim/`. It takes about 50 s.
 - `uv run python tools/check_sim.py` compares the model byte for byte against those Hatari captures and against the game's own code under Unicorn, including long, fuzzed and enemy-scenario runs (about 40 s). Run it after changing `stsim.py`; it must print no MISMATCH.
 - `tools/stunits.py` extends the model with the unit layer (`UnitState`; `docs/units.md` §14 lists what's ported). `uv run python tools/check_units.py` checks each ported routine against the original under Unicorn: the shared maths on random inputs, then every routine on the action-game pass captures plus fuzzed states. Make those captures with `uv run python tools/capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action`. An action game needs no input: the carrier sails to a waypoint and stops.
+- `uv run python tools/capture_play.py` plays a scripted session in Hatari: clicking panel buttons the way a player would (Manta to deck and take-off, Walrus launch, supply transfer) and poking waypoints. It captures runs of passes to `emu/out/play/`; `check_units.py` compares the model with those too.
 
 ## Hatari (running the original)
 

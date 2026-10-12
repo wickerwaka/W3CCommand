@@ -763,6 +763,13 @@ The model is split into `UnitCore` (`tools/stunits.py`) and three mixins, one pe
 
 **Island 27 never engages** in that game. The carrier stops about 35,300 units from the island's centre, outside the 16-bit island-local range, so its "in range" flag (bit 9) is never set. The engagement scenario below moves it closer.
 
+**Real play** (`tools/capture_play.py`): a scripted session in Hatari clicks the actual panel buttons, as a player would.
+1. Send Manta 1 to the deck and launch it, with its waypoint poked onto island 27; it's shot down by the island's defences.
+2. Launch Walrus 1 towards the island.
+3. With island 27 made the stockpile and 4 Assassins queued, start a supply transfer; the drone completes it.
+
+The session captures 300 passes across these phases. All 300 match the model byte for byte, both against Hatari and against the original under Unicorn. Two 4000-pass model-against-original runs from the take-off and the transfer also match, the first through the Manta's destruction.
+
 **Checks** (`tools/check_units.py`, about 25 s):
 - the maths against the original on 3000 random inputs each;
 - each routine on the 120 captured states, with 2000 fuzzed states for `carrier_step`;

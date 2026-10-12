@@ -675,6 +675,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dir", type=Path, default=ROOT / "emu" / "out" / "action")
     ap.add_argument("--routine", action="append")
+    ap.add_argument("--play", type=Path, default=ROOT / "emu" / "out" / "play",
+                    help="pass captures from tools/capture_play.py, also checked against Hatari")
     ap.add_argument("--fuzz", type=int, default=2000, help="perturbed states per routine (where defined)")
     ap.add_argument("--scenarios", type=int, default=160, help="perturbed multi-pass runs")
     args = ap.parse_args()
@@ -689,6 +691,11 @@ def main() -> int:
             for check in part.CHECKS:
                 ok &= check(files)
         ok &= check_hatari(files)
+        play = sorted(args.play.glob("pass_*_in.bin")) if args.play.is_dir() else []
+        if play:
+            print("play session (tools/capture_play.py):")
+            ok &= check_routine("sim_pass", play, 0)
+            ok &= check_hatari(play)
         ok &= long_run(files, 4000)
         ok &= run_scenarios(files, args.scenarios)
     return 0 if ok else 1
