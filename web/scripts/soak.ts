@@ -71,12 +71,12 @@ for (let g = 0; g < GAMES; g++) {
   for (let k = 0; k < 8; k++) ram[0x1236 + k] = Math.floor(rnd() * 256);
   const s = UnitState.from_ram(ram);
   const events: string[] = [];
-  let frame = 0, ended = "";
+  let frame = 0, ended = "", games = 1, toTitle = -1;
   try {
     s.new_game(strategy);
     s.new_game_screen();
     for (; frame < FRAMES; frame++) {
-      const r = rnd();
+      const r = toTitle === -1 ? rnd() : 1;       // no commands between a game over and the next game
       if (r < 0.002) {
         const i = Math.floor(rnd() * 64), isl = ISLAND_TABLE + ISLAND_SIZE * i;
         s.cmd_set_carrier_waypoint(s.mem.s32(isl + 2), s.mem.s32(isl + 6) - s.mem.u16(isl + 0x0c) - 4000);
@@ -103,16 +103,27 @@ for (let g = 0; g < GAMES; g++) {
       for (const e of s.events.splice(0)) {
         events.push(e.join(" "));
         if (e[0] === "game over") {
-          ended = ` (game over at frame ${frame}, screen ${e[1]}, result ${e[2]})`;
-          frame = FRAMES;
+          ended += ` [game over at ${frame}: screen ${e[1]}, result ${e[2]}]`;
+          // 35 (enemy carrier destroyed): continue; 34: back to the title, then a new game
+          // from the title menu's own command a little later
+          if (e[1] === 35) toTitle = -2;
+          else toTitle = frame + 20;
         }
+      }
+      if (toTitle === -2 && s.mem.u16(0x718) === 35) {
+        s.cmd_continue(1);
+        toTitle = -1;
+      } else if (toTitle >= 0 && frame >= toTitle) {
+        toTitle = -1;
+        if (s.mem.u16(0x718) === 33 && s.cmd_title_new_game(strategy ? 1 : 0)) games++;
+        else throw new Error(`no title screen after the game over (screen ${s.mem.u16(0x718)})`);
       }
     }
     const counts = `player ${s.mem.u16(0xd54)} enemy ${s.mem.u16(0xd56)}`;
     const msgs = new Map<string, number>();
     for (const e of events) msgs.set(e, (msgs.get(e) ?? 0) + 1);
     const top = [...msgs].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${v}x ${k}`).join("; ");
-    console.log(`game ${g} (${strategy ? "strategy" : "action"}): OK${ended || `, ${frame} frames`}, islands ${counts}; ${top}`);
+    console.log(`game ${g} (${strategy ? "strategy" : "action"}): OK, ${frame} frames, ${games} game${games > 1 ? "s" : ""}${ended}, islands ${counts}; ${top}`);
   } catch (e) {
     failed++;
     const what = e instanceof NotPorted ? `unported: ${e.message}` : (e as Error).stack;
