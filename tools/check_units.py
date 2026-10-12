@@ -39,8 +39,8 @@ ROUTINES = {          # name: (original address, model method)
     "carrier_systems_status": (0x17578, U.carrier_systems_status),
     "sim_pass": (None, U.sim_pass),
 }
-import stunits_carrier, stunits_enemy, stunits_vehicles  # noqa: E402
-PARTS = (stunits_vehicles, stunits_enemy, stunits_carrier)
+import stunits_carrier, stunits_controls, stunits_enemy, stunits_setup, stunits_vehicles  # noqa: E402
+PARTS = (stunits_vehicles, stunits_enemy, stunits_carrier, stunits_controls, stunits_setup)
 for _part in PARTS:
     for _name, (_addr, _method) in _part.ROUTINES.items():
         ROUTINES[_name] = (_addr, getattr(U, _method))

@@ -213,21 +213,21 @@ def run_suite(rec: Recorder, suite: str, main, argv: list) -> None:
     print(f"{suite}: checks passed")
 
 
-def load_vector(suite: str, n: int) -> tuple:
-    with gzip.open(OUT / f"{suite}.jsonl.gz", "rt") as f:
+def load_vector(out: Path, suite: str, n: int) -> tuple:
+    with gzip.open(out / f"{suite}.jsonl.gz", "rt") as f:
         for k, line in enumerate(f):
             if k == n:
                 vec = json.loads(line)
-                base = np.frombuffer(zlib.decompress((OUT / "bases" / f"{vec['base']}.bin.z").read_bytes()), np.uint8)
+                base = np.frombuffer(zlib.decompress((out / "bases" / f"{vec['base']}.bin.z").read_bytes()), np.uint8)
                 delta = np.frombuffer(zlib.decompress(base64.b64decode(vec["delta"])), np.uint8)
                 return vec, (base ^ delta).tobytes()
     sys.exit(f"{suite} has no vector {n}")
 
 
-def replay(suite: str, n: int, dump: Path | None) -> int:
+def replay(out: Path, suite: str, n: int, dump: Path | None) -> int:
     """Run one vector in Python; with a dump from check-sim.ts, diff it after its failing call."""
     import check_units
-    vec, ram = load_vector(suite, n)
+    vec, ram = load_vector(out, suite, n)
     cls = stunits.UnitState if vec["cls"] == "UnitState" else stsim.WorldState
     state = cls.from_ram(ram)
     mine = dump.read_bytes() if dump else None
@@ -257,12 +257,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fuzz", type=int, default=300, help="check_units: perturbed states per routine")
     ap.add_argument("--scenarios", type=int, default=160, help="check_units: perturbed multi-pass runs")
+    ap.add_argument("--out", type=Path, default=OUT, help="output directory (check-sim.ts --vectors reads it)")
     ap.add_argument("--replay", nargs=2, metavar=("SUITE", "N"))
     ap.add_argument("--dump", type=Path, help="with --replay: the TypeScript state after the failing call")
     args = ap.parse_args()
     if args.replay:
-        return replay(args.replay[0], int(args.replay[1]), args.dump)
-    rec = Recorder(OUT)
+        return replay(args.out, args.replay[0], int(args.replay[1]), args.dump)
+    rec = Recorder(args.out)
     rec.install()
     import check_sim
     import check_units  # noqa: F401

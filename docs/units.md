@@ -633,12 +633,10 @@ It then runs `$19778[type]` for entries with flag bit 8.
 
 **Screens:** `[$718]` = the current screen (0–35), with 8 tabs (`$714`, last screen per tab in `$720`). Per-screen tables:
 - render `$144A0`;
-- input `$170D4`;
-- panels `$43856`;
+- input `$170D4` (§10.3);
+- panels `$43856` (§10.4);
 - enter `$139D4`;
-- leave `$14318`.
-
-Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request, the left icon column → tab, the right column → screen (element type = screen id).
+- leave `$14318` (§10.5).
 
 | Tab | Screens |
 |---|---|
@@ -646,27 +644,317 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 | Weapons | 8 laser turret, 9 decoy flares, 10 viewing drone, 11 defence drones radar, 12 weapons status |
 | Walrus | 16 arming, 17 map, 18 control, 19 dock 3D, 20 status |
 | Manta | 24 arming, 25 map, 26 deck 3D, 27 control, 28 status |
-| — | 32 game status (save, format, quit; pauses), 33 title, 34/35 game over |
-
-**Mouse:**
-- **Pointer mode** (`$457` set): the deltas `$1268/$126A` move the pointer `$474/$476`.
-- **Mouse-steer** (`$457` clear, toggled with the right button on screens 0, 8, 18 and 27): the raw deltas go to the viewed vehicle and are cleared after use.
-
-**Clicks:**
-- Buttons: `$880` left, `$882` right (held / new).
-- `$45A` = 2 for a new press, 1 for auto-repeat after 6 passes.
-- Panel element `+$12` is the click handler; the element type indexes the flag table `$40EB2` (bit 15 hidden, 14 disabled, 13 highlight, 5 selected).
-
-**Keyboard:** `$798 + 2·scancode` (held, new). The last character goes to `$1270`.
+| — (tabs 5–7) | 32 game status (save, format, options, surrender; skips the simulation), 33 title, 34 game over, 35 enemy carrier destroyed ("continue?") |
 
 **What the simulation reads:**
 
 | Unit | Variables |
 |---|---|
-| Carrier | throttle `$646` (slider (187 − y)·4); chevrons `$88A/$88B`; autopilot `$640` bit 0; rudder from mouse-steer |
-| Manta (selected `$48C`, record `$48E`) | throttle `+8` (slider (195 − y)·7); weapon `+$1A`; flags `+0`; mode `+$1C` |
-| Walrus (selected `$566`, record `$568`) | throttle `+6`; weapon `+$18`; flags `+0`; mode `+$1A` |
+| Carrier | throttle `$646` (slider (187 − y)·4); chevrons `$88A/$88B`; autopilot `$640` bit 0; course `$640` bit 1, waypoint `$64E/$652`, cruise `$656`; rudder from mouse-steer |
+| Manta (selected `$48C`, record `$48E`) | throttle `+8` (slider (195 − y)·7, 0–250); weapon `+$1A`; flags `+0`; mode `+$1C` |
+| Walrus (selected `$566`, record `$568`) | throttle `+6` (slider (195 − y)·`$2AA` >> 8, 0–96); weapon `+$18`; flags `+0`; mode `+$1A` |
 | Laser turret | cursor keys or icons; fire `$88C` or a click; zoom Insert / Clr-Home |
+| Carrier systems | repair class `$AF4 + 8k + 4` (0–2), set on the damage screen |
+
+### 10.1 Input path
+
+**Interrupts** (IKBD `$17D80`):
+- mouse deltas add to `$1268/$126A`;
+- buttons: `$880` left, `$882` right, each a word (held, new) set to `$0101` on a press;
+- keys: `$798 + 2·scancode` (held, new); the character (table `$1280`) goes to `$1270`.
+
+**`ui_frame` (`$F636`, every pass, before the simulation):**
+1. A forced tab request `[$1227]`/`[$1228]` is taken first.
+2. `$17EEA` turns the left button into `$45A`: 2 for a new press, 1 for auto-repeat once held 6 passes, else 0.
+3. **Pointer mode** (`$457` set) only: the hit test `$B46E` walks the screen's panels (`$71C`). The first element under the pointer `$474/$476` that is shown and enabled gets the click. It needs:
+   - the panel's state word to match (e.g. `[$702]` = 0, the carrier map's `[$710]`, the damage screen's `[$B62]`/`[$B64]`, the map's `[$766]`);
+   - its type's flags (`$40EB2` + 2·type) without bit 15 (hidden) or 14 (disabled);
+   - while paused (`[$462]` = 0), bit 12. Only PAUSE (type 99) has it.
+4. The handler at element `+$12` is jumped to with:
+   - d0/d1 = pointer x/y;
+   - d2 = `[$45A]`;
+   - a3 = the element;
+   - a5 = past the panel's state address.
+
+   Handlers that begin `cmpi.w #2,d2; bne $F6E8` act on a fresh press only. The others repeat while the button is held.
+5. Pending tab `$716` / screen `$71A` (set by the left/right icon columns `$F844`/`$F880`; `$71A` = the current screen re-enters it): leave `$14302`, `[$718]`, `$139AE` (zeroes the view pointers `$9FA/$9FE/$A02`, `$122D`), enter, then `$71C` = the panel list.
+6. **Drag** (`$F73C`): modal mode `$460` with a drop callback `$468`, run on release with the pointer in d0/d1.
+
+**Mouse-steer** (`$457` clear): no hit test. A left click is the vehicle's fire button (`$881`), and the deltas steer the viewed unit and are cleared after use. The right button toggles `$457` on screens 0, 8, 18 and 27 (on 0 and 27 not under autopilot, on 18 not while steering a guided missile).
+
+**Element flags** in `$40EB2`: bit 15 hidden, 14 disabled, 13 highlight, 12 usable while paused, 5 selected. Several buttons share a type. The auto button (type 90, `$40F66`) is the carrier, Manta and Walrus autopilot alike, and each control screen's input handler keeps its selected bit equal to its unit's auto bit.
+
+### 10.2 The loop around the simulation (`$408A`) and game flow
+
+| Step | Address | What it writes |
+|---|---|---|
+| keys | `$4194` | Control-Q → resume `$FD98`; Control-S → pause `$FD84`; Alt-Help → "Yes, I have kicked out the OS" |
+| paused | `$44EE` | while `[$462]` = 0. Typing **GROW OLD ALONG WITH ME** (stored inverted at `$1172`, progress `$116E`) sets debug mode `$1189` and resumes. In debug mode: keypad 1 refuels every Manta/Walrus, keypad 2 heals them (`$FA0`), keypad 3 moves units and the carrier with a course to their waypoints, Control + F-key dumps the screen to disk |
+| debug | `$46E8` | debug mode: keypad + / − switch `$118A`; keypad 9 shows the difficulty |
+| simulation | `$40B0–$413E` | skipped while paused or while `[$461]` is set (screens 32–35). `$8FE` is cleared, then set on passes that run the logistics tick (nothing reads it) |
+| end timer | `$4158` | `$732` counts down. It is set to 100 when the enemy carrier is destroyed (`$1B72C`, `$1C154`). At 0: `$730` = `[$714]`, tab 7 is requested (screen 35: YES `$13990` goes back to tab `[$730]`; NO `$1399C` sets `$466` = 4 and goes to 34) |
+| end request | `$417A` | `[$463]` is cleared and tab 6 is requested (screen 34: game over, result `$466`) |
+
+**Pause** (`$FD66`, the PAUSE button, fresh press, not while `$461` is set) toggles between:
+- **pause** `$FD84`: PAUSE selected (`$40F78` bit 5), `$462` = 0, `$1231` = 0 (palette cycling), sound off, `$1270` = `$FF`;
+- **resume** `$FD98`: `$462` = `$1231` = `$FF`, the key table `$798–$883`, `$888`, `$1270`, the mouse deltas and `$880–$883` are cleared.
+
+The game clock (VBL `$17BC8`) runs only while `$462` is set and `$461` is clear.
+
+**End of game:** `$463` is set by:
+- `carrier_step` (superstructure 0, `$466` = 1);
+- the island counts at `$40B0` (enemy 64 → 2, player 64 → 3);
+- surrender on the game-status screen `$101D8` (`$466` = 0).
+
+### 10.3 Per-pass input handlers (`$170D4`, run by `screen_input` `$17094`)
+
+After the handler, `$17094` clears these new flags: right `$883`, 1–4 `$79D–$7A3`, keypad 1–4 `$873/$875/$877/$86D`, Insert `$83D` and Clr-Home `$827`.
+
+| Handler | Screens | Each pass | Port |
+|---|---|---|---|
+| `$170D2` | 4–7, 9, 11–15, 20–23, 28–35 | `rts` | ✔ |
+| `$17164` | 0 bridge | gauge timers `$954/$956/$958/$962` count down and redraw. The auto button follows `$640` bit 0 (`$12C16`). Autopilot off: a right click toggles `$457`. Insert / Clr-Home zoom the view (`$8B4`, `$8B2`; display only). Control-V → "Atari Bundle Version 16/02/90" | ✔ |
+| `$1747A` | 1 damage | spins the diagram (`$64D16`, display). With the lift shown (`[$B58]` = 8) it cycles `$B5A` 0–7 (part highlight). `$952` counts down and redraws | ✔ |
+| `$17244` | 2, 17, 25 maps | held cursor keys scroll (`$FAB0/$FAC8/$FA84/$FA6C`), held Insert / Clr-Home zoom (`$F984/$F99A`); with `[$766]` = 0 a right click recentres (`$F8B4`). On 17/25 the number keys select a unit (`$132D6` → `$FFB8`/`$FF1E`) | ✔, except the number keys |
+| `$177DE` | 3 resources | guards the sub-mode `[$D14]`: modes ≥ 2 need comms (`$B0A`). Modes ≥ 4 also need no transfer running and the carrier at the stockpile island. Otherwise it shows the message, sets `$D14` = 0 and reselects the tab | ✘ |
+| `$1741A` | 8 laser turret | `$968` gauge; held cursor keys aim (`$FD2C–$FD44`); Insert / Clr-Home zoom (`$FC9C/$FCAC`); a right click toggles `$457` | ✘ |
+| `$1778E` | 10 viewing drone | drone (object 15) not out: disarms. Otherwise a right click toggles **SSM armed `$1160`**, which also sets the pointer clip `$46E–$47E` | ✘ |
+| `$17748` | 16 Walrus arming | number keys → `$11DEE`; hangar animation `$DC8` | ✘ |
+| `$17374` | 18 Walrus control | number keys → `$10016`. Re-enters (`$71A` = 18) when `[$70E]` ≠ (status ≥ 8). Gauges. In auto, the auto button follows bit 0; in manual, a right click toggles `$457` unless steering a guided missile (bit 4) | ✘ |
+| `$17782` | 19 Walrus dock | number keys → `$1249E` | ✘ |
+| `$17610` | 24 Manta arming | number keys → `$116C6` | ✘ |
+| `$1773C` | 26 Manta deck | number keys → `$11F92` | ✘ |
+| `$172BC` | 27 Manta control | **`$116C` (missile lock timer) −1**: simulation state, counted only here. Number keys → `$FE54`. Re-enters when `[$70C]` ≠ (status ≥ 8). Gauges; auto button / right click as on 18 | ✘ |
+
+`$132D6` (number keys) works only in pointer mode outside a drag. It calls the select handler with d2 = 2 and a fake element at `$13352` that it writes into the code.
+
+### 10.4 Panel click handlers
+
+F = fresh press only, R = repeats while held. Port: ✔ ported, ✘ not yet. The left/right icon columns (`$F844`, `$F880`), PAUSE (`$FD66`, ✔) and the no-op `$B068` are on every screen.
+
+**Carrier** (all in `stunits_controls.py`, §10.6):
+
+| Scr | (x, y) | Handler | F/R | Does |
+|---|---|---|---|---|
+| 0 | 288,159 slider | `$FE3C` | R | autopilot off: `$646` = (187 − y)·4, 112 to −32 |
+| 0 | 298,155 / 298,178 | `$FDCE` / `$FDD4` | R | `$88A` / `$88B` (target = speed ± 1 in `carrier_step`) |
+| 0 | 78,155 | `$12A26` | R | autopilot off: `$646` = 0 |
+| 0 | 100,155 | `$12A16` | R | autopilot off: `$640` bit 7 (rudder self-centres) |
+| 0 | 100,178 (type 90) | `$12BAC` | F | needs `[$641]` = 1: auto selected → off; else with a course (`$640` bit 1) on, "Autopilot on"; else "No course set" |
+| 0 | 56,155 / 56,178 | `$FCE8` / `$FCF8` | F | view zoom `$8B4` 0–4, `$8B2` = `$2E8` >> zoom (display only; not ported) |
+| 1 | 13…265,155 (types 48–57) | `$FB3A` | F | show system k: `$B58` (`$B5A` = 0 for the lift), part highlights |
+| 1 | 293,155 | `$FBBE` | F | priorities panel: classes → work table `$B44`, `$B62` = `$B64` = 1 |
+| 1 | grid 200,16 (84×100) | `$FC64` | F | `$B44`[(y − 16)/10] = (x − 200)/28 |
+| 1 | CANCEL / EXIT | `$FC08` / `$FC24` | F | reset the work table / write it to the classes, `$B62` = `$B64` = 0 |
+| 2/17/25 | map 32,6 (256×128) | `$F8D8` | R | cursor = map point under the pointer (`$F91E`): Manta `$69E/$6A6`, Walrus `$6B0/$6B4`, carrier `$6BE/$6C2` (if `[$710]` = 0) |
+| 2/17/25 | 100…122,155/178 | `$FAB0 $FA6C $FAC8 $FA84` | R | scroll `$75C/$760` by zoom·`$400` (±`$7FFFFF`) |
+| 2/17/25 | 144,155 / 144,178 | `$F984` / `$F99A` | R | zoom level `$758` −1 / +1 (0–10), `$75A` = 1 << level |
+| 2/17/25 | 166,155 | `$F9BE` | R | centre on the selected unit if out, else the carrier; carrier map mode 1: the stockpile island `[$D4A]` |
+| 2/17/25 | 166,178 / EXIT | `$FAF4` / `$FB1A` | F | island info box `$766` (centre on `$742/$746`) / close |
+| 17/25 | 188,155 | `$FA50` | | centre on the carrier |
+| 2 | 13,178 `[$710]`=0 | `$131A8` | F+R | fresh: course = cursor, cruise `$656` = `$6BC`, `$640` bit 1, bit 2 = `$6C6`: "Carrier course set" (autopilot on) or "… - engage autopilot". Held: autopilot on, "Carrier autopilot engaged" |
+| 2 | 57,178 | `$1326C` | F | `$640` bit 1 off: "Carrier course cleared" / "Carrier has no course to clear" |
+| 2 | 13,155 | `$1336E` | F | `$710` ^= 1 (course panel / islands panel), re-enter |
+| 2 | 298,155 / 298,178 / 288,159 | `$12E7A $12E8C $12E9E` | R | cruise `$6BC` ± 8 / slider (187 − y)·4, 0–`$70` |
+| 2 | 210,155 (type 92) | `$12E44` | R | `$6C6` = not `$6C6` (report arrival) |
+| 2 | 13,178 `[$710]`=1 | `$137C2` | F | **set the stockpile island** to `[$764]` (`$D4E` = old, `$D4A`, `$21D46` re-ships goods). Refused while re-routing, without comms, with stocks in transit, off an island, on the stockpile already, on a non-friendly or isolated island (✘) |
+| 4 | 144,155 | `$12C2C` | F | clear the message log (✘) |
+
+**Vehicle control.** Manta record `[$48E]`, object `[$492]`; Walrus record `[$568]`, object `[$56C]`. "Manual" = record `+0` bit 0 clear.
+
+| Scr | (x, y) | Handler | F/R | Does |
+|---|---|---|---|---|
+| 27 / 18 | icons 12…78,155; number keys | `$FE54` / `$10016` | F | select the unit: `$48C`/`$566`, records, view pointers `$9FA/$9FE/$A02`, `$A14`, visible bits, `$8F1` = 0, controllable `$70C`/`$70E` |
+| 27 / 18 | 12/34/56,178 | `$FEE2` / `$FF7C` | F | weapon `+$1A` / `+$18` = 0–2 |
+| 27 / 18 | 78,178 (type 90) | `$12A44` / `$12B00` | F | autopilot: on → bit 0, mode 3 ("Autopilot on", "… - set course"); off in mode 3; in take-off/launch modes `+$33` = `$FF` (deferred) |
+| 27 | 100,155 / 100,178 | `$129E6` / `$129FE` | F | manual: `+0` bit 7 / bit 6 (rudder / pitch self-centre) |
+| 18 | 100,155 / 100,178 | `$12982` / `$129A2` | R / F | manual: rudder self-centre (bit 7; held: bit 6, rudder 0) / bit 5, the rudder turns the turret |
+| 27 / 18 | 123,155 | `$100A8` / `$100D4` | F | instrument page `+$18` / `+$16` (display) |
+| 27 / 18 | 288,159 slider | `$FDDA` / `$FE0A` | R | manual: throttle `+8` = (195 − y)·7, 0–250 / `+6` = (195 − y)·`$2AA` >> 8, 0–96 |
+| 27 / 18 | 298,155 | `$10100` / `$1012E` | F | `+$32` toggle (sight overlay *(guess)*) |
+| 27 / 18 | 298,178 | `$1015C` / `$10190` | F | `$8F1` rear view (blocks firing) |
+| 27 | 135,117 | `$13356` | R | auto in mode 5 (landed on a runway): take-off request bit 5 |
+| 26 / 19 | icons; number keys | `$11F92` / `$1249E` | F | deck / dock selection `$DCC` / `$DE4` (records repointed, `$48C`/`$566` kept) |
+| 26 | 56,178 / 12,178 / 100,155 / 100,178 | `$11894 $120F4 $12002 $1242A` | F | to deck, land, take off, to hangar (✔) |
+| 26 | 144,155 | `$12360` | F | abort landing of `[$DDC]` (`$1232` = 0, mode 3, waypoint beside the carrier if none) |
+| 19 | 100,155 / 12,178 | `$1250E` / `$127C4` | F | launch, dock (✔) |
+| 19 | 144,155 | `$128AE` | F | abort docking of `[$6E0]` (`$1233` = 0, mode 3) |
+| 25 / 17 | icons; number keys | `$FF1E` / `$FFB8` | F | select; already selected: recall its course into the edit globals |
+| 25 / 17 | 13,178 | `$12FC4` / `$13122` | F+R | set course from the edit globals (Manta `$69C` cruise, `$69E/$6A2/$6A6`, `$6AC`; Walrus `$6AE`, `$6B0/$6B4`, `$6BA`); held: engage |
+| 25 / 17 | 57,178 | `$12F8E` / `$130EE` | F | clear course |
+| 25 | 298… / 254… | `$12C90 $12CA2 $12CB4` / `$12CE2 $12CF6 $12D0A` | R | edit cruise `$69C` ±16, 50–250 / altitude `$6A2` ±230, 250–3500 |
+| 17 | 298… | `$12D98 $12DAA $12DBC` | R | edit cruise `$6AE` ±8, 0–96 |
+| 25 / 17 | 188,178 / 210,155 | `$12D40 $12D50` / `$12DEC $12DFC` | R | map draw mode `$6AA`/`$6B8` (display) / announce `$6AC`/`$6BA` |
+
+**Arming** (screens 24 / 16; selection `$DB4` / `$DB6`, sub-panel `$DC0` / `$DC2`):
+
+| Handler | Does |
+|---|---|
+| `$116C6` / `$11DEE` | select the bay (records repointed) |
+| `$1158A $11676 $1176A $117D4 $11886 $1182A` | Manta refuel, defuel, repair, replace, to deck, prepare (✔) |
+| `$11D4C $11DA4 $11E8A $11EF0 $11F3E` | Walrus refuel, defuel, repair, replace, prepare (✔) |
+| `$1132E $11352` / `$11A30 $11A76` | loadout cursor `$DB8` / `$DBA` |
+| `$1135E` / `$11A82` | drag a loadout from stores to a slot (Manta `+$C/+$E/+$10`, wings ≤ code 2, weight ≤ 750; Walrus `+$26/+$28`, weight ≤ 2000): stock exchanged, messages for stock, mounting and capacity |
+| `$114C8` / `$11C16` | drag a fitted item back to stores |
+| `$11CE0 $11D0C` | Harbinger count `$CB80` ± 1 |
+
+**Resources** (screen 3, sub-mode `$D14`):
+
+| Handler | Does |
+|---|---|
+| `$1102E` | abort the resupply (`$D42` = `$D46` = 2, `$D40` = 0) or say why not |
+| `$10E4A` | start the supply transfer (✔, `stunits_enemy`) |
+| `$109E8 $10B72 $10C06 $10D52` | open the stores priorities (2), fuel priorities (3), stores queue (4), fuel queue (5) panels; comms needed, 4/5 also the stockpile |
+| `$1098A`, `$109BC` | item picture (1), back (display) |
+| `$10ABC $10B02 $11196 $10AA6 $10A8A`, `$10A66` / `$10A3C` | edit item classes `+$14` and targets `+$16` (keypad), scroll; CANCEL / EXIT **commits** `+$10/+$12` |
+| `$10BDA`, `$10BC6` / `$10BAC` | fuel classes `$D0E–$D12`; EXIT **commits** `$D08–$D0C` |
+| `$10C88 $10CCA $10C7C $10C6A` | stores queue `$D96` ↔ stockpile `$D78`, limited by capacity ("Limit of ACC stores reached") |
+| `$10DA4 $10DC0 $10E18 $10E22 $10E30 $10E3C` | fuel queues `$D6C/$D70/$D74` ↔ stockpile `$D60/$D64/$D68`, step `$4000` ("Limit of ACC tanks reached") |
+
+**Weapons:**
+
+| Scr | Handler | Does |
+|---|---|---|
+| 8 | `$FD2C $FD34 $FD3C $FD44` | turret heading `$6CC` / elevation `$6CA` by 300 >> `[$6D2]`, rates cleared |
+| 8 | `$FD60` | fire: `$88C` |
+| 8 | `$FC9C $FCAC` | zoom `$6D2` 0–3, `$A94`/`$A98` |
+| 8 | `$12A34 $12A3C` | `$6D5` bit 7 / 6: centre the aim rates |
+| 9, 10 | `$1338C`, `$134C2`, `$13598` | flare, recon drone, SSM (✔) |
+| 11 | `$104C8` | drag a drone station on the radar (outside ±1500 × ±900, not on another) |
+| 11 | `$10602 $106EC $10706 $10714` | reset stations; formation `$698` ± 1 (0–8); apply formation |
+| 11 | `$10738 $1088C` | launch / recall (✔) |
+
+**Game status, title, game over:**
+
+| Scr | Handler | Does |
+|---|---|---|
+| 32 | `$101F2 $10200 $101E4 $1020E`, `$1021C` | sub-mode `$708`: surrender, save, format, options; back |
+| 32 | `$10228 $10230` | format single / double sided |
+| 32 | `$102BE` | **save** slot k (§11); an action game then gets `$2000` difficulty |
+| 32 | `$101D8` | surrender: `$463` = `$FF`, `$466` = 0 |
+| 32 | `$13778` | options `$1246–$1249` (sea dots, message ping, background noise, sound effects) |
+| 33 | `$103B2 / $103A0` | new strategy / action game (`$42A8`, §16) |
+| 33 | `$103C4 $103D2 $103DE` | load menu, cancel, **load** slot k |
+| 35 | `$13990 / $1399C` | continue / stop (`$466` = 4, screen 34) |
+
+### 10.5 Screen switching, enter and leave
+
+**Tabs** (`$714`; the left icon column, element types 32 + tab, panel `$417F0` shown while `[$704]` = 0). Each tab remembers its last screen in `$720 + 2·tab`:
+
+| Tab | Icon (x, y) | Screens (right icon column, type = screen, panel shown while `[$706]` = 0) | Initial |
+|---|---|---|---|
+| 1 carrier | 0, 0 | 0, 2, 1, 3, 4 (icons top to bottom) | 0 |
+| 2 weapons | 0, 28 | 8–12 | 8 |
+| 3 Walrus | 0, 56 | 16–20 | 18 |
+| 4 Manta | 0, 84 | 24–28 | 27 |
+| 0 game status | 0, 112 | 32 (its right column holds the menu buttons 100–103) | 32 |
+| 5, 6, 7 | — | 33 title, 34 game over, 35 enemy carrier destroyed: only by a forced request | 33, 34, 35 |
+
+**ui_frame `$F636`** (every pass, before the simulation):
+1. A forced request (`[$1227]` set, from `$42A8`, the end timer and end request, enter 34 and the continue panel) is taken at once, before the hit test (that pass's clicks are lost): `$1227` = 0, tab `$714` = `[$1228]`, screen `[$720 + 2·tab]`.
+2. Otherwise `$17EEA` (the click state `$45A`, §10.1) and, unless a drag runs (`$460`), the hit test. A forced request a handler made is taken next.
+3. Then a pending screen `$71A` ≥ 0 (also stored as the current tab's screen), else a pending tab `$716` ≥ 0 (its remembered screen).
+4. The switch `$F6B6`: leave handler of `[$718]` (none if negative), `[$718]` = new, `$139AE` (`$122D` = 0; `$9FA` camera, `$9FE` viewed, `$A02` controlled = 0), enter handler, `$71C` = panel list `$43856[new]`, `st.b` `$716` and `$71A` (only their high bytes: the words become `$FFxx`), panels drawn (`$782A`, UI).
+
+There is no loop: a request made by an enter handler (34 requests the title) is taken by the next `ui_frame`.
+
+**Icon handlers** (fresh press): the tab icon `$F844`, unless already lit (`$40EB2` + 2·type, bit 13), lights itself, clears the old tab's icon (type 32 + `[$714]`) and sets `$716` = tab. The screen icon `$F880` likewise clears type `[$718]` and sets `$71A` = screen. Re-entering a screen (`$71A` = `[$718]`) runs its leave and enter again: the carrier map's mode button (`$1336E`), the game-status buttons (`$71A` = 32) and the vehicle input handlers when controllability changes.
+
+**Enter (`$139D4`) and leave (`$14318`) handlers.** "Carrier view" = `$A46/$A47` = 0 (world objects drawn), `$9FA` = object 0 (`$5DCDA`), `$9FE` = `$A02` = the carrier, `$A14` = 2. "Obj0" = object 0, "+$E" its y (a long), "+$3C" its island buffer pointer. `$6FE` = the 3D viewport rectangle (`$4744` full, `$4770`, `$4786` turret, `$475A` hangar, `$47C8` title, `$47DC` game status). Palettes (`$1326`), gauge and redraw timers (`$954–$968`, `$984`) and panel drawing are UI.
+
+| Scr | Enter | State written | Leave |
+|---|---|---|---|
+| 0 | `$13C24` | `$1230` = `$FF`; carrier view; obj0 flags 0, y 240, `+$3C` = the carrier's; `$480` = `[$64A]`; auto button = `$640` bit 0 | `$143D4`: carrier visible (`+1` bit 1), `$1230` = 0 |
+| 1 | `$1404E` | `$A46/$A47` = `$FF`; the damage diagram as the model list at `$64CFE` (the carrier `$4A` and parts `$4B–$52`, entry `[$B58]` lit by `+1` bit 1; 8 → part 0, `$B5A` = 0); `$9FA` = obj0 at the origin, `+$3C` = `$64CFE` | `$14414`: obj0 flags 0 |
+| 2 | `$13AB2` | map view `$758–$767` ← `$768`; icon 92 = `$6C6` | `$143A8`: `$768` ← `$758` |
+| 3, 12, 20, 28 | `$142E6`, `$142DC` | palette only | — |
+| 4 | `$14288` | `$6FE` | — |
+| 8 | `$1415A` | carrier view; obj0 flags 0, `+$3C` = the carrier's (y kept); object 1 flags 0; turret view offsets `$A94` = `[$6D2]`·10000, `$A98` = `[$6D2]`·14142 (`$FCD4`) | `$1441C`: `$A94` = `$A98` = 0 |
+| 9 | `$13A64` | carrier view; obj0 flags 0, `+8` = 0, y 300, `+$3C` = the carrier's | `$14426` (`rts`) |
+| 10 | `$142A0` | `$9FA` = `$9FE` = `$A02` = object 15 (the viewing drone), its visible bit cleared; `$A14` = 3; SSM disarmed `$1160` = 0 | `$14428`: object 15 visible |
+| 11 | `$141B2` | snapshot of the 4 stations' `+$A/+$C` into `$141DE` (for RESET `$10602`) | — |
+| 16 | `$13C94` | carrier view; obj0 = the hangar model (flags 3, type `$53`, y 140, `+$3C` = the carrier's); `$568` = record `[$DB6]`; sub-panel `$DC2` (`$11E60`: status 0 → 0, 1–2 → 1, 3+ → 2) | `$143E2`: obj0 `+1` bit 0 cleared, carrier visible |
+| 17 | `$13AC2` | `$14224` (`$568`/`$56C` from `[$566]`); icons 91/92 = `$6B8`/`$6BA`; `$758` ← `$778` | `$143AE`: `$778` ← `$758` |
+| 18 | `$13F06` | `$1230` = `$FF`; objects 0 and 1 flags 0; `$116C` = 0; `$14224`; `$9FE` = the Walrus object (`$9FA` stays 0), its visible bit cleared; `$A14` = 1; `$13F5A`: `$8F1` = 0, `$70E` = status (`+1`, signed) ≥ 8, `$A02` = `$9FE` if so else 0, icons (62–64 weapon, 80 turret, 90 auto, 104, 105). Not controllable: `$457` = `$FF` | `$14404`: `[$9FE]` visible, `$1230` = 0 |
+| 19 | `$13D08` | `$56C`/`$568` from `[$DE4]`; object 1 flags 0; carrier view; obj0 flags, `+4`, `+8` = 0, y 50 (`+$3C` kept) | — |
+| 24 | `$13D82` | carrier view; obj0 flags 0, y 240, `+$3C` = the carrier's; `$48E` = record `[$DB4]`; sub-panel `$DC0` | `$14464`: carrier visible, `$1230` = 0 |
+| 25 | `$13AD2` | `$141FE` (`$48E`/`$492` from `[$48C]`); icons 91/92 = `$6AA`/`$6AC`; `$758` ← `$788` | `$143B4`: `$788` ← `$758` |
+| 26 | `$13DEE` | `$492`/`$48E` from `[$DCC]`; object 1 flags 0; carrier view; obj0 flags, `+4`, `+8` = 0, y 230 (`+$3C` kept) | — |
+| 27 | `$13E68` | `$1230` = `$FF`; object 1 flags 0; `$141FE`; `$9FA` = `$9FE` = the Manta object, its visible bit cleared; `$A14` = 0; `$13EBA`: `$8F1` = 0, `$70C`, `$A02` as for 18, icons; not controllable: `$457` = `$FF`; `$116C` = 0 | `$143F4`: `[$9FE]` visible, `$1230` = 0 |
+| 32 | `$13AFA` | sound off; `$708` = 0 if entered from the tab icon (`[$716]` ≥ 0, so not on a re-enter); button `100 + k` lit for `[$708]` (table `$13B6C`); **`$461` = `$FF`** | `$143CA`: `$461` = 0, `$706` = 0 |
+| 33 | `$13B7C` | `$8F0` = 0 (no 3-VBL frame lock); `$A46/$A47` = `$FF`; the title model at `$64CFE`; `$6CA` = 2000; `$9FA` = obj0 at the origin; `$461` = `$FF`; `$93C` = `[$93A]` | `$14432`: `$8F0` = `$FF` |
+| 34 | `$1424A` | `$F712`; `$457` = `$461` = `$FF`; `$4272`: request tab 5 (title), `$708` = 0 | `$14438`: a tune if `[$466]` = 1; waits for a key (`$889`); clears `$881` bit 0 |
+| 35 | `$14266` | sound off; `$F712`; `$457` = `$461` = `$FF` | `$1445E`: `$461` = 0 |
+
+Screens 5–7, 13–15, 21–23 and 29–31 have `rts` handlers.
+
+**What the renderer follows** (after the enter handler; `$9FA` camera, `$9FE` viewed, `$A02` controlled, `$A14` camera mode):
+
+| Scr | `$9FA` | `$9FE` | `$A02` | `$A14` | Object 0 |
+|---|---|---|---|---|---|
+| 0 bridge | object 0 | carrier | carrier | 2 | y 240 |
+| 8 turret | object 0 | carrier | carrier | 2 | y kept; the view is offset by `$A94/$A98` |
+| 9 flares | object 0 | carrier | carrier | 2 | y 300 |
+| 10 drone | object 15 | object 15 | object 15 | 3 | — |
+| 16 Walrus hangar | object 0 | carrier | carrier | 2 | hangar model `$53`, y 140 |
+| 18 Walrus | 0 | the Walrus | it, if status ≥ 8, else 0 | 1 | flags 0 |
+| 19 Walrus dock | object 0 | carrier | carrier | 2 | y 50 |
+| 24 Manta hangar | object 0 | carrier | carrier | 2 | y 240 |
+| 26 Manta deck | object 0 | carrier | carrier | 2 | y 230 |
+| 27 Manta | the Manta | the Manta | it, if status ≥ 8, else 0 | 0 | — |
+| 1 damage, 33 title | object 0 at the origin, its `+$3C` the model list `$64CFE` | 0 | 0 | kept | — |
+| other screens | 0 | 0 | 0 | kept | — |
+
+Object 0's position and angles are set each pass by the renderer from the viewed object and `$A14` (not decoded). `$9FE` is also the island defences' viewer rule (§8.1). With `$9FE` = 0 (maps, status screens) the simulation still runs.
+
+**Notes:**
+- **Visible bits.** Entering a vehicle view clears the viewed object's visible bit (`+1` bit 1); leaving sets it again, as do leaving 0/24 for the carrier and 10 for the drone. Selecting another vehicle in place (`$FE54`/`$10016`, not ported) swaps the bits and view pointers without leave/enter.
+- **Controllability.** `$70C`/`$70E` and `$A02` are recomputed on enter (and on select). The input handlers re-enter the screen when a vehicle's status crosses 8.
+- **`$461`** (simulation skipped, game clock stopped, PAUSE ignored) is set by entering 32–35 and cleared by leaving 32 and 35. Leaving 33 and 34 doesn't clear it: `$42A8` restores it from the snapshot, and loading a game too.
+- **Saved selections.** The arming and dock screens keep their own selection (`$DB4`, `$DB6`, `$DCC`, `$DE4`) and repoint `$48E`/`$492` or `$568`/`$56C` without touching `$48C`/`$566`. The control and map screens reselect from `$48C`/`$566` on enter.
+- Panel draw callbacks also write element flags (e.g. type 79 hidden unless the Walrus is in the hangar, `$C3D4`; type 81, `$C076`) and patch element handlers (`$4281C`). These are left out with the panel drawing; the UI must apply them when it offers those buttons.
+
+### 10.6 The port (`stunits_controls.py`, `units_controls.ts`)
+
+The browser UI calls these methods in place of the mouse, keyboard and click handlers, then `game_frame()` once per pass:
+- `cmd_*` methods write exactly what their handler writes. Redraws, palettes, sounds and the 3D highlight bits are left out, and messages become `("message", text)` events.
+- They return False where the hit test (§10.1) would not have reached the handler: panel state, element flags, or paused.
+- They don't check the screen or pointer mode. The UI decides which controls it offers.
+
+| Method | Original |
+|---|---|
+| `input_mouse_move(dx, dy)`, `input_mouse_button(right, down)`, `input_key(scancode, down)` | the IKBD interrupt's writes |
+| `cmd_carrier_throttle(y)`, `cmd_carrier_speed_up/down()`, `cmd_carrier_stop()`, `cmd_carrier_centre_rudder()`, `cmd_carrier_autopilot(held)` | `$FE3C`, `$FDCE/$FDD4`, `$12A26`, `$12A16`, `$12BAC` |
+| `cmd_toggle_mouse_steer()` | a right click (the next screen 0 input toggles `$457`) |
+| `cmd_steer_to(rudder)` | the mouse-steer delta that makes the next `carrier_step` set `$642` = rudder (screen 0, mouse-steer, no autopilot) |
+| `map_to_world(px, py)`, `world_to_map(x, z)` | `$F91E` and its inverse |
+| `cmd_map_click(px, py)`, `cmd_map_recentre(px, py)`, `cmd_map_zoom_in/out()`, `cmd_map_scroll_up/down/left/right()`, `cmd_map_centre_unit()`, `cmd_map_centre_carrier()`, `cmd_map_island_info()`, `cmd_map_island_info_exit()` | `$F8D8`, `$F8B4`, `$F984/$F99A`, `$FAB0 $FAC8 $FA84 $FA6C`, `$F9BE`, `$FA50`, `$FAF4`, `$FB1A` |
+| `cmd_carrier_set_course(held)`, `cmd_carrier_clear_course()`, `cmd_carrier_map_mode()`, `cmd_carrier_cruise_up/down()`, `cmd_carrier_cruise(y)`, `cmd_carrier_toggle_announce()` | `$131A8`, `$1326C`, `$1336E`, `$12E7A/$12E8C`, `$12E9E`, `$12E44` |
+| `cmd_set_carrier_waypoint(x, z)` | the carrier cursor at (x, z) as a map click writes it, then set course. Any x/z within ±`$7FFFFF` is accepted, not just the map grid |
+| `cmd_select_system(k)`, `cmd_priorities_open()`, `cmd_priority_click(px, py)`, `cmd_priorities_cancel()`, `cmd_priorities_exit()`, `cmd_set_repair_priority(k, cls)` | `$FB3A`, `$FBBE`, `$FC64`, `$FC08`, `$FC24`; the last is open + click + EXIT |
+| `cmd_pause()` | `$FD66` |
+| `ui_frame()` | `$F636` without the hit test: the forced request, else `$17EEA` and the pending screen/tab (§10.5). Call it once per pass after the commands, before `game_frame`. A drag's drop raises `NotImplementedError` |
+| `cmd_select_tab(tab)`, `cmd_select_screen(screen)` | `$F844`, `$F880`, then the rest of `ui_frame` (`$F67A`): the switch happens in the call |
+| `cmd_switch_screen(screen)` | the clicks that reach screen 0–4, 8–12, 16–20, 24–28 or 32: the tab icon if another tab is shown (entering its remembered screen), then the screen icon |
+| `cmd_game_status_menu(mode)`, `cmd_game_status_back()`, `cmd_surrender()` | `$101F2 $10200 $101E4 $1020E` (mode 6, 3, 1, 7), `$1021C`, `$101D8`. The save, format and options panels themselves are not ported |
+| `cmd_continue(yes)` | `$13990` / `$1399C` (screen 35) |
+| `new_game_screen()` | replaces `stunits_setup`'s: `ui_frame`'s forced request after `$42A8` |
+| `enter_*`, `leave_*`, `select_manta()`, `select_walrus()`, `manta_view_update(rec)`, `walrus_view_update(rec)`, `turret_zoom_view(z)` | the enter/leave handlers and their helpers `$141FE $14224 $13EBA $13F5A $FCD4` |
+| `game_frame()` | `$408A–$4190` without `ui_frame`, rendering and sound: `$4194`, `paused_frame`, `debug_keys`, `screen_input`, `sim_pass`, end timer, end request. It records `("game over", 35, [$466])` (enemy carrier destroyed; the original asks whether to continue) or `("game over", 34, [$466])` |
+| `screen_input()` | `$17094` for screens 0, 1, 2/17/25 and the empty handlers. Other screens, and the number keys on maps 17/25, raise `NotImplementedError` |
+
+`screen_input` reads only input and UI state, so `game_frame` runs it before `sim_pass` instead of after the win check and route relaxation; the result is the same. The panel flag table is in the state, as `redraw: panel flags $40EB2`: the UI code changes it too, so `check_units.diff` skips it, and this module's checks compare it themselves.
+
+**Checks** (`check_units.py`):
+- each of the 40 commands against its original handler(s), called with the registers the hit test passes, on 168 captured and perturbed states (action and play captures; screens 0/1/2/4/17/25, pause, menu, panel states and flags, map view, priorities);
+- `game_frame` against the original loop from `$4090` back to `$408A`, with rendering `$14472` and `frame_flip` `$17F48` stubbed:
+  - 496 perturbed single frames: pause, menu, Control-Q/S, cheat code, debug keys, end timer and request, every ported screen's input;
+  - 40 runs of 200 frames with random commands and raw input between frames, the original running its own `screen_input`.
+- screen switching against `ui_frame` and the enter/leave handlers (the icon handlers called with a3 = an element of their type, then `$F67A`; `ui_frame` itself; the game-over key wait skipped), on 44 captured states (action, play and Hatari new-game captures) with perturbed screen state (current screen and tab, remembered screens, icon and panel flags, pending tab/screen and forced requests, selections, bay records, `$708`, `$6D2`, `$B58`, the map icons' inputs):
+  - every screen 0–4, 8–12, 16–20, 24–28 and 32 by `cmd_switch_screen` from a random screen, and 33–35 by forced request, from each state (1056 switches), half of them followed by 8 passes of `ui_frame` + `game_frame`;
+  - 704 random commands (`ui_frame`, tab and screen icons, `cmd_switch_screen`, game-status buttons, surrender, continue), 30 % followed by 12 passes with further random switches (about 4800 passes after switches in all).
+
+  The passes stub the input handlers that aren't ported (screens 3, 8, 10, 16, 18, 19, 24, 26, 27) on both sides, and the comparison leaves out the element flags that only panel drawing writes (types 79 and 81).
 
 ## 11. Save format
 
@@ -732,7 +1020,7 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 
 ## 14. Status of the model
 
-`tools/stunits.py` (`UnitState`, extending the strategic `WorldState`) models a **whole simulation pass**: `UnitState.sim_pass()` corresponds to game_main `$40B0–$413E`. It leaves out the screen-input, sound and message-line routines, which write only UI memory (checked by recording their writes). Ported:
+`tools/stunits.py` (`UnitState`, extending the strategic `WorldState`) models a **whole simulation pass**: `UnitState.sim_pass()` corresponds to game_main `$40B0–$413E`. It leaves out the screen-input, sound and message-line routines. Sound and the message line write only UI memory (checked by recording their writes); `screen_input` is ported separately and runs from `game_frame()` (§10.6), the whole loop around `sim_pass`. Ported:
 
 | Area | Routines |
 |---|---|
@@ -750,6 +1038,8 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 | Vehicles out of the hangar (`stunits_vehicles.py`) | the Manta loop (telemetry and comms relay, manual flight, ground contact, crashes, fuel, all 7 auto modes: carrier landing, deck, take-off, waypoints, runway landing, landed, runway take-off) and the Walrus loop (telemetry, driving, guided-missile steering, beach ramps, docking, launch, waypoints); Manta and Walrus firing (laser, locked missile, bomb, guided missile, cargo, ACCB, fuel pod); the lift and loadouts; destruction; 16 hangar commands (refuel, defuel, repair, replace, prepare, to deck/hangar, take off, land, launch, dock) |
 | Enemy close combat and supply (`stunits_enemy.py`) | enemy states 10 and 11 (stern to the player, cruise missiles, fighter launches, retreat, losing contact); the supply drone's 16-state transfer, the transfer command and the drone's destruction |
 | Carrier weapons (`stunits_carrier.py`) | the laser turret on its screen (aiming, firing, heat); commands: flares, recon drone, surface-to-surface missile, defence drone launch and recall |
+| Controls and game flow (`stunits_controls.py`) | the carrier's bridge, map and damage-screen commands, pause, raw input injection, screen switching (`ui_frame`, tab and screen icons, every enter/leave handler, game-status and continue buttons), `screen_input` for screens 0, 1, 2/17/25, and `game_frame` (the whole `game_main` loop without the UI: keys, paused frame and cheat code, debug keys, end timer and end request) (§10.6) |
+| New game (`stunits_setup.py`) | the new-game routine `$42A8` for both game types and the first screen change after it (§16) |
 
 The model is split into `UnitCore` (`tools/stunits.py`) and three mixins, one per row above. Each module lists its routines, scenarios and command checks for `check_units.py`.
 
@@ -757,6 +1047,8 @@ The model is split into `UnitCore` (`tools/stunits.py`) and three mixins, one pe
 - The Manta missile lock-on's first press: it scans the 3D renderer (`$6290` with callback `$200F6`). Firing once locked is ported.
 - Two Walrus paths where the original corrupts its own stack: a guided missile fired with no free object, and auto mode ≥ 4.
 - Trees cut on a loaded island by a construction or an ACCB drop (debris from `tree_cut`).
+- The input handlers of screens 3, 8, 10, 16, 18, 19, 24, 26 and 27, the number keys on maps 17/25 (`$132D6`), the save/load/format panels, and every click handler marked ✘ in §10.4.
+- The debug screen dump (Control + F-key while paused in debug mode).
 - UI-only effects: the turret's zoom and cursor keys, on-screen messages (recorded as events) and sounds.
 
 **Test data** is an **action game**, which needs no input. The carrier sails a few thousand units on autopilot to a waypoint off enemy island THERMOPYLAE (27) and stops: `capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action` captures RAM around 120 whole passes. Under Unicorn, a whole pass reproduces the Hatari capture exactly, apart from interrupt-driven counters and the stack.
@@ -800,3 +1092,59 @@ The approach is the same as for the strategic layer (`tools/stsim.py`, `tools/ch
 3. **Extend the state regions** with the object list, island buffers, debris, the bay records and the carrier/vehicle globals. The save format (§11) is a ready-made list.
 
 With the unit layer ported, `WorldState.frame()` becomes a full pass of the game. The model then needs input injection (the control variables) instead of the stubs used so far.
+
+## 16. Starting a new game (`$42A8`)
+
+The title menu's buttons set `[$124A]` (**set = strategy**, `$103B2`; clear = action, `$103A0`) and call `$42A8`. It runs inside `ui_frame`, so the rest of that `game_main` pass follows straight away: `ui_frame` takes the screen request, and the simulation block runs (`[$462]` = `$FF` and `[$461]` = 0 come from the snapshot).
+
+| Step | Routine | State written |
+|---|---|---|
+| 1 | `globals_restore` `$1A518` | `$400–$1235` and the panel flags `$40EB2` from the boot snapshot at `$4BCCA` (`$1A4C6`). The RNG `$1236` is outside it |
+| 2 | `session_reset` `$4206` | mouse, buttons and key table (`$17EC6`, `$17EAE`), tick count `$97A` = 0, all pool entries free (`$218D8`), debris idle and shard free list (`$1C6E2`), pointer reset (`$F712`), `$457` set. UI only: sound, message log, MFP |
+| 3 | `$4260` | `$8F0` in game, `$1230` clear, `$1231` set, `$463` clear |
+| 4 | | screen request `[$1227]` = `$FF`, tab `[$1228]` = 1 |
+| 5 | action only | waypoint `$64E/$652` = (`$FFE66600`, `$FFE77748`), cruise `$656` = `$70`, `$640` = 7 (autopilot to the waypoint, announce), `$6C6` = `$FF` |
+| 6 | | difficulty `$444` = 0 (strategy) or `$2000` (action); `difficulty_apply` |
+| 7 | | AI on (`$464`); `$457` cleared, then set again by `frame_flip` if `[$458]` (the snapshot has 0); `$458` set |
+| 8 | `init_islands` `$18370` | below |
+| 9 | `count_islands` `$CDF2` | `$D54–$D5E` |
+| 10 | `$55BC` | 3328 random words at `$5C2DA`, the static-noise texture drawn by `$5540`. Not simulation state, but it advances the RNG |
+| 11 | | `$8FD` set: the first pass runs a logistics tick |
+| 12 | `object_store_init` `$43D2` | all 64 objects cleared, `$A48` = 64, island buffers not in use, bay indices `+$1A` of objects 2–9; the carrier (object 10, type 1) and the enemy carrier (object 19, type 4) at y = 160 from the start table |
+| 13 | `network_invalidate` `$216C6` | link filter, route matrix reset, relaxation pending |
+| 14 | | map views `$75C/$760` = carrier x/z, the three map cursors `$69E/$6A6`, `$6B0/$6B4`, `$6BE/$6C2` = carrier + 1000, and `$758–$767` copied to `$768`, `$778`, `$788` |
+
+**`init_islands`** (`$18370`):
+1. The slot order `$66690` gets 0–31 (`$18924`); owners and economy records are cleared.
+2. Each island is filled from its 22-byte record at `$4AFB6`: x, z (word × 512), half-extents, area = hx·hz >> 16, the economy capacities (2 × area) and the three `$FF` bytes. All 32 slots are cleared, then slot 0 is the plateau (type 8), slot 1 the runway (type `$2F`, with the record's heading) when the record has one, then up to two volcanoes (type 7, random heading).
+3. `$1897E`: 21 trees per island, from island 63 down, at `find_free_island_spot` positions (the call repeats until it succeeds); type `$18` + (rand & 3).
+4. `$189CA`: the start list's command centres under construction: type `$34`, progress `$3B`, start code in `+6`. If the island were full (result −2) the game would `trap #7`.
+5. `world_warmup` (601 fast-build steps).
+
+**Start tables** (20 bytes: carrier x.l, z.l, heading.w; enemy x.l, z.l, heading.w; the start list follows):
+
+| Game | Table | Carrier | Enemy carrier | Start list |
+|---|---|---|---|---|
+| strategy | `$18FCE` | (−7,409,664, −7,195,440), heading `$3E8` | (6,990,336, 4,164,304) | `$18FE2`, 9 islands |
+| action | `$19008` | (−1,677,824, −1,612,864) | (−276,722, −3,414,010) | `$1901C`, 52 islands |
+
+**The first screen.** `ui_frame` then takes the request: tab 1, whose last screen `[$722]` is 0 (the bridge). The title screen (`[$718]` = −1) has no leave handler. The bridge's enter handler (`$13C24`) writes simulation state: the camera `$9FA` = object 0, the viewed and controlled units `$9FE/$A02` = the carrier, object 0 flags cleared, y = 240 and island buffer = the carrier's, `$A46/$A47` cleared, the redraw flags, and the autopilot button's panel flag `$40F66` (`$12C16`).
+
+**RNG.** The Timer A sound interrupt (`$20668`) also advances the RNG, but no sound plays during `$42A8`: in Hatari, the original's result from the RAM at the click matches the Unicorn run exactly. The world a game gets depends only on the RNG at the click, which the title screen keeps advancing (its static-noise drawing `$5540` calls `rand`). *(The same drawing may run during play, where it would advance the simulation's RNG from the renderer; not traced.)*
+
+**Port** (`tools/stunits_setup.py`, `web/src/sim/units_setup.ts`). The app:
+1. loads a title-screen RAM image (`emu/out/title/ram.bin`: 1500 VBLs after `game_main`) with `UnitState.from_ram`;
+2. seeds the RNG longs `$1236` and `$123A`;
+3. calls `new_game(strategy)`, which writes `[$124A]` itself, then `new_game_screen()`;
+4. then runs `sim_pass()`. The original runs the first pass in the same `game_main` iteration.
+
+Everything else after `$42A8` is UI: the screen clear, "Creating...", panel drawing, the clock `$8F2–$8FA` and the in-game flags `$8F0`/`$461`/`$462` (restored from the snapshot: running, not paused). These aren't simulation regions; the app sets its own.
+
+New regions: the strategy flag `$124A`, the map view copies `$768–$797`, and read-only inputs (the snapshot `$4BCCA`, the island records, and the tail of the start lists past the quota table, `$19078–$190ED`).
+
+**Checks** (`check_units.py`, the `stunits_setup` CHECKS):
+- `new_game` then `new_game_screen` against `$42A8` and then `ui_frame` under Unicorn (only `frame_flip`'s VBL wait is skipped; the UI routines run) from the title image: both game types, 8 seeds each, all regions;
+- 3000 passes of the model from its new game against the original's passes, two seeds per game type;
+- against Hatari (`uv run python tools/stunits_setup.py` captures `emu/out/newgame/`): from the RAM at the click, the state when `$42A8` returns, at the first pass and after it, for both game types.
+
+All match.

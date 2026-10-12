@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "data": "cd .. && uv run python tools/export_web_data.py",
     "typecheck": "tsc --noEmit",
     "check-sim": "node scripts/check-sim.ts",
-    "check-models": "node scripts/check-models.ts"
+    "check-models": "node scripts/check-models.ts",
+    "soak": "node scripts/soak.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

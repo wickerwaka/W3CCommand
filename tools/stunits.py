@@ -483,7 +483,9 @@ class UnitCore(WorldState):
             m.set8(0x463, 0xFF)
         if m.u8(stsim.ROUTES_PENDING):
             self.relax_routes()
+        m.set8(0x8FE, 0)                     # $8FE: set on passes that run the tick (never read)
         if m.u8(0x8FD):
+            m.set8(0x8FE, 0xFF)
             self.logistics_tick()
         self.step()
         self.debris_step()
@@ -2841,9 +2843,11 @@ class UnitCore(WorldState):
 from stunits_vehicles import VehicleMixin      # noqa: E402  Mantas and Walruses out of the hangar
 from stunits_enemy import EnemyMixin            # noqa: E402  enemy close-range combat, supply transfers
 from stunits_carrier import CarrierMixin        # noqa: E402  carrier turret, SSM, flares, drones
+from stunits_controls import ControlsMixin      # noqa: E402  player commands, screen input, game flow
+from stunits_setup import SetupMixin            # noqa: E402  new game
 
 
-class UnitState(VehicleMixin, EnemyMixin, CarrierMixin, UnitCore):
+class UnitState(VehicleMixin, EnemyMixin, CarrierMixin, ControlsMixin, SetupMixin, UnitCore):
     """The whole unit layer: UnitCore plus the mixins."""
 
 

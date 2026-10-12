@@ -2,3 +2,5 @@ node_modules/
 # Failing states dumped by npm run check-sim (game memory)
 .sim-fail/
 dist/
+# Game data from tools/export_web_data.py (npm run data); personal use only
+public/data/

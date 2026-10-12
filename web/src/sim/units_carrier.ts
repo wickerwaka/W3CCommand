@@ -18,6 +18,7 @@
  */
 import { s16, s32, w16, shr } from "./mem.ts";
 import { UnitCore, UNIT_REGIONS, UNIT_INPUT_REGIONS, SCREEN, POINTER_MODE, MOUSE_DX, FRAME, CARRIER, NEW_INDEX } from "./units_core.ts";
+import { ControlsUnits } from "./units_controls.ts";
 
 // State these commands read or write that UnitCore doesn't list yet.
 UNIT_REGIONS.push(
@@ -37,7 +38,7 @@ export const STOCK_RECON = 0xc9c;
 export const STOCK_SSM = 0xbb2;
 export const STOCK_DRONES = 0xc1a;
 
-export abstract class CarrierUnits extends UnitCore {
+export abstract class CarrierUnits extends ControlsUnits {
   // ---- laser turret ($1EDFC) ------------------------------------------------------------
   /** $1EDFC: cooldown $93E and heat $6C8 every pass; on the turret screen, fire on
    * $88C or a left click in mouse-steer mode, then take the aim rates from the mouse;

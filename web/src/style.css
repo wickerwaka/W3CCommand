@@ -1,9 +1,14 @@
 :root {
-  --bar: rgba(16, 20, 28, 0.82);
-  --text: #e8e4d0;
-  --muted: #a8a490;
-  --accent: #e0b040;
+  --panel: rgba(14, 20, 32, 0.84);
+  --panel-solid: #0e1420;
+  --line: #3a4660;
+  --text: #ece6cf;
+  --muted: #9aa0a8;
+  --accent: #f0b84a;
+  --player: #3fa9f5;
+  --enemy: #e5533d;
   --error: #ff8a70;
+  --gutter: max(12px, env(safe-area-inset-left));
   color-scheme: dark;
 }
 
@@ -12,7 +17,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #000;
+  background: #05070c;
   color: var(--text);
   font: 14px/1.4 system-ui, sans-serif;
 }
@@ -22,91 +27,323 @@ body {
   inset: 0;
   width: 100%;
   height: 100%;
-  touch-action: none;
   display: block;
+  touch-action: none;
 }
 
-#bar {
+#ui {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px max(16px, env(safe-area-inset-left));
-  background: var(--bar);
-  align-items: center;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  pointer-events: none;
 }
 
-#bar button,
-#bar select,
-#bar .button {
+#ui > * {
+  pointer-events: auto;
+}
+
+button,
+select {
   font: inherit;
   color: var(--text);
-  background: #2a3040;
-  border: 1px solid #485068;
-  border-radius: 4px;
-  padding: 4px 10px;
+  background: #222b3c;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
-#bar button:hover,
-#bar .button:hover {
+button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
-#bar button:disabled {
+button:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
-#status {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 6px max(16px, env(safe-area-inset-left));
-  background: var(--bar);
+button.active,
+button.on {
+  background: var(--accent);
+  color: #1a1408;
+  border-color: var(--accent);
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px var(--gutter);
+  background: var(--panel);
+  flex-wrap: wrap;
+}
+
+.top .tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.top .spacer {
+  flex: 1;
+}
+
+.clock {
   color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  margin-right: 6px;
 }
 
-#status .error {
-  color: var(--error);
+.subtabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px var(--gutter);
+  background: rgba(14, 20, 32, 0.6);
+  flex-wrap: wrap;
 }
 
-#drop {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  font-size: 24px;
-  background: rgba(0, 0, 0, 0.6);
-  border: 3px dashed var(--accent);
+.subtabs button {
+  padding: 3px 10px;
+  font-size: 13px;
 }
 
-#drop[hidden],
-#empty[hidden] {
-  display: none;
-}
-
-#empty {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  text-align: center;
-  padding: 0 16px;
-  max-width: 560px;
-  margin: 0 auto;
-  color: var(--muted);
+.content {
+  position: relative;
+  min-height: 0;
   pointer-events: none;
 }
 
-#empty h1 {
+.content.opaque {
+  pointer-events: auto;
+}
+
+.content > * {
+  pointer-events: auto;
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.panel {
+  position: absolute;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.panel.bridge {
+  left: var(--gutter);
+  right: var(--gutter);
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+}
+
+.field label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.field output {
+  font-variant-numeric: tabular-nums;
+  font-size: 16px;
+}
+
+.controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.controls .group {
+  display: flex;
+  gap: 3px;
+}
+
+.controls button {
+  min-width: 42px;
+  min-height: 38px;
+}
+
+.panel.damage {
+  top: 12px;
+  left: var(--gutter);
+  width: min(560px, calc(100% - 2 * var(--gutter) - 28px));
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
   color: var(--accent);
   font-weight: 600;
+}
+
+.systems {
+  display: grid;
+  gap: 6px;
+}
+
+.system {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.4fr) 2fr 3.5em 2.5em;
+  gap: 10px;
+  align-items: center;
+}
+
+.meter {
+  height: 10px;
+  background: #1b2232;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.meter .bar {
+  height: 100%;
+  background: #58c070;
+}
+
+.meter .bar.low {
+  background: var(--enemy);
+}
+
+.system output {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.system .prio {
+  color: var(--muted);
+}
+
+.bottom {
+  background: var(--panel);
+  padding: 6px var(--gutter) max(6px, env(safe-area-inset-bottom));
+}
+
+.message {
+  min-height: 1.4em;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.04em;
+}
+
+.log {
+  position: fixed;
+  right: var(--gutter);
+  bottom: 40px;
+  width: min(420px, calc(100% - 2 * var(--gutter)));
+  max-height: 50vh;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 12px;
+  list-style: none;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.log[hidden],
+.notice[hidden] {
+  display: none;
+}
+
+.log .time {
+  color: var(--muted);
+}
+
+.notice {
+  position: fixed;
+  left: 50%;
+  top: 110px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 2 * var(--gutter));
+  padding: 8px 14px;
+  background: #3a1a14;
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--error);
+}
+
+dialog.menu {
+  width: min(520px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  background: var(--panel-solid);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+
+dialog.menu::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+dialog.menu h1 {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 22px;
+}
+
+dialog.menu h2 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+dialog.menu section {
+  display: grid;
+  gap: 6px;
+}
+
+dialog.menu section button,
+dialog.menu section select {
+  text-align: left;
+}
+
+dialog.menu .close {
+  float: right;
+}
+
+.option {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.system button.prio {
+  padding: 1px 6px;
+  font-size: 12px;
+}
+
+.panel .hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }

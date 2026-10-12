@@ -1,210 +1,316 @@
-// Carrier Command in the browser: load a state exported from the emulator, run the simulation
-// model on it (src/sim), and draw the world from the carrier's bridge camera or a free camera.
+// Carrier Command in the browser. Starts new games from the title-screen RAM image
+// (public/data/title.bin, `npm run data`), or loads states exported from the emulator; runs the
+// simulation model (src/sim) on the original's clock; draws the world (src/render) and a modern
+// UI (src/ui) that acts only through the model's own commands.
 import * as THREE from "three";
 import "./style.css";
-import { Runner } from "./app/runner.ts";
+import { Controls } from "./app/controls.ts";
+import { Game, SCREENS } from "./app/game.ts";
+import { islandNames } from "./app/readout.ts";
 import { readStateFile, writeStateFile } from "./app/state_file.ts";
-import { loadLastState, saveLastState } from "./app/store.ts";
+import { loadState, saveState, type Slot } from "./app/store.ts";
 import { CarrierCamera, FreeCamera, type ViewCamera } from "./render/cameras.ts";
 import { WorldView } from "./render/world_view.ts";
+import { MapView } from "./ui/map.ts";
+import { Menu } from "./ui/menu.ts";
+import { BridgeHud, DamagePanel } from "./ui/panels.ts";
+import { Shell } from "./ui/shell.ts";
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-const canvas = $<HTMLCanvasElement>("view");
-const ui = {
-  file: $<HTMLInputElement>("file"),
-  local: $<HTMLSelectElement>("local"),
-  play: $<HTMLButtonElement>("play"),
-  step: $<HTMLButtonElement>("step"),
-  speed: $<HTMLSelectElement>("speed"),
-  camera: $<HTMLButtonElement>("camera"),
-  export: $<HTMLButtonElement>("export"),
-  status: $<HTMLElement>("status"),
-  drop: $<HTMLElement>("drop"),
-  empty: $<HTMLElement>("empty"),
-};
-
+const canvas = document.getElementById("view") as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const camera = new THREE.PerspectiveCamera(50, 1, 5, 3e6);
 const carrierCam = new CarrierCamera();
 const freeCam = new FreeCamera(canvas);
 
-interface Session {
-  name: string;
-  runner: Runner;
-  view: WorldView;
+const AUTOSAVE_SECONDS = 30;
+
+let title: Uint8Array | null = null;
+let game: Game | null = null;
+let view: WorldView | null = null;
+let names: string[] = [];
+let freeCamera = false;
+let showEnemy = false;
+let sinceAutosave = 0;
+let notice: string | null = null;
+
+// ---- UI --------------------------------------------------------------------------------
+const shell = new Shell(document.getElementById("ui")!, {
+  screen: (id) => setScreen(id),
+  playPause: () => togglePause(),
+  speed: (f) => game && (game.runner.speed = f),
+  menu: () => void menu.open(),
+});
+
+const controls = new Controls();
+let bridge = new BridgeHud(names, controls);
+const damage = new DamagePanel((k, cls) => controls.repairPriority(k, cls));
+const map = new MapView(names, {
+  onWaypoint: (x, z) => setWaypoint(x, z),
+  showEnemy: () => showEnemy,
+});
+
+const localStates: string[] = [];
+const menu = new Menu({
+  newGame: (strategy) => newGame(strategy),
+  save: (slot) => void save(slot),
+  load: (slot) => void loadSlot(slot),
+  openFile: (f) => void f.arrayBuffer().then((b) => openState(f.name, new Uint8Array(b))),
+  openLocal: import.meta.env.DEV ? (n) => void openLocal(n) : undefined,
+  localStates,
+  exportState: () => exportState(),
+  canSave: () => !!game,
+  options: [
+    { label: "Free camera (C)", get: () => freeCamera, set: (v) => setFreeCamera(v) },
+    { label: "Show the enemy carrier on the map", get: () => showEnemy, set: (v) => (showEnemy = v) },
+  ],
+});
+document.body.append(menu.el);
+
+function setNotice(text: string | null): void {
+  notice = text;
+  shell.setNotice(text);
 }
-let session: Session | null = null;
-let active: ViewCamera = carrierCam;
-let error: string | null = null;
+
+// ---- sessions ----------------------------------------------------------------------------
+function start(g: Game): void {
+  view?.dispose();
+  game = g;
+  view = new WorldView(g.ram);
+  names = islandNames(g.ram);
+  map.names = names;
+  bridge = new BridgeHud(names, controls);
+  controls.attach(g);
+  shell.clearMessages();
+  setNotice(g.runner.stopReason);
+  sinceAutosave = 0;
+  carrierCam.update(g.ram);
+  showScreen();
+}
+
+function newGame(strategy: boolean): void {
+  if (!title) {
+    setNotice("No title-screen image: run `npm run data` (needs Hatari) to create public/data/title.bin");
+    return;
+  }
+  try {
+    start(Game.create(title, strategy));
+    game!.runner.play();
+  } catch (e) {
+    setNotice((e as Error).message);
+  }
+}
+
+async function openState(name: string, data: Uint8Array): Promise<void> {
+  try {
+    const ram = await readStateFile(data);
+    start(Game.load(ram, name));
+    void saveState("last", { name, ram });
+  } catch (e) {
+    setNotice(`${name}: ${(e as Error).message}`);
+  }
+}
+
+async function openLocal(name: string): Promise<void> {
+  const r = await fetch(`/__states?name=${encodeURIComponent(name)}`);
+  await openState(name, new Uint8Array(await r.arrayBuffer()));
+}
+
+async function save(slot: Slot): Promise<void> {
+  if (!game) return;
+  const ok = await saveState(slot, { name: `${game.name} · ${clockText()}`, ram: game.ram });
+  if (slot !== "auto") shell.message(ok ? `Saved to slot ${slot}` : "Saving failed (browser storage unavailable)", clockText());
+}
+
+async function loadSlot(slot: Slot): Promise<void> {
+  const s = await loadState(slot);
+  if (s) start(Game.load(s.ram, s.name));
+}
+
+function exportState(): void {
+  if (!game) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(writeStateFile(game.ram));
+  a.download = `carrier_${clockText().replace(/[^0-9]/g, "")}.bin`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function togglePause(): void {
+  const r = game?.runner;
+  if (!r) return;
+  if (r.status === "running") r.pause();
+  else r.play();
+}
+
+function setWaypoint(x: number, z: number): void {
+  if (game && !controls.waypoint(x, z)) shell.message("Can't set a course now", clockText());
+}
+
+// ---- screens -----------------------------------------------------------------------------
+function setScreen(id: number): void {
+  game?.setScreen(id);
+  showScreen();
+}
+
+function showScreen(): void {
+  const id = game?.screen ?? SCREENS.bridge;
+  shell.showScreen(id);
+  const panels: HTMLElement[] = [];
+  if (id === SCREENS.map) panels.push(map.el);
+  else if (id === SCREENS.damage) panels.push(damage.el);
+  else if (id === SCREENS.bridge && !freeCamera) panels.push(bridge.el);
+  shell.content.replaceChildren(...panels);
+  shell.content.classList.toggle("opaque", id === SCREENS.map);
+}
+
+function setFreeCamera(on: boolean): void {
+  if (on && !freeCamera) {
+    const q = new THREE.Quaternion();
+    carrierCam.orientation(q);
+    freeCam.placeAt(carrierCam.eye(), q);
+  }
+  freeCamera = on;
+  freeCam.enabled = on;
+  showScreen();
+}
+
+const clockText = () => {
+  if (!game) return "";
+  const c = game.runner.clock, two = (n: number) => String(n).padStart(2, "0");
+  return `Day ${c.days + 1} ${two(c.hours)}:${two(c.minutes)}:${two(c.seconds)}`;
+};
+
+// ---- input -------------------------------------------------------------------------------
+const HELD: Record<string, "faster" | "slower" | "left" | "right"> = {
+  KeyW: "faster", ArrowUp: "faster", KeyS: "slower", ArrowDown: "slower",
+  KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right",
+};
+addEventListener("keyup", (e) => {
+  if (HELD[e.code]) controls.hold(HELD[e.code], false);
+});
+addEventListener("blur", () => Object.values(HELD).forEach((k) => controls.hold(k, false)));
+addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || menu.el.open) return;
+  if (game && !freeCamera && HELD[e.code]) {
+    controls.hold(HELD[e.code], true);
+    e.preventDefault();
+    return;
+  }
+  if (game && !freeCamera) {
+    if (e.code === "KeyX") return controls.stop();
+    if (e.code === "KeyE") return controls.centreRudder();
+    if (e.code === "KeyQ") return controls.autopilot();
+  }
+  switch (e.code) {
+    case "Space":
+    case "KeyP":
+      togglePause();
+      break;
+    case "Escape":
+      void menu.open();
+      break;
+    case "KeyC":
+      setFreeCamera(!freeCamera);
+      break;
+    case "KeyM":
+      setScreen(SCREENS.map);
+      break;
+    case "KeyB":
+      setScreen(SCREENS.bridge);
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+});
+addEventListener("dragover", (e) => e.preventDefault());
+addEventListener("drop", (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer?.files[0];
+  if (f) void f.arrayBuffer().then((b) => openState(f.name, new Uint8Array(b)));
+});
 
 function resize(): void {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }
+addEventListener("resize", resize);
+resize();
 
 /** The camera's frustum, widened to the window's shape (never cropped). */
 function fitFrustum(cam: ViewCamera): void {
   const { tanX, tanY, near } = cam.frustum;
-  const tan = Math.max(tanY, tanX / camera.aspect);
-  const fov = (2 * Math.atan(tan) * 180) / Math.PI;
+  const fov = (2 * Math.atan(Math.max(tanY, tanX / camera.aspect)) * 180) / Math.PI;
   if (camera.fov !== fov || camera.near !== near) {
     camera.fov = fov;
     camera.near = near;
     camera.updateProjectionMatrix();
   }
 }
-addEventListener("resize", resize);
-resize();
 
-async function open(name: string, data: Uint8Array, remember = true): Promise<void> {
-  try {
-    const ram = await readStateFile(data);
-    session?.view.dispose();
-    session = { name, runner: new Runner(ram), view: new WorldView(ram) };
-    error = null;
-    carrierCam.update(ram);
-    if (remember) void saveLastState({ name, ram: ram.slice() });
-  } catch (e) {
-    error = `${name}: ${(e as Error).message}`;
-  }
-  refresh();
-}
-
-function setCamera(cam: ViewCamera): void {
-  if (cam === freeCam && active !== freeCam) {
-    const q = new THREE.Quaternion();
-    active.orientation(q);
-    freeCam.placeAt(active.eye(), q);
-  }
-  active = cam;
-  freeCam.enabled = cam === freeCam;
-  refresh();
-}
-
-function refresh(): void {
-  const r = session?.runner;
-  ui.empty.hidden = !!session;
-  ui.play.textContent = r?.status === "running" ? "Pause" : "Run";
-  ui.play.disabled = ui.step.disabled = !r || r.status === "stopped";
-  ui.export.disabled = !r;
-  ui.camera.textContent = active === freeCam ? "Carrier camera" : "Free camera";
-}
-
-function statusLine(): void {
-  const parts: string[] = [];
-  if (session) {
-    const r = session.runner, c = r.clock;
-    const two = (n: number) => String(n).padStart(2, "0");
-    parts.push(session.name, `day ${c.days} ${two(c.hours)}:${two(c.minutes)}:${two(c.seconds)}`, `${r.passes} passes`, active.name);
-    if (r.stopReason) parts.push(`<span class="error">${escape(r.stopReason)}</span>`);
-  }
-  if (error) parts.push(`<span class="error">${escape(error)}</span>`);
-  const html = parts.join(" · ");
-  if (ui.status.innerHTML !== html) ui.status.innerHTML = html;
-}
-
-const escape = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]!);
-
-// ---- input ---------------------------------------------------------------------------
-ui.file.addEventListener("change", async () => {
-  const f = ui.file.files?.[0];
-  if (f) await open(f.name, new Uint8Array(await f.arrayBuffer()));
-  ui.file.value = "";
-});
-ui.play.addEventListener("click", () => {
-  const r = session?.runner;
-  if (r) r.status === "running" ? r.pause() : r.play();
-  refresh();
-});
-ui.step.addEventListener("click", () => {
-  session?.runner.pause();
-  session?.runner.step();
-  refresh();
-});
-ui.speed.addEventListener("change", () => {
-  if (session) session.runner.speed = Number(ui.speed.value);
-});
-ui.camera.addEventListener("click", () => setCamera(active === freeCam ? carrierCam : freeCam));
-ui.export.addEventListener("click", () => {
-  if (!session) return;
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(writeStateFile(session.runner.ram));
-  a.download = `${session.name.replace(/\.[^.]*$/, "")}_pass${session.runner.passes}.bin`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-});
-addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-  if (e.code === "Space") ui.play.click();
-  else if (e.code === "KeyN") ui.step.click();
-  else if (e.code === "KeyC") ui.camera.click();
-  else return;
-  e.preventDefault();
-});
-addEventListener("dragover", (e) => {
-  e.preventDefault();
-  ui.drop.hidden = false;
-});
-addEventListener("dragleave", (e) => {
-  if (e.relatedTarget === null) ui.drop.hidden = true;
-});
-addEventListener("drop", async (e) => {
-  e.preventDefault();
-  ui.drop.hidden = true;
-  const f = e.dataTransfer?.files[0];
-  if (f) await open(f.name, new Uint8Array(await f.arrayBuffer()));
-});
-
-// Dev server: the emulator captures in emu/out, listed by vite.config.ts.
-if (import.meta.env.DEV) {
-  fetch("/__states")
-    .then((r) => (r.ok ? r.json() : []))
-    .then((names: string[]) => {
-      if (!names.length) return;
-      ui.local.hidden = false;
-      ui.local.append(new Option("Local captures…", ""), ...names.map((n) => new Option(n, n)));
-      ui.local.addEventListener("change", async () => {
-        const name = ui.local.value;
-        if (!name) return;
-        const r = await fetch(`/__states?name=${encodeURIComponent(name)}`);
-        await open(name, new Uint8Array(await r.arrayBuffer()));
-        ui.local.value = "";
-      });
-    })
-    .catch(() => {});
-}
-
-// ---- frame loop ------------------------------------------------------------------------
+// ---- frame loop --------------------------------------------------------------------------
 const q = new THREE.Quaternion();
 let last = performance.now();
 function frame(now = performance.now()): void {
   const dt = Math.min((now - last) / 1000, 0.25);
   last = now;
-  if (session) {
-    const { runner, view } = session;
-    const was = runner.status;
-    runner.advance(dt);
-    if (runner.status !== was) refresh();
-    carrierCam.update(runner.ram);
-    active.update(runner.ram, dt);
-    active.orientation(q);
-    view.update(active.eye(), q);
-    camera.quaternion.copy(q);
-    fitFrustum(active);
-    renderer.render(view.scene, camera);
-  } else {
+  if (!game || !view) {
+    renderer.setClearColor(0x05070c);
     renderer.clear();
+    return;
   }
-  statusLine();
+  const r = game.runner;
+  r.advance(dt);
+  for (const ev of r.state.events.splice(0)) if (ev[0] === "message") shell.message(String(ev[1]), clockText());
+  if (r.stopReason && r.stopReason !== notice) setNotice(r.stopReason);
+  if (r.status === "running" && (sinceAutosave += dt) > AUTOSAVE_SECONDS) {
+    sinceAutosave = 0;
+    void save("auto");
+  }
+  shell.setStatus(clockText(), r.status === "running", r.status === "stopped");
+
+  const screen = game.screen;
+  if (screen === SCREENS.map) map.draw(game.ram);
+  else {
+    if (screen === SCREENS.bridge) bridge.update(game.ram, names);
+    if (screen === SCREENS.damage) damage.update(game.ram);
+    carrierCam.update(game.ram);
+    const cam: ViewCamera = freeCamera ? freeCam : carrierCam;
+    cam.update(game.ram, dt);
+    cam.orientation(q);
+    view.update(cam.eye(), q);
+    camera.quaternion.copy(q);
+    fitFrustum(cam);
+    renderer.render(view.scene, camera);
+  }
 }
 renderer.setAnimationLoop(frame);
 
-if (import.meta.env.DEV) (window as unknown as { app: unknown }).app = { get session() { return session; }, camera, renderer, frame, setCamera, carrierCam, freeCam };
+// ---- start-up ----------------------------------------------------------------------------
+void (async () => {
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}data/title.bin`);
+    if (res.ok) title = await readStateFile(new Uint8Array(await res.arrayBuffer()));
+  } catch {
+    // no data: emulator states only
+  }
+  if (title) names = islandNames(title);
+  if (import.meta.env.DEV) {
+    try {
+      localStates.push(...((await (await fetch("/__states")).json()) as string[]));
+    } catch {
+      // not the dev server
+    }
+  }
+  const auto = await loadState("auto");
+  if (auto) start(Game.load(auto.ram, auto.name));
+  else void menu.open();
+  if (!title) setNotice("No title-screen image: run `npm run data` to start new games; emulator states still load");
+})();
 
-void loadLastState().then((s) => {
-  if (s && !session) void open(s.name, s.ram, false);
-});
-refresh();
+if (import.meta.env.DEV)
+  (window as unknown as { app: unknown }).app = {
+    get game() { return game; }, get view() { return view; }, camera, renderer, frame, freeCam, carrierCam, setScreen, newGame,
+  };

@@ -7,12 +7,19 @@
 // clock, and a simulation pass every `vblsPerPass` VBLs.
 import { NotPorted, UnitState } from "../sim/index.ts";
 
-const IN_GAME = 0x462;          // simulation running (PAUSE clears it)
-const STATUS_MENU = 0x461;      // game-status menu open: simulation skipped
-const END_REQUEST = 0x463;
+const IN_GAME = 0x8f0;          // set while a game is on (frame_flip paces passes by it)
+const RUNNING = 0x462;          // simulation running (PAUSE clears it); the clock needs it
 const CLOCK = 0x8f2;            // days, hours, minutes, seconds, frames (words)
 const NEW_SECOND = 0x8fc;       // $8FC and $8FD, set every 50 frames
 const VBL_HZ = 50;
+
+/** The result [$466] the end-of-game screens report (docs/units.md §2, §10.2). */
+const GAME_OVER: Record<number, string> = {
+  0: "Game over",
+  1: "Game over: the carrier has been destroyed",
+  2: "Game over: the enemy holds every island",
+  3: "Victory: you hold every island",
+};
 
 export type RunnerStatus = "running" | "paused" | "stopped";
 
@@ -27,14 +34,24 @@ export class Runner {
   status: RunnerStatus = "paused";
   /** Why the simulation stopped (unported code reached, game over, ...). */
   stopReason: string | null = null;
+  /** Runs before each pass: held controls feed their input then, as the original's IKBD
+   * interrupt would have between passes. */
+  beforePass: (() => void) | null = null;
   private vblDebt = 0;
   private vblsInPass = 0;
 
   constructor(ram: Uint8Array) {
     this.ram = ram;
     this.state = UnitState.from_ram(ram);
-    if (!ram[IN_GAME]) this.stop("The game isn't running in this state (title screen or paused)");
-    else if (ram[STATUS_MENU]) this.stop("The game-status menu is open in this state");
+    this.restart();
+  }
+
+  /** Re-read whether the state is a running game (after the model changed it, e.g. new_game). */
+  restart(): void {
+    this.status = "paused";
+    this.stopReason = null;
+    // $8F0 isn't a state region: a loaded image has it in the RAM, new_game() in the model
+    if (!this.ram[IN_GAME] && !this.state.mem.u8(IN_GAME)) this.stop("No game is running in this state (title or game-over screen)");
   }
 
   get clock(): { days: number; hours: number; minutes: number; seconds: number } {
@@ -74,7 +91,7 @@ export class Runner {
 
   private vbl(): void {
     const ram = this.ram;
-    if (!ram[IN_GAME]) return;
+    if (!ram[RUNNING]) return;
     const w = (k: number) => (ram[CLOCK + 2 * k] << 8) | ram[CLOCK + 2 * k + 1];
     const set = (k: number, v: number) => {
       ram[CLOCK + 2 * k] = v >> 8;
@@ -95,9 +112,18 @@ export class Runner {
     }
   }
 
+  /** One game_main loop, as the original: the UI's commands (beforePass), ui_frame (screen
+   * requests), game_frame (pause/menu, screen_input, sim_pass, end-of-game timer), then
+   * frame_flip's state part. */
   private pass(): void {
+    const events = this.state.events.length;
     try {
-      this.state.sim_pass();
+      this.beforePass?.();
+      this.state.ui_frame();          // $F636: screen and tab requests (the UI's clicks are commands)
+      this.state.game_frame();
+      // the original then renders (the UI; not modelled) and calls frame_flip $17F48, whose
+      // state part puts the pointer back after a full redraw ($458)
+      this.state.frame_flip_flags();
     } catch (e) {
       this.state.to_ram(this.ram);
       const msg = e instanceof NotPorted ? `Reached code that isn't ported yet: ${e.message}` : `${(e as Error).name}: ${(e as Error).message}`;
@@ -107,7 +133,8 @@ export class Runner {
     }
     this.state.to_ram(this.ram);
     this.passes++;
-    if (this.ram[END_REQUEST]) this.stop("Game over");
+    const over = this.state.events.slice(events).find((e) => e[0] === "game over");
+    if (over) this.stop(GAME_OVER[Number(over[2])] ?? "Game over");
   }
 
   private stop(reason: string): void {

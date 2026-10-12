@@ -37,6 +37,7 @@ Status: first pass. Entries marked *(guess)* are unconfirmed.
 | `$04CBD4–$06FFFF` | Runtime RAM (BSS-like, not in file) |
 | `$0586AA` | Initial stack top (SP set in `game_main`) |
 | `$058E2A` | Depth-sorted draw tree for the current frame (18-byte nodes, max 128) |
+| `$05C2DA` | Static-noise texture: `$D00` random words (`$55BC` at new game), drawn by `$5540` |
 | `$05DCDA` | World object list walked by the renderer: `$140` bytes each, count in `$A48`; type word at +2 |
 | `$066690` | 32-entry table built by `$18924` |
 | `$066EC0` | Per-island state, 64 × 50 bytes (initialised from the island area) |
@@ -91,7 +92,7 @@ Extraction:
   - places 21 trees per island (types 24–27) at random free spots (`$1897E`, `$18A48`);
   - places the start-list structures (`$189CA`), clearing any overlapping trees;
   - runs the world-simulation step `$1848E` 601 times (`$18474`).
-- **RNG:** `$195FE` is a 64-bit add-with-carry generator with its state at `$1236` (initial `31415926 53589793`). The sound interrupt (Timer A, `$20668`) also advances it, so tree and structure layouts vary from game to game. The same interrupt drives YM2149 volume registers from the RNG output, which is the noise/sample sound path.
+- **RNG:** `$195FE` is a 64-bit add-with-carry generator with its state at `$1236` (initial `31415926 53589793`). The sound interrupt (Timer A, `$20668`) also advances it, and so does the title screen's static-noise drawing (`$5540`). Tree and structure layouts vary from game to game with the RNG at the click; no interrupt changes it during the new-game setup itself (`docs/units.md` §16). The same interrupt drives YM2149 volume registers from the RNG output, which is the noise/sample sound path.
 - **Map screen:** `$6658` draws the islands as owner-coloured rectangles and labels them with the vector font. `$68D0` draws the network links.
 
 ## Sound

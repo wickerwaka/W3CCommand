@@ -5,7 +5,7 @@
 // `uv run python tools/export_sim_vectors.py`). For every call: same exception, return value,
 // events, and CRC-32 of the state regions afterwards.
 //
-//   npm run check-sim [-- --suite units] [--vector N] [--max-fail 10]
+//   npm run check-sim [-- --suite units] [--vector N] [--max-fail 10] [--vectors DIR]
 //
 // The first failing call of a vector is dumped to web/.sim-fail/, and the replay command that
 // diffs it against Python region by region is printed.
@@ -19,7 +19,7 @@ import { STATE_REGIONS, WorldState } from "../src/sim/world.ts";
 import { UNIT_REGIONS, UnitState } from "../src/sim/index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const VECTORS = join(ROOT, "extracted", "sim_vectors");
+const VECTORS = resolve(arg("--vectors") ?? join(ROOT, "extracted", "sim_vectors"));
 const FAIL_DIR = join(ROOT, "web", ".sim-fail");
 
 type Json = null | number | string | Json[];

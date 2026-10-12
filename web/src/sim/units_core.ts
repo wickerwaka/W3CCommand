@@ -594,7 +594,11 @@ export abstract class UnitCore extends WorldState {
       m.set8(0x463, 0xff);
     }
     if (m.u8(ROUTES_PENDING)) this.relax_routes();
-    if (m.u8(0x8fd)) this.logistics_tick();
+    m.set8(0x8fe, 0); // $8FE: set on passes that run the tick (never read)
+    if (m.u8(0x8fd)) {
+      m.set8(0x8fe, 0xff);
+      this.logistics_tick();
+    }
     this.step();
     this.debris_step();
     this.vehicles_step();
