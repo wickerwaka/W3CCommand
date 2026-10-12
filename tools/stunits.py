@@ -20,7 +20,10 @@ and message-line routines, which don't touch simulation state). Ported:
   the island step's 3D buffer mirroring ($18276, $182A4);
   the shared maths: rotate_yaw $A5E0, rotate_pitch $A620, atan2 $AF8E, aim_angles $1A80C,
   turn_towards $1A18A, self_centre $1E734, yaw_vector $1A140.
-Anything not ported raises NotImplementedError rather than guessing.
+Vehicles out of the hangar, the enemy's close-range combat and supply transfers, and the
+carrier's weapons live in the mixins stunits_vehicles / stunits_enemy / stunits_carrier
+(see the end of this file). Anything not ported raises NotImplementedError rather than
+guessing.
 """
 import stsim
 from stsim import Mem, WorldState, s16, s32, w16
@@ -2157,7 +2160,9 @@ class UnitCore(WorldState):
                 continue
             if d & 0xFFFFFFFF <= best_d:
                 best, best_d = o, d & 0xFFFFFFFF
-        return best
+        # The caller tests the best distance's sign (bpl): the carrier closer than 5000
+        # (negative) counts as nothing found.
+        return best if best_d < 0x80000000 else None
 
     def _fighter_find_structure(self, a: int):
         """$1AF20: nearest attackable structure (flag bit 14) on a player island the fighter

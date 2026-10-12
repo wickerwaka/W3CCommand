@@ -701,6 +701,19 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 - **Destroyed buildings on non-enemy islands:** the "not an enemy island" branch lands on the "store health" code. The destroyed entry gets `d1` as its health and is written back to its slot again. By then `d1` holds the last debris shard's z offset.
 - **Debris branch patch:** `$1CB54` rewrites the `bpl` at `$1CBF4` into `bra` when the burst is within 50 of the ground, so low explosions always throw their shards upwards. The patched code byte is simulation state.
 - **Debris recipes:** the bound check reads the exception vector word at `$2E`, so destroyed constructions (types 48–57) use whatever bytes follow the table.
+- **SSM life:** firing a surface-to-surface missile (`$13598`) writes `$FF` to the *carrier's* `+$1B` (`a4` still points at it). The missile's life starts at 0 and the plain `subq` wraps it to 255.
+- **Enemy losing contact (`$1B18E`)** reads the island owner at `$69B40` + the low word of the enemy carrier's x (a leftover register), not an island index. The outcome depends on that arbitrary byte.
+- **Enemy retreat speed** has its operands swapped: it sticks at 248 instead of reaching 250.
+- **Fighter launch** resets pair schedules with a stale `$6EE`.
+- **Supply drone without an island:** in state 5, `movea` doesn't set flags, so only the carrier's buffer is tested. The drone's box test then reads address 0 (the exception vectors) as its island.
+- **Fighter target search:** a player carrier within 5000 of a fighter gives a negative distance, which the caller treats as "no target".
+- **Runway landing:** a `clr.w d0` meant to zero fields also clears the low word of dx, so that pass's bearing is wrong.
+- **Carrier landing** step 1 ends when the *sum* of two velocity components is 0, so opposite residual velocities end it early.
+- **Lost telemetry** makes a Manta fall but destroys a Walrus outright, with no debris.
+- **The Manta panel redraw** (`$C640`, triggered by refuel/defuel) rewrites record `+$1C`, which is the auto mode in flight: a UI routine changes simulation state.
+- **Walrus guided-missile fire** does `andi.w #$3F` on the record, clearing the whole flag byte.
+- **Manta bombs** take their velocity from the Manta's pitch and heading. **Walrus laser bolts** start at the turret but copy the hull's angles.
+- **Two Walrus paths corrupt the stack:** firing a missile with no free object, and auto mode ≥ 4.
 - **Collision distance:** `collide_objects` (`$1BB40`) negates the x and z offsets based on the sign of their *low word* (the flags come from the `move.w` to `$AB0`/`$AB2`). An offset like −40000 (`$FFFF63C0`) is left negative and counts as near, so far-apart pairs are re-tested every pass. The model reproduces it.
 - **Command-centre health after a cold-boot load:** probably 0, since `difficulty_apply` isn't re-run *(to test)*.
 - **Frame-rate-dependent game speed:** see §1.
@@ -734,10 +747,17 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 | Other | `carrier_systems_status`; the island step's 3D buffer mirroring and entry creation |
 | Maths | yaw/pitch rotation, rotation matrix, atan2, `aim_angles`, `turn_towards`, `self_centre` |
 
-**Not yet ported** (the model raises `NotImplementedError` instead of guessing):
-- vehicles out of the hangar: flight, driving, lift and dock sequences, and a destroyed Manta or Walrus;
-- the turret screen, supply transfers, and a destroyed supply drone;
-- the enemy's close-range combat (states 10 and 11).
+| Vehicles out of the hangar (`stunits_vehicles.py`) | the Manta loop (telemetry and comms relay, manual flight, ground contact, crashes, fuel, all 7 auto modes: carrier landing, deck, take-off, waypoints, runway landing, landed, runway take-off) and the Walrus loop (telemetry, driving, guided-missile steering, beach ramps, docking, launch, waypoints); Manta and Walrus firing (laser, locked missile, bomb, guided missile, cargo, ACCB, fuel pod); the lift and loadouts; destruction; 16 hangar commands (refuel, defuel, repair, replace, prepare, to deck/hangar, take off, land, launch, dock) |
+| Enemy close combat and supply (`stunits_enemy.py`) | enemy states 10 and 11 (stern to the player, cruise missiles, fighter launches, retreat, losing contact); the supply drone's 16-state transfer, the transfer command and the drone's destruction |
+| Carrier weapons (`stunits_carrier.py`) | the laser turret on its screen (aiming, firing, heat); commands: flares, recon drone, surface-to-surface missile, defence drone launch and recall |
+
+The model is split into `UnitCore` (`tools/stunits.py`) and three mixins, one per row above. Each module lists its routines, scenarios and command checks for `check_units.py`.
+
+**Not ported** (the model raises `NotImplementedError` instead of guessing):
+- The Manta missile lock-on's first press: it scans the 3D renderer (`$6290` with callback `$200F6`). Firing once locked is ported.
+- Two Walrus paths where the original corrupts its own stack: a guided missile fired with no free object, and auto mode ≥ 4.
+- Trees cut on a loaded island by a construction or an ACCB drop (debris from `tree_cut`).
+- UI-only effects: the turret's zoom and cursor keys, on-screen messages (recorded as events) and sounds.
 
 **Test data** is an **action game**, which needs no input. The carrier sails a few thousand units on autopilot to a waypoint off enemy island THERMOPYLAE (27) and stops: `capture_sim.py --action --steps 20 300 1500 --ticks 0 --passes 40 --out emu/out/action` captures RAM around 120 whole passes. Under Unicorn, a whole pass reproduces the Hatari capture exactly, apart from interrupt-driven counters and the stack.
 
@@ -748,12 +768,14 @@ Screen changes go through `ui_frame` (`$F636`): the `[$1227]`/`[$1228]` request,
 - each routine on the 120 captured states, with 2000 fuzzed states for `carrier_step`;
 - whole passes against the original and against the **Hatari** `pass_*_out` captures: all 120 match;
 - 4000 consecutive passes from the start of the voyage against the original (screen input stubbed, the one-second flag every 8 passes): identical, including an enemy capture along the way;
-- 160 perturbed multi-pass scenarios:
+- every command (Manta, Walrus, supply, carrier weapons) against its original handler on 240 perturbed states, and 3000 single calls each of the supply step and enemy states 10/11;
+- 300 perturbed multi-pass scenarios, including Manta flight, weapons, carrier and runway landings and the lift, Walrus driving, weapons, docking and launch, enemy close combat and retreat, supply transfers, and the turret screen;
+- the original 160 scenarios:
   - **weapons:** every AI-object type in flight around the carrier and the island with live targets, and enemy fighters raiding a player island's buildings;
   - **island defences:** an air raid (Manta objects hovering in range, so AA turrets, SAM sites and island drones engage), a bombardment of the island's buildings, volcano eruptions, island drones returning or losing their pad, and a player-held island firing anti-ship missiles at the enemy carrier;
   - **other:** engagement of the carrier, the carrier's defence drones (stations and launch), flares, turret, voyage, debris, collisions, hangars, construction.
 
-  All match. Runs that reach unported code stop there: a destroyed Manta, and the enemy entering close-range combat.
+  All match. The only stop left is the voyage scenario's artificial teleport (depth divide overflow).
 
 ## 15. Plan: modelling and verifying the unit layer
 
