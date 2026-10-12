@@ -12,6 +12,7 @@ import { readStateFile, writeStateFile } from "./app/state_file.ts";
 import { loadState, saveState, type Slot } from "./app/store.ts";
 import { FreeCamera, GameCamera, type ViewCamera } from "./render/cameras.ts";
 import { WorldView } from "./render/world_view.ts";
+import { ModelListView } from "./render/diagram.ts";
 import { ditherCell } from "./render/meshes.ts";
 import { Sound } from "./audio/sound.ts";
 import { MapView } from "./ui/map.ts";
@@ -70,7 +71,9 @@ const vehicles = new VehiclePanel(controls);
 vehicles.onRefused = () => shell.message("Not available now", clockText());
 const weapons = new WeaponsPanel(controls);
 const info = new InfoPanel(controls);
-const damage = new DamagePanel((k, cls) => controls.repairPriority(k, cls));
+const damage = new DamagePanel((k, cls) => controls.repairPriority(k, cls),
+  (k) => controls.run(() => game?.runner.state.cmd_select_system(k)));
+const diagram = new ModelListView();
 const map = new MapView(names, {
   onWaypoint: (x, z) => setWaypoint(x, z),
   onIsland: (i) => {
@@ -258,7 +261,7 @@ function showScreen(): void {
   else if (WEAPON_SCREENS.has(id) && !freeCamera) panels.push(weapons.el);
   if (INFO_SCREENS.has(id) && !freeCamera) panels.push(info.el);
   shell.content.replaceChildren(...panels);
-  shell.content.classList.toggle("opaque", MAP_SCREENS.has(id) || ARMING_SCREENS.has(id) || FLAT_SCREENS.has(id));
+  shell.content.classList.toggle("opaque", MAP_SCREENS.has(id) || ARMING_SCREENS.has(id) || FLAT_SCREENS.has(id) || id === SCREENS.damage);
 }
 
 function setFreeCamera(on: boolean): void {
@@ -471,7 +474,7 @@ function frame(now = performance.now()): void {
   const screen = game.screen;
   if (screen !== shownScreen) showScreen();       // the game switched screens itself
   noSignal.hidden = true;
-  if (MAP_SCREENS.has(screen) || ARMING_SCREENS.has(screen) || FLAT_SCREENS.has(screen)) {
+  if (MAP_SCREENS.has(screen) || ARMING_SCREENS.has(screen) || FLAT_SCREENS.has(screen) || screen === SCREENS.damage) {
     if (INFO_SCREENS.has(screen)) info.update(game.ram, screen);
     gunsight.update(game.ram, -1, 0, 1);
     if (MAP_SCREENS.has(screen)) map.draw(game.ram, screen);
@@ -481,6 +484,12 @@ function frame(now = performance.now()): void {
       // the arming screens draw the world into a small 2:1 window ($475A): Manta arming the
       // bridge view, Walrus arming a view astern panning +-45 degrees ([$DC8])
       if (ARMING_SCREENS.has(screen)) renderInset(game, view);
+      // the damage screen's carrier diagram ($156FA): the model list at $64CFE
+      if (screen === SCREENS.damage) {
+        damage.update(game.ram);
+        const rect = damage.diagramRect();
+        if (rect) diagram.render(renderer, game.ram, 1, rect);
+      }
     }
     if (VEHICLE_SCREENS.has(screen)) vehicles.update(game.ram, screen);
   } else {

@@ -28,6 +28,14 @@ sy = cy + trunc(-Y*2^shy/Z).
       states on each other screen's capture (perturb_view).
       Unicorn's `trapv` traps even with V clear, so the two in the polygon clipper ($4CE2,
       $4D0A) are emulated by a hook.
+      Screens 1 (damage diagram, $156FA) and 33 (title, $15DA2) draw the model list at $64CFE
+      (diagram_scene): also compared are the models drawn, the palette $136A the damage render
+      leaves (diagram_palette), the title state (title_step) and the rendered frame against the
+      next consecutive capture's buffer (emu/out/diagrams, tools/capture_diagrams.py).
+
+  uv run python tools/stview.py --export-diagrams extracted/diagram_vectors.json [--fuzz N]
+      The original's screen 1/33 renders on those captures plus N perturbed states each, for
+      web/scripts/check-diagram.ts.
 """
 import argparse
 import math
@@ -163,7 +171,7 @@ def bridge_camera(ram: Ram) -> Camera:
 # --- the other 3D screens ------------------------------------------------------------------
 
 SCREEN_RENDER = {0: 0x1460A, 8: 0x15A94, 9: 0x165B2, 10: 0x1638C, 16: 0x14E56, 18: 0x15496,
-                 19: 0x14A40, 24: 0x15002, 26: 0x14816, 27: 0x15244}
+                 19: 0x14A40, 24: 0x15002, 26: 0x14816, 27: 0x15244, 1: 0x156FA, 33: 0x15DA2}
 HANGAR_VIEWPORT = 0x475A    # screens 16/24: (32, 6)-(159, 69), shx = shy = 7, centre (96, 38)
 HANGAR_EYE_BACK = -1000     # screen 16: the eye 1000 astern of the carrier origin, y 140
 HANGAR_SWING = 0xDC8        # screen 16: look yaw = carrier yaw + [$DC8] ($6000..$A000, aft)
@@ -310,7 +318,110 @@ def screen_views(data: bytes, screen: int) -> list:
         port = viewport(Ram(bytes(d)), INSET_VIEWPORT)
         views.append(view("walrus missile inset", missile, port, cull=vp[4]))
         return views
+    if screen == 1:                  # $156FA: the damage diagram, unless the priorities panel is up
+        return [] if r.u16(PRIORITY_PANEL) else [view("damage diagram", obj0)]
+    if screen == 33:                 # $15DA2: the title's model, unless a menu ($708) is up
+        return [] if r.u16(0x708) else [view("title", obj0)]
     raise ValueError(f"screen {screen} has no 3D view in this model")
+
+
+# --- the model-list pictures: damage diagram (screen 1) and title (screen 33) ---------------
+#
+# Both enter handlers ($1404E, $13B7C) build a fake island buffer at $64CFE (the "model list"):
+# header byte +1 = $FF (bit 7: no plateau, every entry depth-sorted on its own), origin
+# (0, -200, 2000), and make object 0 the camera at the world origin with angles 0, +$3C = the
+# list, $A46/$A47 set (no world objects). The render is $7BF6, $4A64 (the viewport cleared to
+# colour 0), $62D4: the ordinary pipeline, so the entries are culled, sorted and drawn like
+# island entries (camera-space origin = (0, -200, 2000) + local; LOD by that Z).
+
+MODEL_LIST = 0x64CFE
+DIAGRAM_SCREENS = (1, 33)
+PRIORITY_PANEL = 0xB62               # set while the repair-priorities panel replaces the picture
+SYSTEMS = 0xAF4                      # 10 x (current.w, max.w, class.w, status.w)
+SHOWN_SYSTEM, SHOWN_PART = 0xB58, 0xB5A
+STATUS_COLOURS = 0xB68               # $070 whole, $007 damaged and working, $700 damaged and down
+DAMAGE_PALETTE, PRIORITY_PALETTE, TITLE_PALETTE = 0x136A, 0x134A, 0x132A
+DIAGRAM_GREY = 0x445                 # colour 7 as the enter handler and the colour-1 path set it
+TITLE_MODEL = MODEL_LIST + 0x12      # its one entry: type +2 ($64D12), yaw +6 ($64D16)
+
+
+def damage_status(ram: Ram):
+    """$156FA's colour choice for the shown system [$B58] -> (k, register) or None: k indexes
+    the status colours at $B68 (0 whole, 1 damaged but working, 2 damaged and down) and the
+    register is the palette colour it goes to: 1 (the highlighted overlay; colour 7 is then
+    reset to $445) or 7 (the whole wireframe: the superstructure 9, and the lift 8 between two
+    part highlights, [$B5A] = 8). None when no system is shown ([$B58] < 0)."""
+    k_sys = ram.s16(SHOWN_SYSTEM)
+    if k_sys < 0:
+        return None
+    if k_sys > 9:
+        raise ValueError(f"[$B58] = {k_sys}: the render's jump table has 10 entries")
+    a = SYSTEMS + 8 * k_sys
+    lift_gap = k_sys == 8 and ram.u16(SHOWN_PART) == 8
+    if ram.u16(a) == ram.u16(a + 2):                  # cur == max (`cmp.w`, equality only)
+        return 0, 7 if k_sys == 9 or lift_gap else 1
+    if k_sys in (0, 4, 8):                             # their handlers test the status word
+        k = 1 if ram.u16(a + 6) else 2
+    elif k_sys == 9:
+        k = 1 if ram.s16(a + 6) >= 0x40 else 2         # signed `cmpi.w #$40` / `blt`
+    else:                                              # the shared handler $15870: its high byte
+        k = 1 if ram.u8(a + 6) else 2
+    return k, 7 if k_sys == 9 or lift_gap else 1
+
+
+def diagram_palette(ram: Ram) -> list:
+    """The 16 palette words the damage diagram is shown with: $136A as $156FA leaves it
+    (the priorities panel uses $134A and no 3D). The render patches $136C (colour 1) or $1378
+    (colour 7) from $B68 and sets $1224 (palette reload); with no system shown it writes
+    nothing, and colour 7 is the enter handler's $445."""
+    pal = [ram.u16(DAMAGE_PALETTE + 2 * i) for i in range(16)]
+    st = damage_status(ram)
+    if st is None:
+        return pal
+    k, reg = st
+    pal[reg] = ram.u16(STATUS_COLOURS + 2 * k)
+    if reg == 1:
+        pal[7] = DIAGRAM_GREY
+    return pal
+
+
+def title_step(ram: Ram) -> dict:
+    """What $15DA2 writes after drawing: the turret heading [$6CC] += $12C, the elevation [$6CA]
+    swings by $320 between $C950 (-14000) and 0 (direction [$6D4], flipped when clamped), the
+    model's yaw [$64D16] -= 500. (Keys: Control+A/B, the attract timer and debug +/- aren't
+    picture state.)"""
+    d0 = s16((-0x320 if ram.u8(0x6D4) else 0x320) + ram.u16(0x6CA))
+    d1 = d0
+    if d0 > 0:
+        d0 = 0
+    elif d0 < -0x36B0:
+        d0 = -0x36B0
+    flip = ram.u8(0x6D4) ^ 0xFF if d0 != d1 else ram.u8(0x6D4)
+    return {0x6CA: d0 & 0xFFFF, 0x6CC: (ram.u16(0x6CC) + 0x12C) & 0xFFFF, 0x6D4: flip,
+            TITLE_MODEL + 6: (ram.u16(TITLE_MODEL + 6) - 500) & 0xFFFF}
+
+
+def diagram_scene(data: bytes, screen: int) -> dict | None:
+    """The model-list picture as a port draws it -> None (no picture) or dict(viewport, palette,
+    items): items in the game's draw order (back to front), each with the entry, its model
+    (LOD by camera Z), camera-space origin (X, Y, Z) and the angles its vertices are turned by.
+    Overlay models 75-82 ($A8DA / no basis) are built on the vertex array and edge vectors of
+    the model drawn just before them (74, entry 0), so they take entry 0's angles, not their
+    own (stale) ones. Line colours index the palette directly (the $13CA pairs are equal)."""
+    views = screen_views(data, screen)
+    if not views:
+        return None
+    ram, cam = views[0].ram, views[0].cam
+    items, last = [], None
+    for it in collect_visible(ram, cam):
+        src = last if it["model"] in range(75, 83) and last is not None else it["obj"]
+        if it["model"] not in range(75, 83):
+            last = it["obj"]
+        items.append(dict(obj=it["obj"], type=it["type"], model=it["model"],
+                          origin=(it["X"], it["Y"], it["Z"]),
+                          angles=tuple(ram.u16(src + o) for o in (4, 6, 8))))
+    pal = diagram_palette(ram) if screen == 1 else [ram.u16(TITLE_PALETTE + 2 * i) for i in range(16)]
+    return dict(viewport=cam.viewport, palette=pal, items=items)
 
 
 def cam_xform_long(cam: Camera, dx: int, dy: int, dz: int) -> tuple:
@@ -413,14 +524,15 @@ def game_rotation(cam: Camera, pitch: int, yaw: int, roll: int, billboard: bool 
 
 
 def object_world_vertices(ram: Ram, obj: int, model_vertices: list, billboard: bool = False,
-                          cam: Camera | None = None) -> list:
+                          cam: Camera | None = None, angles: tuple | None = None) -> list:
     """Model-space vertices of the object at obj -> world (floats): P + R(obj angles) v.
-    Billboards (basis $AA24, trees) ignore the object's angles and take the camera's yaw."""
+    Billboards (basis $AA24, trees) ignore the object's angles and take the camera's yaw.
+    `angles` overrides the object's (the damage overlays turn with the model before them)."""
     pos = object_position(ram, obj)
     if billboard:
         m = object_matrix(0, _neg_q((cam or bridge_camera(ram)).yaw), 0)
     else:
-        m = object_matrix(*(ram.u16(obj + o) for o in (4, 6, 8)))
+        m = object_matrix(*(angles or tuple(ram.u16(obj + o) for o in (4, 6, 8))))
     return [None if v is None else tuple(p + r for p, r in zip(pos, _apply(m, v))) for v in model_vertices]
 
 
@@ -434,7 +546,7 @@ def object_position(ram: Ram, obj: int) -> tuple:
 
 
 def island_buffer_of(entry: int) -> int:
-    for buf in (0x62CDA, 0x63CEC):
+    for buf in (0x62CDA, 0x63CEC, MODEL_LIST):
         if buf + 0x12 <= entry < buf + 0x12 + 64 * ENTRY_SIZE:
             return buf
     raise ValueError(f"${entry:05X} is not an island-buffer entry")
@@ -738,7 +850,11 @@ class _Game:
         n = int.from_bytes(self.uc.mem_read(0x8A0, 2), "big")
         a1 = self.reg("A1")
         verts = [struct.unpack(">3h", self.uc.mem_read(a1 + 6 * i, 6)) for i in range(n)]
-        self.pending = dict(caller=self.r32(sp, False), obj=self.reg("A4"), out=self.reg("A2"), n=n,
+        # drawn = the object whose model is being drawn ($7BAC): A4 may point at a fake object
+        # by now (the carrier turret basis leaves it at $AAB4, so those are skipped below,
+        # except on the model-list screens).
+        drawn = self.models[-1][0] if self.models else self.reg("A4")
+        self.pending = dict(caller=self.r32(sp, False), obj=self.reg("A4"), drawn=drawn, out=self.reg("A2"), n=n,
                             pos=tuple(self.r32(0xA80 + 4 * i) for i in range(3)), verts=verts,
                             model=self.models[-1][1] if self.models else None)
 
@@ -783,9 +899,10 @@ def decode_screen(data: bytes, base: int) -> list:
     return rows
 
 
-def model_space_vertices(data: bytes, obj: int, rec: int) -> list:
+def model_space_vertices(data: bytes, obj: int, rec: int, parent: int | None = None) -> list:
     """The model's own basis routine and vertex ops with identity rotations (camera and object
-    angles zeroed) on this RAM image: model-space vertices for this object's state."""
+    angles zeroed) on this RAM image: model-space vertices for this object's state. `parent`
+    = the record of a model drawn first in the same vertex array (the damage overlays)."""
     from stemu import CAM, OBJ, Emu
     from stgfx import Payload
     import stmodel
@@ -800,8 +917,13 @@ def model_space_vertices(data: bytes, obj: int, rec: int) -> list:
         e.call(setup, 0)
     e.clear_vertices()
     ram = Ram(data)
-    handler = ram.u32(rec)
-    body = rec + (8 if handler in (stmodel.MODEL_DRAW_POLY_NEAR, stmodel.MODEL_DRAW_LINES_NEAR) else 4)
+
+    def body_of(r):
+        return r + (8 if ram.u32(r) in (stmodel.MODEL_DRAW_POLY_NEAR, stmodel.MODEL_DRAW_LINES_NEAR) else 4)
+    if parent is not None:
+        pbody = body_of(parent)
+        e.build_vertices(ram.u32(pbody), pbody + 4)
+    body = body_of(rec)
     basis = ram.u32(body)
     end = e.build_vertices(basis, body + 4)
     n = ram.u16(end)
@@ -899,11 +1021,16 @@ def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool =
         # Horizon and sea dots.
         kind, pts = horizon(cam)
         hz = [p for p in gp["projs"] if p["caller"] == 0x6490]
-        if kind == "line":
+        if screen in DIAGRAM_SCREENS:
+            # No horizon, no sea dots: the viewport is cleared to colour 0 ($4A64) instead.
+            same = not hz and not gp["dots"]
+            print(f"  no horizon, no sea dots {'OK' if same else 'MISMATCH'}")
+            ok &= same
+        elif kind == "line":
             same = bool(hz) and hz[0]["screen"] == list(pts)
             print(f"  horizon {pts} {'OK' if same else 'MISMATCH ' + str(hz and hz[0]['screen'])}")
             ok &= same
-        dots = sea_dots(cam) if not ram.u8(0x1246) else []
+        dots = sea_dots(cam) if not ram.u8(0x1246) and screen not in DIAGRAM_SCREENS else []
         same = dots == gp["dots"]
         print(f"  sea dots: {len(dots)} {'OK' if same else 'MISMATCH game ' + str(gp['dots'])}")
         ok &= same
@@ -915,10 +1042,11 @@ def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool =
         total = proj_exact = 0
         worst_rot = worst_rel = worst_fp = worst_float = worst_far = 0.0
         pos_ok = True
+        last_drawn = None
         for p in gp["projs"]:
             if p["caller"] == 0x6490 or p["model"] is None:
                 continue
-            obj = p["obj"]
+            obj = p["drawn"] if screen in DIAGRAM_SCREENS else p["obj"]
             if screen == 8 and p["caller"] == 0x94AE and p["pos"] == TURRET_OVERLAY_POS:
                 # Model 84 (the turret wireframe) in the $479C window: its basis ($ABE8) turns
                 # it by the turret's angles only (no camera pass), at a fixed origin.
@@ -942,10 +1070,19 @@ def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool =
                 pos_ok = False
                 print(f"  object ${obj:05X}: position {pos} MISMATCH game {p['pos']}")
                 continue
-            verts, basis = model_space_vertices(ram.d, obj, p["model"])
+            # The damage-diagram overlays (75-82) are built on the vertex array and edge
+            # vectors of the model drawn before them (74): its object's angles turn them.
+            overlay = index.get(p["model"]) in range(75, 83) and last_drawn is not None
+            src, parent_rec = (last_drawn if overlay else (obj, None))
+            if not overlay:
+                last_drawn = (obj, p["model"])
+            verts, basis = model_space_vertices(ram.d, obj, p["model"], parent_rec)
             billboard = basis == 0xAA24
-            rc = game_rotation(cam, *(ram.u16(obj + o) for o in (4, 6, 8)), billboard)
-            wverts = object_world_vertices(ram, obj, verts, billboard, cam)
+            angles = tuple(ram.u16(src + o) for o in (4, 6, 8))
+            if basis == 0xA660:          # the island plateau: camera rotation only (island yaw 0)
+                angles = (0, 0, 0)
+            rc = game_rotation(cam, *angles, billboard)
+            wverts = object_world_vertices(ram, obj, verts, billboard, cam, angles)
             for i, v in enumerate(verts[:p["n"]]):
                 g, gv = p["screen"][i], p["verts"][i]
                 # 1. The projection itself, on the game's own camera-space vertex: must be exact.
@@ -992,6 +1129,9 @@ def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool =
         for k, v in (("worst_rot", worst_rot), ("worst_rel", worst_rel), ("worst_far", worst_far),
                      ("worst_float", worst_float)):
             stats[k] = max(stats[k], v)
+    if screen in DIAGRAM_SCREENS:
+        ok &= _check_diagram(print, data, after, screen, [index.get(r) for _, r in
+                                                           (game.passes[0]["models"] if game.passes else [])])
     if path is None or not views:
         return out, ok, stats
 
@@ -1004,10 +1144,58 @@ def check_data(name: str, data: bytes, path: Path | None = None, verbose: bool =
     x0, y0, x1, y1 = cam.viewport[:4]
     diff = sum(a[y][x] != b[y][x] for y in range(y0, y1 + 1) for x in range(x0, x1 + 1))
     print(f"  frame vs displayed buffer ${shown:05X}: {diff} viewport pixels differ")
+    # Captures at $413E (tools/capture_diagrams.py) are consecutive passes: the next one shows
+    # the frame this one's render drew, in the same buffer.
+    parts = path.name.split("_")
+    nxt = path.parent / "_".join(parts[:2] + [str(int(parts[2]) + 1)] + parts[3:]) if len(parts) == 4 else None
+    if screen in DIAGRAM_SCREENS and nxt and nxt.exists():
+        c = decode_screen(nxt.read_bytes(), draw)
+        mx, my = ram0.s16(0x474), ram0.s16(0x476)          # the mouse pointer, drawn after the render
+
+        def pointer(x, y):
+            return mx - 2 <= x <= mx + 16 and my - 2 <= y <= my + 16
+        diff = sum(a[y][x] != c[y][x] and not pointer(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1))
+        print(f"  frame vs the next pass's displayed buffer ({nxt.name}): {diff} viewport pixels differ "
+              f"(outside the pointer)")
+        ok &= diff == 0
     shot = path.parent / f"shot_{path.name.split('_')[1]}.png"
     if path.name.endswith("_0_in.bin") and shot.exists():
-        print("  " + compare_screenshot(shot, a, cam.viewport))
+        pal = None
+        if screen in DIAGRAM_SCREENS:
+            pal = [after.u16(after.u32(0x1326) + 2 * i) for i in range(16)]
+        print("  " + compare_screenshot(shot, a, cam.viewport, pal))
     return out, ok, stats
+
+
+def _check_diagram(print, data: bytes, after: Ram, screen: int, game_models: list) -> bool:
+    """Screens 1/33: the models drawn (in order), the palette and the state the render leaves,
+    against diagram_scene / diagram_palette / title_step."""
+    ram0 = Ram(data)
+    scene = diagram_scene(data, screen)
+    ok = True
+    mine = [it["model"] for it in scene["items"]] if scene else []
+    same = mine == game_models
+    print(f"  diagram models drawn {mine} {'OK' if same else f'MISMATCH game {game_models}'}")
+    ok &= same
+    if screen == 1:
+        pal = [after.u16(DAMAGE_PALETTE + 2 * i) for i in range(16)]
+        exp = diagram_palette(ram0) if scene else [ram0.u16(DAMAGE_PALETTE + 2 * i) for i in range(16)]
+        if scene and damage_status(ram0) is None:      # nothing written: colour 7 as it was
+            exp[7] = ram0.u16(DAMAGE_PALETTE + 14)
+        same = pal == exp
+        st = damage_status(ram0) if scene else None
+        print(f"  palette $136A: system {ram0.s16(SHOWN_SYSTEM)} part {ram0.s16(SHOWN_PART)} -> "
+              f"{st and (st[0], f'colour {st[1]}')} colours 1/7 ${pal[1]:03X}/${pal[7]:03X} "
+              f"{'OK' if same else f'MISMATCH model ${exp[1]:03X}/${exp[7]:03X}'}")
+        ok &= same
+    elif scene:
+        exp = title_step(ram0)
+        got = {a: (after.u8(a) if a == 0x6D4 else after.u16(a)) for a in exp}
+        same = got == exp
+        print(f"  title step {', '.join(f'${a:X}={v:X}' for a, v in got.items())} "
+              f"{'OK' if same else 'MISMATCH model ' + str({hex(a): hex(v) for a, v in exp.items()})}")
+        ok &= same
+    return ok
 
 
 def fuzz(path: Path, count: int, seed: int, verbose: bool = False) -> bool:
@@ -1074,12 +1262,15 @@ def fuzz(path: Path, count: int, seed: int, verbose: bool = False) -> bool:
     return ok
 
 
-def compare_screenshot(shot: Path, frame: list, vp: tuple) -> str:
-    """Find the 2x-scaled game screen in a Hatari screenshot and compare the viewport."""
+def compare_screenshot(shot: Path, frame: list, vp: tuple, words: list | None = None) -> str:
+    """Find the 2x-scaled game screen in a Hatari screenshot and compare the viewport (palette
+    $132A, or the 16 ST colour words given)."""
     from PIL import Image
     from stgfx import Payload, st_palette
     img = Image.open(shot).convert("RGB")
     pal = st_palette(Payload(), 0x132A)
+    if words is not None:
+        pal = [tuple(((w >> s) & 7) * 255 // 7 for s in (8, 4, 0)) for w in words]
     x0, y0, x1, y1 = vp[:4]
 
     def score(ox, oy):
@@ -1185,6 +1376,35 @@ def perturb_view(data: bytes, screen: int, rng) -> bytes:
             _w16(d, rec + 0x2E, rng.randrange(0x20, 0x86))
         else:
             d[rec] &= ~0x10
+    elif screen == 1:                # the shown system and lift part, the systems, the diagram's turn
+        for k in range(10):
+            a = SYSTEMS + 8 * k
+            mx = rng.choice([r.u16(a + 2), 1500, 3000, 4000])
+            _w16(d, a + 2, mx)
+            _w16(d, a, rng.choice([mx, mx, rng.randrange(mx + 1)]))
+            _w16(d, a + 6, rng.choice([0, 0, 0x100, 0xFF00, 0x3F, 0x40, 0x8000, rng.randrange(0x10000)]))
+        shown, part = rng.randint(-1, 9), rng.randint(0, 8)
+        _w16(d, SHOWN_SYSTEM, shown)
+        _w16(d, SHOWN_PART, part)
+        first = MODEL_LIST + 0x12 + ENTRY_SIZE   # $64D50: the parts; cmd_select_system / $1747A bits
+        for k in range(8):
+            d[first + ENTRY_SIZE * k + 1] &= ~2
+            angles(first + ENTRY_SIZE * k, 0x8000)          # stale angles: not used by the overlays
+        lit = shown if 0 <= shown <= 7 else part if shown == 8 and part != 8 else None
+        if lit is not None:
+            d[first + ENTRY_SIZE * lit + 1] |= 2
+        struct.pack_into(">HHH", d, MODEL_LIST + 0x12 + 4, *rng.choice(
+            [(0, 0, 0), (0, 0, 0), (rng.randrange(0x10000), 0, rng.randrange(0x10000))]))
+        _w16(d, MODEL_LIST + 0x12 + 6, rng.randrange(0x10000))
+        _w16(d, DAMAGE_PALETTE + 14, rng.choice([DIAGRAM_GREY, 0x070, 0x700]))
+        _w16(d, PRIORITY_PANEL, rng.choice([0] * 7 + [1]))
+    elif screen == 33:               # the turn, the turret swing, the model type (debug +/-), a menu
+        _w16(d, TITLE_MODEL + 6, rng.randrange(0x10000))
+        _w16(d, 0x6CA, rng.choice([rng.randint(-0x36B0, 0), 2000, -0x36B0, -0x320, 0x10]))
+        _w16(d, 0x6CC, rng.randrange(0x10000))
+        d[0x6D4] = rng.choice([0, 0xFF])
+        _w16(d, TITLE_MODEL + 2, rng.choice([1] * 4 + [rng.randint(1, 0x49)]))
+        _w16(d, 0x708, rng.choice([0] * 7 + [1]))
     return bytes(d)
 
 
@@ -1233,19 +1453,73 @@ VIEW_CAPTURES = ["emu/out/views/pass_decklift_0_in.bin", "emu/out/views/pass_doc
                  "emu/out/views/pass_dock_0_in.bin", "emu/out/views/pass_manta_0_in.bin",
                  "emu/out/views/pass_walrus_0_in.bin", "emu/out/views/pass_turret_0_in.bin",
                  "emu/out/views/pass_flares_0_in.bin", "emu/out/views/pass_drone_0_in.bin"]
+# tools/capture_diagrams.py: the damage diagram and the title (consecutive passes at $413E).
+DIAGRAM_CAPTURES = [f"emu/out/diagrams/pass_{label}_{i}_in.bin" for label, n in
+                    (("damage", 2), ("damagethree", 2), ("damagethreehit", 2), ("damagelift", 11),
+                     ("damagehull", 2), ("damageengines", 2), ("title", 5)) for i in range(n)]
+
+
+def export_diagrams(out: Path, count: int, seed: int = 3) -> int:
+    """The original's screen 1/33 renders under Unicorn, for web/scripts/check-diagram.ts: per
+    case the base capture, the perturbation (patches), and what the render did: the models
+    drawn, every projected vertex, the palette $136A after it (screen 1) and the title state it
+    leaves (screen 33)."""
+    import json
+    import random
+    rng = random.Random(seed)
+    cases = []
+    bases = [ROOT / c for c in DIAGRAM_CAPTURES if (ROOT / c).exists()]
+    for base_path in bases:
+        base = base_path.read_bytes()
+        screen = Ram(base).u16(0x718)
+        variants = [base] + ([perturb_view(base, screen, rng) for _ in range(count)]
+                             if base_path.name.endswith("_0_in.bin") else [])
+        for data in variants:
+            game = _Game(data)
+            after = Ram(game.render(SCREEN_RENDER[screen]))
+            index = _model_index(Ram(data))
+            patches, a = [], 0
+            while a < len(data):              # changed byte runs
+                if data[a] != base[a]:
+                    b = a
+                    while b < len(data) and data[b] != base[b]:
+                        b += 1
+                    patches.append([a, data[a:b].hex()])
+                    a = b
+                else:
+                    a += 1
+            gp = game.passes[0] if game.passes else None
+            cases.append(dict(
+                base=str(base_path.relative_to(ROOT)), patches=patches, screen=screen,
+                views=len(game.passes),
+                models=[index.get(r) for _, r in gp["models"]] if gp else [],
+                projs=[dict(model=index.get(p["model"]), n=p["n"], screen=p["screen"]) for p in gp["projs"]
+                       if p["caller"] != 0x6490] if gp else [],
+                palette=[after.u16(DAMAGE_PALETTE + 2 * i) for i in range(16)],
+                palette_before=[Ram(data).u16(DAMAGE_PALETTE + 2 * i) for i in range(16)],
+                title={f"{k:x}": (after.u8(k) if k == 0x6D4 else after.u16(k)) for k in (0x6CA, 0x6CC, 0x6D4, TITLE_MODEL + 6)}))
+    out.write_text(json.dumps(cases))
+    print(f"{out}: {len(cases)} cases from {len(bases)} captures")
+    return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--export-diagrams", type=Path, metavar="JSON",
+                    help="write the original's screen 1/33 renders (captures + --fuzz perturbed states "
+                         "each) for web/scripts/check-diagram.ts")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--fuzz", type=int, default=40, help="random viewpoints per capture (0 = none)")
     ap.add_argument("captures", nargs="*")
     args = ap.parse_args()
+    if args.export_diagrams:
+        return export_diagrams(args.export_diagrams, args.fuzz)
     if not args.check:
         ap.print_help()
         return 0
-    paths = [Path(c) for c in args.captures] or [ROOT / c for c in DEFAULT_CAPTURES + VIEW_CAPTURES]
+    paths = [Path(c) for c in args.captures] or [ROOT / c for c in DEFAULT_CAPTURES + VIEW_CAPTURES
+                                                  + DIAGRAM_CAPTURES]
     ok = True
     for p in paths:
         if p.exists():
@@ -1254,7 +1528,9 @@ def main() -> int:
     for p in bridge[:2] if args.fuzz else []:
         ok &= fuzz(p, args.fuzz, seed=1, verbose=args.verbose)
     for p in paths if args.fuzz else []:
-        if p.exists() and Ram(p.read_bytes()[:0x800]).u16(0x718) in SCREEN_RENDER.keys() - {0}:
+        # the diagram captures are runs of passes: fuzz the first of each run
+        if p.exists() and Ram(p.read_bytes()[:0x800]).u16(0x718) in SCREEN_RENDER.keys() - {0} and not (
+                p.parent.name == "diagrams" and not p.name.endswith("_0_in.bin")):
             ok &= fuzz_view(p, args.fuzz, seed=2, verbose=args.verbose)
     print("OK" if ok else "MISMATCH")
     return 0 if ok else 1

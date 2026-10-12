@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "check-sim": "node scripts/check-sim.ts",
     "check-models": "node scripts/check-models.ts",
+    "check-diagram": "node scripts/check-diagram.ts",
     "soak": "node scripts/soak.ts",
     "check-sound": "node scripts/check-sound.ts",
     "playthrough": "node scripts/playthrough.ts"

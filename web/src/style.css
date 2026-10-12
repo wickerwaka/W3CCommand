@@ -536,3 +536,28 @@ svg.radar {
   fill: none;
   stroke: #6fe08a;
 }
+
+.panel.damage .diagram {
+  aspect-ratio: 2 / 1;
+  width: 100%;
+  max-width: 512px;
+  margin-bottom: 8px;
+}
+
+.panel.damage .system {
+  cursor: pointer;
+}
+
+/* the diagram is drawn on the canvas behind the panel: only the text parts get a background */
+.panel.damage {
+  background: transparent;
+  border-color: transparent;
+}
+
+.panel.damage h2,
+.panel.damage .systems {
+  background: var(--panel-solid);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
+}

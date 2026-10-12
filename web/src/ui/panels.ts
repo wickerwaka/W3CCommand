@@ -81,20 +81,34 @@ export class BridgeHud {
 
 export class DamagePanel {
   readonly el: HTMLElement;
+  /** Where the carrier diagram (render/diagram.ts) is drawn: the WebGL canvas behind the
+   * panel shows through this transparent box. */
+  private diagramEl = h("div", { class: "diagram" });
   private rows: { bar: HTMLElement; value: HTMLElement; prio: HTMLButtonElement }[] = [];
   private classes: number[] = [];
 
   /** setPriority(system, class 0-2) changes a system's repair class (the priorities panel). */
-  constructor(setPriority: (system: number, cls: number) => void) {
+  constructor(setPriority: (system: number, cls: number) => void, select: (system: number) => void) {
     const table = h("div", { class: "systems" });
     for (const [k, name] of SYSTEM_NAMES.entries()) {
       const bar = h("div", { class: "bar" }), value = h("output");
       const prio = h("button", { class: "prio", title: "Repair priority class: click to change" });
-      prio.onclick = () => setPriority(k, ((this.classes[k] ?? 0) + 1) % 3);
+      prio.onclick = (e) => {
+        e.stopPropagation();
+        setPriority(k, ((this.classes[k] ?? 0) + 1) % 3);
+      };
       this.rows.push({ bar, value, prio });
-      table.append(h("div", { class: "system" }, h("label", {}, name), h("div", { class: "meter" }, bar), value, prio));
+      const row = h("div", { class: "system", title: "Show it on the diagram" }, h("label", {}, name), h("div", { class: "meter" }, bar), value, prio);
+      row.onclick = () => select(k);
+      table.append(row);
     }
-    this.el = h("section", { class: "panel damage" }, h("h2", {}, "Damage status"), table);
+    this.el = h("section", { class: "panel damage" }, h("h2", {}, "Damage status"), this.diagramEl, table);
+  }
+
+  /** The diagram box in CSS pixels, or null when it isn't laid out. */
+  diagramRect(): { x: number; y: number; w: number; h: number } | null {
+    const b = this.diagramEl.getBoundingClientRect();
+    return b.width > 1 ? { x: b.left, y: b.top, w: b.width, h: b.height } : null;
   }
 
   update(ram: Uint8Array): void {
