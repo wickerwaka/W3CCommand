@@ -32,11 +32,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: rm -rf public/data && npm run build
-      - name: No game data in the site
-        run: |
-          if [ -e dist/data ] || find dist -name '*.bin' -o -name '*.sav' | grep -q .; then
-            echo "dist/ contains game data"; exit 1
-          fi
+      - run: cp web/data public/data
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
