@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: rm -rf public/data && npm run build
-      - run: cp data/ public/data/
+      - run: cp -r data/ public/data/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
